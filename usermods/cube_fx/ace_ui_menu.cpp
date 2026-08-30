@@ -184,8 +184,26 @@ static void auiSaveConfig() {
 // ---------------------------------------------------------------------------
 enum : uint8_t {
   SC_ROOT = 0, SC_NOWPLAY, SC_VU, SC_FXFILTER, SC_FXLIST, SC_PAL, SC_PARAMS,
-  SC_EDIT, SC_COLOUR, SC_PRESETS, SC_SEG, SC_SYSTEM, SC_NET, SC_CONFIRM
+  SC_EDIT, SC_COLOUR, SC_PRESETS, SC_SEG, SC_SEGOPT, SC_SYSTEM, SC_NET, SC_CONFIRM
 };
+
+// Rows on the per-segment options page, reached by drilling into a segment
+// from SC_SEG.
+//
+// These MUST reset the effect, mirror especially: Segment::virtualWidth() and
+// virtualHeight() halve when mirror / mirror_y are set, so SEG_W and SEG_H
+// change underneath a running effect. Every cube_fx effect builds coordinate
+// LUTs sized to cols*rows once, when SEGENV.call == 0, and Segment::
+// allocateData() returns the EXISTING buffer whenever it is already big enough
+// - it does not reset call when the required size merely shrinks. So without a
+// reset the effect keeps reading LUTs built for the old geometry.
+//
+// Most cube_fx effects mask this by accident, because their cube/flat mode
+// flag flips when cfx_isCube() stops matching and that forces a rebuild. It
+// does not save the symmetric case: 48x48 -> 24x24 with both mirrors on is
+// still square, still reads as a cube, and quietly renders through stale LUTs.
+enum : uint8_t { AUI_SO_MIRROR = 0, AUI_SO_REVERSE, AUI_SO_MIRROR_Y, AUI_SO_REVERSE_Y, AUI_SO_COUNT };
+static const char *AUI_SEGOPT[AUI_SO_COUNT] = {"Mirror","Reverse","Mirror Y","Reverse Y"};
 
 // Rows on the main menu. Kept as an enum rather than bare numbers in auiClick()
 // because inserting VU Meter at 1 renumbered everything below it, and a switch
@@ -224,7 +242,7 @@ static uint8_t  auiSegSel = 0;
 static uint32_t auiRebootAt = 0;         // millis() to fire at. 0 = not armed
 static bool     auiChordArmed = false;   // a two-button reboot hold is climbing
 
-static uint8_t  auiHue = 0, auiSat = 255;
+static uint8_t  auiHue = 0, auiSat = 255, auiVal = 255;
 static char     auiToast[AUI_TITLE_LEN] = {0};
 
 // forward declarations - the event handlers at the bottom call almost
@@ -413,21 +431,21 @@ static void auiPaletteName(uint8_t p, char *out, uint8_t n) {
   snprintf(out, n, "Palette %u", (unsigned)p);
 }
 
-// Local HSV at full value. Deliberately not FastLED's hsv2rgb_rainbow: which
-// colour helpers WLED re-exports has moved between 0.14, 0.15 and 0.16, and
-// twelve lines here is cheaper than a build that breaks on the next merge.
-static void auiHsv(uint8_t h, uint8_t s, uint8_t &r, uint8_t &g, uint8_t &b) {
+// Local HSV. Deliberately not FastLED's hsv2rgb_rainbow: which colour helpers
+// WLED re-exports has moved between 0.14, 0.15 and 0.16, and fourteen lines
+// here is cheaper than a build that breaks on the next merge.
+static void auiHsv(uint8_t h, uint8_t s, uint8_t v, uint8_t &r, uint8_t &g, uint8_t &b) {
   const uint8_t region = h / 43, rem = (uint8_t)((h - region * 43) * 6);
-  const uint8_t p = (uint8_t)((255 * (255 - s)) >> 8);
-  const uint8_t q = (uint8_t)((255 * (255 - ((s * rem) >> 8))) >> 8);
-  const uint8_t t = (uint8_t)((255 * (255 - ((s * (255 - rem)) >> 8))) >> 8);
+  const uint8_t p = (uint8_t)((v * (255 - s)) >> 8);
+  const uint8_t q = (uint8_t)((v * (255 - ((s * rem) >> 8))) >> 8);
+  const uint8_t t = (uint8_t)((v * (255 - ((s * (255 - rem)) >> 8))) >> 8);
   switch (region) {
-    case 0:  r = 255; g = t;   b = p;   break;
-    case 1:  r = q;   g = 255; b = p;   break;
-    case 2:  r = p;   g = 255; b = t;   break;
-    case 3:  r = p;   g = q;   b = 255; break;
-    case 4:  r = t;   g = p;   b = 255; break;
-    default: r = 255; g = p;   b = q;   break;
+    case 0:  r = v; g = t; b = p; break;
+    case 1:  r = q; g = v; b = p; break;
+    case 2:  r = p; g = v; b = t; break;
+    case 3:  r = p; g = q; b = v; break;
+    case 4:  r = t; g = p; b = v; break;
+    default: r = v; g = p; b = q; break;
   }
 }
 
@@ -450,6 +468,7 @@ static int32_t auiGet(uint8_t id) {
     case AUI_P_O3:        return sg.check3 ? 1 : 0;
     case AUI_P_HUE:       return auiHue;
     case AUI_P_SAT:       return auiSat;
+    case AUI_P_VAL:       return auiVal;
     case AUI_P_CCT:       return sg.cct;
     case AUI_P_SEG:       return auiSegSel;
     default:              return 0;
@@ -478,7 +497,13 @@ static void auiSet(uint8_t id, int32_t v) {
   Segment &sg = auiSeg();
   switch (id) {
     case AUI_P_BRI:       bri = (uint8_t)v; break;
-    case AUI_P_FX:        sg.setMode((uint8_t)v); break;
+    // true = load the effect's baked-in default speed/intensity/custom
+    // sliders/checks/palette, same as the web UI does on every effect pick
+    // (json.cpp passes "fxdef"). Without it Segment::setMode() defaults to
+    // false and silently carries over whatever the PREVIOUS effect's sliders
+    // were, which is why the OLED menu's defaults looked wrong against the
+    // web UI's.
+    case AUI_P_FX:        sg.setMode((uint8_t)v, true); break;
     case AUI_P_PAL:       sg.setPalette(auiPalId((int16_t)v)); break;
     case AUI_P_SPEED:     sg.speed = (uint8_t)v; break;
     case AUI_P_INTENSITY: sg.intensity = (uint8_t)v; break;
@@ -490,10 +515,12 @@ static void auiSet(uint8_t id, int32_t v) {
     case AUI_P_O3:        sg.check3 = v != 0; break;
     case AUI_P_CCT:       sg.setCCT((uint8_t)v); break;
     case AUI_P_SEG:       auiSegSel = (uint8_t)v; return;      // no state push
-    case AUI_P_HUE: case AUI_P_SAT: {
-      if (id == AUI_P_HUE) auiHue = (uint8_t)v; else auiSat = (uint8_t)v;
+    case AUI_P_HUE: case AUI_P_SAT: case AUI_P_VAL: {
+      if      (id == AUI_P_HUE) auiHue = (uint8_t)v;
+      else if (id == AUI_P_SAT) auiSat = (uint8_t)v;
+      else                      auiVal = (uint8_t)v;
       uint8_t r, g2, b2;
-      auiHsv(auiHue, auiSat, r, g2, b2);
+      auiHsv(auiHue, auiSat, auiVal, r, g2, b2);
       sg.setColor(0, RGBW32(r, g2, b2, 0));
       break;
     }
@@ -508,6 +535,7 @@ static void auiParamName(uint8_t id, char *out, uint8_t n) {
     case AUI_P_BRI:       auiStr(out, "Brightness", n); return;
     case AUI_P_HUE:       auiStr(out, "Hue", n); return;
     case AUI_P_SAT:       auiStr(out, "Saturation", n); return;
+    case AUI_P_VAL:       auiStr(out, "Value", n); return;
     case AUI_P_CCT:       auiStr(out, "CCT", n); return;
     case AUI_P_SEG:       auiStr(out, "Segment", n); return;
     case AUI_P_FX:        auiStr(out, "Effect", n); return;
@@ -679,10 +707,10 @@ static const char *AUI_ROOT[RT_COUNT] = {
   "Brightness","Colour","Presets","Segment","System"};
 // AUI_FILT lives up in the effect-list section, next to the prefix table it
 // has to stay in step with.
-static const char *AUI_COL[3]  = {"Hue","Saturation","CCT"};
-#define AUI_SYS_COUNT 7
+static const char *AUI_COL[4]  = {"Hue","Saturation","Value","CCT"};
+#define AUI_SYS_COUNT 8
 static const char *AUI_SYS[AUI_SYS_COUNT] = {
-  "Network","Calibrate gyro","Level now","Clear level trim",
+  "Power","Network","Calibrate gyro","Level now","Clear level trim",
   "Lock knob","Save settings","Reboot"};
 
 static void auiRowText(int16_t i, char *out, uint8_t n) {
@@ -700,7 +728,7 @@ static void auiRowText(int16_t i, char *out, uint8_t n) {
       else                                  snprintf(out, n, "%-12s %3d", nm, (int)v);
       break;
     }
-    case SC_COLOUR:   auiStr(out, AUI_COL[i % 3], n); break;
+    case SC_COLOUR:   auiStr(out, AUI_COL[i % 4], n); break;
     case SC_PRESETS: {
 #if AUI_PRESET_NAMES
       String nm;
@@ -710,6 +738,18 @@ static void auiRowText(int16_t i, char *out, uint8_t n) {
       break;
     }
     case SC_SEG:      snprintf(out, n, "Segment %d", (int)i); break;
+    case SC_SEGOPT: {
+      const Segment &sg = auiSeg();
+      bool v = false;
+      switch ((uint8_t)i % AUI_SO_COUNT) {
+        case AUI_SO_MIRROR:    v = sg.mirror;    break;
+        case AUI_SO_REVERSE:   v = sg.reverse;   break;
+        case AUI_SO_MIRROR_Y:  v = sg.mirror_y;  break;
+        case AUI_SO_REVERSE_Y: v = sg.reverse_y; break;
+      }
+      snprintf(out, n, "%-12s %s", AUI_SEGOPT[(uint8_t)i % AUI_SO_COUNT], v ? "on" : "off");
+      break;
+    }
     case SC_SYSTEM:   auiStr(out, AUI_SYS[i % AUI_SYS_COUNT], n); break;
     case SC_NET:      auiNetRow(i, out, n); return;      // already terminated
     default:          out[0] = 0; break;
@@ -797,7 +837,7 @@ static void auiRefresh() {
       break;
 
     case SC_COLOUR:
-      v.kind = AUI_V_LIST; v.count = 3;
+      v.kind = AUI_V_LIST; v.count = 4;
       auiStr(v.title, "Colour", AUI_TITLE_LEN); v.crumb[0] = 0;
       break;
 
@@ -811,6 +851,12 @@ static void auiRefresh() {
       v.kind = AUI_V_LIST; v.count = strip.getSegmentsNum();
       auiStr(v.title, "Segment", AUI_TITLE_LEN); v.crumb[0] = 0;
       v.live = auiSegSel;
+      break;
+
+    case SC_SEGOPT:
+      v.kind = AUI_V_LIST; v.count = AUI_SO_COUNT;
+      snprintf(v.title, AUI_TITLE_LEN, "Segment %d", (int)auiSegSel);
+      v.crumb[0] = 0;
       break;
 
     case SC_SYSTEM:
@@ -906,26 +952,27 @@ static void auiTogglePower() {
 
 static void auiDoSystem(int16_t i) {
   switch (i) {
-    case 0: auiPush(SC_NET); break;
-    case 1:
+    case 0: auiTogglePower(); break;
+    case 1: auiPush(SC_NET); break;
+    case 2:
       if (aceImuAction) { aceImuAction(1); auiToastSet("hold still...", 2500); }
       else auiToastSet("no IMU driver");
       break;
-    case 2:
+    case 3:
       if (aceImuAction) { aceImuAction(2); auiToastSet("levelled"); }
       else auiToastSet("no IMU driver");
       break;
-    case 3:
+    case 4:
       if (aceImuAction) { aceImuAction(3); auiToastSet("trim cleared"); }
       else auiToastSet("no IMU driver");
       break;
-    case 4: aceUi().lockOn = true; auiToastSet("locked - hold 2s to free", 1500); break;
-    case 5: auiSaveConfig(); auiToastSet("saved"); break;
+    case 5: aceUi().lockOn = true; auiToastSet("locked - hold 2s to free", 1500); break;
+    case 6: auiSaveConfig(); auiToastSet("saved"); break;
     // Through the confirm screen, not straight to the flag. A reboot from a
     // menu row is one detent away from Save settings, and "I nudged the knob
     // and the cube restarted mid-set" is not a bug report anyone should file.
     // The two-button chord skips this because the chord IS the confirmation.
-    case 6: auiConfirmKind = AUI_CF_REBOOT; auiConfirmAct = 0; auiPush(SC_CONFIRM); break;
+    case 7: auiConfirmKind = AUI_CF_REBOOT; auiConfirmAct = 0; auiPush(SC_CONFIRM); break;
     default: break;
   }
 }
@@ -1078,7 +1125,8 @@ static void auiClick(uint8_t enc) {
     }
 
     case SC_COLOUR:
-      auiEditParam = (cur == 0) ? AUI_P_HUE : (cur == 1 ? AUI_P_SAT : AUI_P_CCT);
+      auiEditParam = (cur == 0) ? AUI_P_HUE : (cur == 1 ? AUI_P_SAT :
+                     (cur == 2 ? AUI_P_VAL : AUI_P_CCT));
       auiPush(SC_EDIT);
       break;
 
@@ -1087,7 +1135,22 @@ static void auiClick(uint8_t enc) {
       auiToastSet("preset loaded", 900);
       break;
 
-    case SC_SEG: auiSegSel = (uint8_t)cur; auiBuildParams(); auiRefresh(); break;
+    case SC_SEG: auiSegSel = (uint8_t)cur; auiBuildParams(); auiPush(SC_SEGOPT); break;
+
+    case SC_SEGOPT: {
+      Segment &sg = auiSeg();
+      switch (cur) {
+        case AUI_SO_MIRROR:    sg.mirror    = !sg.mirror;    break;
+        case AUI_SO_REVERSE:   sg.reverse   = !sg.reverse;   break;
+        case AUI_SO_MIRROR_Y:  sg.mirror_y  = !sg.mirror_y;  break;
+        case AUI_SO_REVERSE_Y: sg.reverse_y = !sg.reverse_y; break;
+        default: break;
+      }
+      sg.markForReset();          // see the note on AUI_SO_* - geometry may have changed
+      auiApplied();
+      auiRefresh();
+      break;
+    }
     case SC_SYSTEM: auiDoSystem(cur); break;
     case SC_NET: auiPop(); break;               // any click leaves the page
 

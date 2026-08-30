@@ -112,6 +112,43 @@
   #define MX_HUE_RATE 5         // palette drift
 #endif
 
+// ---------------------------------------------------------------------------
+// GLYPHS
+// ---------------------------------------------------------------------------
+// A single LED has no internal shape, so "a character" can only exist by
+// grouping several adjacent columns into one cell and using a tiny bitmap
+// font to decide which of those pixels are lit. MX_GLYPH_W columns share one
+// stream (same head position/speed/brightness - they have to, to draw one
+// coherent glyph), and MX_GLYPH_H rows of the trail are one character tall.
+//
+// These are stylised strokes, not actual katakana - there is no readable
+// font at 3x5, so this aims for "looks like falling code" rather than
+// literal characters. Bit 2 is the left column, bit 0 the right column.
+#ifndef MX_GLYPH_W
+  #define MX_GLYPH_W 3
+#endif
+#ifndef MX_GLYPH_H
+  #define MX_GLYPH_H 5
+#endif
+#ifndef MX_GLYPH_BG
+  #define MX_GLYPH_BG 55        // brightness (of 255) for the non-ink part of a glyph cell
+#endif
+#define MX_GLYPH_COUNT 12
+static const uint8_t MX_FONT[MX_GLYPH_COUNT][MX_GLYPH_H] PROGMEM = {
+  {0b010, 0b010, 0b010, 0b010, 0b010},   // bar
+  {0b101, 0b101, 0b101, 0b101, 0b111},   // legs
+  {0b111, 0b010, 0b010, 0b010, 0b010},   // flag
+  {0b010, 0b010, 0b010, 0b010, 0b111},   // foot
+  {0b010, 0b111, 0b010, 0b010, 0b010},   // cross
+  {0b111, 0b101, 0b101, 0b101, 0b111},   // box
+  {0b100, 0b100, 0b010, 0b001, 0b001},   // zigzag
+  {0b101, 0b000, 0b101, 0b000, 0b101},   // dots
+  {0b111, 0b000, 0b000, 0b111, 0b000},   // two bars
+  {0b100, 0b100, 0b111, 0b001, 0b001},   // step
+  {0b111, 0b000, 0b111, 0b000, 0b111},   // three bars
+  {0b000, 0b010, 0b111, 0b010, 0b000},   // diamond
+};
+
 #define MX_ST_MODE 0
 #define MX_ST_CLK  1            // + 2, fx_dt8
 #define MX_ST_ACC  3            // + 4, spawn accumulator (uint16)
@@ -153,7 +190,7 @@ static inline int mx_edge(int t, int den, int B) {
 // the top face. Walls follow cfx_buildBand's fold order exactly, so this ring
 // agrees with every other effect that walks the band.
 // ---------------------------------------------------------------------------
-static void mx_buildMap(uint8_t *col, uint8_t *dep, uint8_t *tsp,
+static void mx_buildMap(uint8_t *col, uint8_t *dep, uint8_t *tsp, uint8_t *lcol,
                         int cols, int rows, bool cube, int B,
                         int ncol, int topd, int depShift) {
   uint16_t cnt[MX_TOPD_MAX];
@@ -164,13 +201,16 @@ static void mx_buildMap(uint8_t *col, uint8_t *dep, uint8_t *tsp,
       const size_t i = (size_t)y * cols + x;
 
       if (!cube) {                                   // flat: straight down
-        col[i] = (uint8_t)(((uint32_t)x * (uint32_t)ncol) / (uint32_t)cols);
+        int cg = x / MX_GLYPH_W;
+        if (cg >= ncol) cg = ncol - 1;                // extremely wide panel: last group absorbs the remainder
+        col[i]  = (uint8_t)cg;
+        lcol[i] = (uint8_t)(x % MX_GLYPH_W);
         dep[i] = (uint8_t)(depShift ? ((y * 255) / (rows - 1)) : y);
         continue;
       }
 
       const int bx = x / B, by = y / B, lx = x % B, ly = y % B;
-      if (bx != 1 && by != 1) { col[i] = 255; dep[i] = 0; continue; }   // gap corner
+      if (bx != 1 && by != 1) { col[i] = 255; dep[i] = 0; lcol[i] = 0; continue; }   // gap corner
 
       if (bx == 1 && by == 1) {                      // TOP: radial, centre out
         const int ax = 2 * lx - (B - 1), ay = 2 * ly - (B - 1);
@@ -180,7 +220,7 @@ static void mx_buildMap(uint8_t *col, uint8_t *dep, uint8_t *tsp,
         dep[i] = (uint8_t)d;
         if (d < MX_TOPD_MAX) cnt[d]++;
 
-        if (r2 == 0) { col[i] = 0; continue; }       // dead centre, odd B only
+        if (r2 == 0) { col[i] = 0; lcol[i] = 0; continue; }   // dead centre, odd B only
 
         // An exact diagonal leaves through a CORNER of the ring, and the tie
         // has to be broken by quadrant rather than folded into one of the two
@@ -201,7 +241,10 @@ static void mx_buildMap(uint8_t *col, uint8_t *dep, uint8_t *tsp,
           c = (ay < 0) ? ((ax < 0) ? 0 : B)          // NW / NE corner
                        : ((ax > 0) ? (2 * B) : (3 * B));  // SE / SW corner
         }
-        col[i] = (uint8_t)c;
+        // Reduce to the same grouped-stream space the walls use below, so a
+        // stream born at the rim lines up with the wide column it pours into.
+        col[i]  = (uint8_t)(c / MX_GLYPH_W);
+        lcol[i] = 0;
         continue;
       }
 
@@ -210,7 +253,8 @@ static void mx_buildMap(uint8_t *col, uint8_t *dep, uint8_t *tsp,
       else if (bx == 2) { bu = B + ly;                 bv = lx;         }  // EAST
       else if (by == 2) { bu = 2 * B + B - 1 - lx;     bv = ly;         }  // SOUTH
       else              { bu = 3 * B + B - 1 - ly;     bv = B - 1 - lx; }  // WEST
-      col[i] = (uint8_t)bu;
+      col[i]  = (uint8_t)(bu / MX_GLYPH_W);
+      lcol[i] = (uint8_t)(bu % MX_GLYPH_W);
       dep[i] = (uint8_t)(topd + bv);
     }
   }
@@ -309,10 +353,14 @@ static FX_RET mode_matrix_rain() {
   const bool cube    = cubeRaw && topd <= MX_TOPD_MAX && (4 * B) <= MX_MAXCOL;
 
   const int depShift = (!cube && rows > 256) ? 1 : 0;
-  const int ncol     = cube ? (4 * B) : ((cols > MX_MAXCOL) ? MX_MAXCOL : cols);
+  // Grouped into MX_GLYPH_W-wide streams, so each stream can draw one whole
+  // character rather than a single pixel - see the GLYPHS block up top.
+  const int ncolPhys  = cube ? (4 * B) : cols;
+  const int ncolGroup = (ncolPhys + MX_GLYPH_W - 1) / MX_GLYPH_W;
+  const int ncol      = (ncolGroup > MX_MAXCOL) ? MX_MAXCOL : ncolGroup;
   const int dmax     = cube ? (topd + B - 1) : (depShift ? 255 : (rows - 1));
 
-  if (!SEGENV.allocateData(6 * (size_t)ncol + 2 * n + MX_TOPD_MAX + 16 + MX_ST_LEN)) {
+  if (!SEGENV.allocateData(6 * (size_t)ncol + 3 * n + MX_TOPD_MAX + 16 + MX_ST_LEN)) {
     SEGMENT.fill(SEGCOLOR(0)); FX_DONE;
   }
 
@@ -325,13 +373,14 @@ static FX_RET mode_matrix_rain() {
   C.ncol = ncol;
   uint8_t *col  = C.hue + ncol;
   uint8_t *dep  = col + n;
-  uint8_t *tsp  = dep + n;
+  uint8_t *lcol = dep + n;
+  uint8_t *tsp  = lcol + n;
   uint8_t *spec = tsp + MX_TOPD_MAX;
   uint8_t *st   = spec + 16;
 
   const uint8_t want = (uint8_t)(cube ? 1 : 2);
   if (SEGENV.call == 0 || st[MX_ST_MODE] != want) {
-    mx_buildMap(col, dep, tsp, cols, rows, cube, B, ncol, topd, depShift);
+    mx_buildMap(col, dep, tsp, lcol, cols, rows, cube, B, ncol, topd, depShift);
     for (int k = 0; k < ncol; k++) { C.pos[k] = 0; C.bri[k] = 0; C.len[k] = 0; }
     for (int k = 0; k < 16; k++)   spec[k] = 0;
     for (int k = 0; k < MX_ST_LEN; k++) st[k] = 0;
@@ -410,11 +459,11 @@ static FX_RET mode_matrix_rain() {
 
   // --- levels ------------------------------------------------------------------
   const uint8_t drive  = cfx_drive(vol, 1.3f, 40 + (SEGMENT.intensity >> 1));
-  const int     flickMs = 220 - (((int)SEGMENT.custom3 * 180) >> 8);   // 220 .. 40 ms
-  const uint8_t tick    = (uint8_t)(strip.now / (uint32_t)flickMs);
-  const int     flickA  = (((int)SEGMENT.custom3 * 46) >> 8);          // flash threshold
-  const int     flickB  = flickA * 2;                                  // dim threshold
-  static const uint8_t MX_WHITE[3] = {255, 140, 55};
+  const int      flickMs = 220 - (((int)SEGMENT.custom3 * 180) >> 8);  // 220 .. 40 ms
+  // 32-bit on purpose: the staggered mutation below divides (tick + phase),
+  // and letting an 8-bit tick wrap would jolt every glyph at once each wrap.
+  const uint32_t tick    = strip.now / (uint32_t)flickMs;
+  static const uint8_t MX_WHITE[2] = {130, 45};
 
   // Per-ring level for the top face: the group-overlap dim and the emergence
   // ramp folded together, once a frame instead of once a pixel.
@@ -457,13 +506,35 @@ static FX_RET mode_matrix_rain() {
 
       if (!lum) { SEGMENT.setPixelColorXY(x, y, 0); continue; }
 
-      // Glyph flicker: cells behind the head change every flickMs, some
-      // flashing bright, some dropping out. The head never flickers - it is
-      // the one part of a stream that has to read as solid.
-      if (dist >= 1 && flickA) {
-        const uint8_t h = mx_hash(cBest, d, tick);
-        if      (h < flickA) lum = qadd8(lum, 110);
-        else if (h < flickB) lum = scale8(lum, 130);
+      // Glyph mask: on the walls (not the top-face pool), the surface is cut
+      // into a fixed grid of MX_GLYPH_W x MX_GLYPH_H character cells, and each
+      // cell renders one bitmap glyph.
+      //
+      // The grid is keyed off ABSOLUTE depth, so the characters stay put on
+      // the wall and a falling stream simply lights the ones it passes over -
+      // which is what the film does. Keying it off `dist` (distance behind the
+      // head) instead tied the grid to the moving head, so the whole pattern
+      // slid upward through the trail as the stream fell.
+      //
+      // The mask depends only on WHERE a pixel is, never on the stream, so the
+      // head is masked too - a solid unmasked head would punch a blank block
+      // through the character it is standing on.
+      if (d >= topd) {
+        const int wd       = d - topd;             // rows down the wall, 0 at the fold
+        const int charIdx  = wd / MX_GLYPH_H;
+        const int localRow = wd % MX_GLYPH_H;
+        // Per-cell phase so cells do not all mutate on the same tick - hashing
+        // straight off `tick` flipped every glyph on the cube simultaneously,
+        // which reads as the whole field blinking rather than as code
+        // churning. The /3 spreads them over three ticks (and slows mutation
+        // to a third of the Glyph rate slider, which is about right for this).
+        const uint32_t phase = (uint32_t)mx_hash(cBest, charIdx, 0);
+        const uint32_t gSeq  = (tick + phase) / 3;
+        const uint8_t  gId   = mx_hash(cBest, charIdx, (int)gSeq) % MX_GLYPH_COUNT;
+        const uint8_t bits = pgm_read_byte(&MX_FONT[gId][localRow]);
+        const int lc = lcol[i];
+        const bool ink = (bits >> (MX_GLYPH_W - 1 - lc)) & 1;
+        if (!ink) lum = scale8(lum, MX_GLYPH_BG);
       }
 
       const uint8_t idx = (uint8_t)(hueBase + (C.hue[cBest] >> 2)
@@ -471,7 +542,7 @@ static FX_RET mode_matrix_rain() {
       uint32_t rgb = SEGMENT.color_from_palette(idx, false, false, 0);
 
       const int wi = (dist < 0) ? 0 : dist;
-      if (wi < 3) {                                  // head lifted toward white
+      if (wi < 2) {                                  // head lifted toward white, subtly
         const uint8_t amt = MX_WHITE[wi];
         const int r = (int)((rgb >> 16) & 0xFF), g = (int)((rgb >> 8) & 0xFF),
                   b = (int)(rgb & 0xFF);
@@ -487,7 +558,7 @@ static FX_RET mode_matrix_rain() {
 }
 
 static const char _data_FX_MODE_MATRIX_RAIN[] PROGMEM =
-  "Ace 3-D Matrix Rain@Fall speed,Glow,Density,Trail,Flicker,Spawn on beat,Spectrum ring,Flat mode;;!;2f;sx=130,ix=150,c1=120,c2=140,c3=120,o1=1,o2=1";
+  "Ace 3-D Matrix Rain@Fall speed,Glow,Density,Trail,Glyph rate,Spawn on beat,Spectrum ring,Flat mode;;!;2f;sx=130,ix=150,c1=120,c2=140,c3=120,o1=1,o2=1";
 
 
 // ---------------------------------------------------------------------------

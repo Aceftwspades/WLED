@@ -111,6 +111,13 @@
 #ifndef PL_HUE_RATE
   #define PL_HUE_RATE 6        // palette drift when Tone colour is off
 #endif
+// How much level the gaps between bands lose, 0..255. 0 = flat wash (no
+// negative space), 255 = gaps go fully black. Applied as a MULTIPLIER on the
+// level rather than a subtraction, so raising it deepens the gaps without ever
+// pushing the band cores past 255 - see the note at the pixel loop.
+#ifndef PL_BAND_DEPTH
+  #define PL_BAND_DEPTH 200
+#endif
 
 // state block, after the three coordinate LUTs
 #define PL_ST_MODE 0
@@ -348,9 +355,26 @@ static FX_RET mode_ace_plasma() {
       const int sum = sA * ampA + sB * ampB + sC * ampC;
       const uint8_t v = (uint8_t)(128 + ((sum * inv) >> 16));
 
+      // Negative space: level follows how far v sits from the wave's neutral
+      // point (128). Without this the whole field sat at one near-constant
+      // brightness and bands showed up only as a colour change, with no dark
+      // gap ever separating them.
+      //
+      // It scales the level instead of being added to it. Adding meant the
+      // band contrast and the Glow floor fought for the same headroom: at high
+      // Glow, or just a loud passage, the sum ran past 255 and every band core
+      // clipped to flat white, losing exactly the detail the bands are for.
+      // As a multiplier the crest can only ever reach the level Glow already
+      // asked for, so nothing clips and PL_BAND_DEPTH purely controls how deep
+      // the troughs go.
+      const int away = (int)v - 128;                           // -128..127
+      const int mag  = (away < 0) ? -away : away;              // 0..128
+      const int fac  = (255 - PL_BAND_DEPTH) + ((mag * PL_BAND_DEPTH) >> 7);
+
       int lum = lumBase + ((w * PL_LUM_SWING) >> 8) + ripLum;
       if (lum < 0)   lum = 0;
       if (lum > 255) lum = 255;
+      lum = (lum * fac) >> 8;
 
       SEGMENT.setPixelColorXY(x, y,
         SEGMENT.color_from_palette((uint8_t)(v + hue), false, false, 0, (uint8_t)lum));
