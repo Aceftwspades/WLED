@@ -69,11 +69,6 @@ static void rb_turn(uint8_t *col, int axis, int layer, int turns) {
         }
   }
 }
-static inline uint32_t rb_scale(uint32_t c, uint8_t s) {
-  return RGBW32(scale8((uint8_t)(c >> 16), s), scale8((uint8_t)(c >> 8), s),
-                scale8((uint8_t)c, s), 0);
-}
-
 static FX_RET mode_rubiks_cube() {
   if (!strip.isMatrix || !SEGMENT.is2D()) { SEGMENT.fill(SEGCOLOR(0)); FX_DONE; }
   const int cols = SEG_W, rows = SEG_H;
@@ -272,7 +267,7 @@ static FX_RET mode_rubiks_cube() {
       if (moving) lum += 28;                                 // slight lift while turning
       if (lum > 255) lum = 255;
 
-      SEGMENT.setPixelColorXY(x, y, rb_scale(face[cIdx], (uint8_t)lum));
+      SEGMENT.setPixelColorXY(x, y, mq_scale(face[cIdx], (uint8_t)lum));
     }
   }
   FX_DONE;

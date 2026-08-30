@@ -180,7 +180,8 @@ static FX_RET mode_tetris() {
 
   // where this piece leaves the top face, matching the band's own wrap order
   const int tc = B / cw, pw4 = gw / 4;
-  const int q4 = (pcol / (pw4 ? pw4 : 1)) & 3, offw = pcol % (pw4 ? pw4 : 1);
+  const int pc0col = pc[0] % gw;
+  const int q4 = (pc0col / (pw4 ? pw4 : 1)) & 3, offw = pc0col % (pw4 ? pw4 : 1);
   const int mm = (offw * tc) / (pw4 ? pw4 : 1);
   int exX, exY;
   if      (q4 == 0) { exX = mm;          exY = 0;          }

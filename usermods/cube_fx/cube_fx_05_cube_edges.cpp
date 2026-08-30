@@ -29,7 +29,7 @@ static FX_RET mode_cube_edges() {
   uint8_t *st = SEGENV.data + 2 * n;
   uint8_t *spec = st + 16;                 // smoothed 16-band spectrum
   // st[k*3], st[k*3+1] = spawn time (16 ms ticks), st[k*3+2] = alive, k = 0..3
-  // st[12] = previous beat state, st[13] = built flag
+  // st[13] = built flag, st[14]/st[15] = last pulse time (16 ms ticks)
 
   const bool cube = cfx_isCube(cols, rows);
   const int  B    = cube ? (cols / 3) : 1;
@@ -82,7 +82,6 @@ static FX_RET mode_cube_edges() {
   // what detached the bloom from the beat entirely.
   const uint16_t lastP = (uint16_t)st[14] | ((uint16_t)st[15] << 8);
   const bool rising = (peak > 64) && ((uint16_t)(nowT - lastP) > 10);
-  st[12] = peak ? 1 : 0;
   if (rising && SEGMENT.check1) {
     st[14] = (uint8_t)(nowT & 0xFF); st[15] = (uint8_t)(nowT >> 8);
     for (int k = 0; k < 4; k++) {

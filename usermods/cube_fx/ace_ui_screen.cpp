@@ -1097,7 +1097,12 @@ class AceUiScreenUsermod : public Usermod {
       resolveHdr();
       forceContrast(briFull);         // NOT a sentinel poke - see the header
       seenSerial = 0xFFFFFFFF;        // force a full redraw at the new layout
-      dirtyMask  = 0xFFFFFFFF;
+      // Only bits below th are ever cleared - by diff()'s row scan, nextRow()'s
+      // two th-bounded loops, or the single vuRow bit. Setting every bit above
+      // th here would leave dirtyMask permanently non-zero: flush() never gets
+      // a row for them, so the starvation counter climbs forever and every
+      // loop() pass calls flush() for nothing.
+      dirtyMask  = (th >= 32) ? 0xFFFFFFFFu : ((1UL << th) - 1UL);
     }
     return ok;
   }

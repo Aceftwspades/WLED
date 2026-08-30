@@ -23,14 +23,14 @@ static FX_RET mode_gyroid() {
   const int cols = SEG_W, rows = SEG_H;
   if (cols < 6 || rows < 6) { SEGMENT.fill(SEGCOLOR(0)); FX_DONE; }
   const size_t n = (size_t)cols * rows;
-  if (!SEGENV.allocateData(3 * n + 6 * 256 + 16)) { SEGMENT.fill(SEGCOLOR(0)); FX_DONE; }
+  if (!SEGENV.allocateData(3 * n + 2 * 256 + 16)) { SEGMENT.fill(SEGCOLOR(0)); FX_DONE; }
 
   int8_t  *cx = (int8_t *)SEGENV.data;
   int8_t  *cy = cx + n;
   int8_t  *cz = cy + n;
-  uint8_t *sT = (uint8_t *)(cz + n);    // sin tables, X Y Z
-  uint8_t *cT = sT + 3 * 256;           // cos tables, X Y Z
-  uint8_t *st = cT + 3 * 256;           // [0] built [1..2] clock
+  uint8_t *sT = (uint8_t *)(cz + n);    // sin table, shared by X, Y and Z - same phase
+  uint8_t *cT = sT + 256;               // cos table, shared by X, Y and Z
+  uint8_t *st = cT + 256;               // [0] built [1..2] clock
 
   const bool cube = cfx_isCube(cols, rows);
   const int  B    = cube ? (cols / 3) : 1;
@@ -60,11 +60,8 @@ static FX_RET mode_gyroid() {
 
   for (int i = 0; i < 256; i++) {
     const int v = i - 128;
-    const uint8_t ax = (uint8_t)((freq * v) / 256);
-    sT[i] = sin8_t(ax); cT[i] = cos8_t(ax);
-    const uint8_t ay = (uint8_t)((freq * v) / 256);
-    sT[256 + i] = sin8_t(ay); cT[256 + i] = cos8_t(ay);
-    sT[512 + i] = sT[256 + i]; cT[512 + i] = cT[256 + i];   // Y and Z share phase
+    const uint8_t a = (uint8_t)((freq * v) / 256);
+    sT[i] = sin8_t(a); cT[i] = cos8_t(a);
   }
 
   // morph target: slider plus mids, latched on the beat like the Chladnis.
@@ -97,8 +94,8 @@ static FX_RET mode_gyroid() {
     for (int x = 0; x < cols; x++, i++) {
       CFX_NET_SKIP(x);
       const int ux = (int)cx[i] + 128, uy = (int)cy[i] + 128, uz = (int)cz[i] + 128;
-      const int sx2 = (int)sT[ux] - 128, sy2 = (int)sT[256+uy] - 128, sz2 = (int)sT[512+uz] - 128;
-      const int cx2 = (int)cT[ux] - 128, cy2 = (int)cT[256+uy] - 128, cz2 = (int)cT[512+uz] - 128;
+      const int sx2 = (int)sT[ux] - 128, sy2 = (int)sT[uy] - 128, sz2 = (int)sT[uz] - 128;
+      const int cx2 = (int)cT[ux] - 128, cy2 = (int)cT[uy] - 128, cz2 = (int)cT[uz] - 128;
 
       const int32_t gyroid = (int32_t)sx2*cy2 + (int32_t)sy2*cz2 + (int32_t)sz2*cx2;
       const int32_t schwarz = ((int32_t)cx2 + cy2 + cz2) * 74;         // scaled to match range

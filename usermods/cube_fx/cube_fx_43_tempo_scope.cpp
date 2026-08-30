@@ -2,7 +2,7 @@
 #include "cube_fx_common.h"
 
 // ===========================================================================
-// 31. ACE 3-D TEMPO SCOPE  (diagnostic, not a "real" effect)
+// 43. ACE 3-D TEMPO SCOPE  (diagnostic, not a "real" effect)
 // ===========================================================================
 // Makes cfx_tempo() visible so its lock/predict/drop behaviour can be judged
 // on real hardware instead of guessed at from code:

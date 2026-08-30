@@ -17,7 +17,7 @@ cube_fx_00_cube_axes.cpp
 cube_fx_01_cube_noise.cpp
 cube_fx_02_cube_ripples.cpp
 ...
-cube_fx_30_maze_racers.cpp
+cube_fx_43_tempo_scope.cpp
 ```
 
 The number prefix matches the original numbering in the old file's effect list
@@ -69,7 +69,9 @@ effect's own file, same as before.
 ## Adding a new effect
 
 1. Copy `cube_fx_00_cube_axes.cpp` (the smallest one) to
-   `cube_fx_31_your_effect.cpp` — or pick any unused number.
+   `cube_fx_NN_your_effect.cpp`, where `NN` is the next free prefix - check the
+   folder listing rather than hardcoding a number here, since it drifts every
+   time an effect is added (currently 42 is the highest in use).
 2. Write `mode_your_effect()` and `_data_FX_MODE_YOUR_EFFECT`.
 3. Update the bottom `Usermod`/`REGISTER_USERMOD` block to match your names.
 4. That's it — no other file changes. Nothing else even needs to be recompiled

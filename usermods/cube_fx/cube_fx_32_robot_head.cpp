@@ -156,7 +156,7 @@ static void rh_eyes(int a, int b, uint8_t style, float eyeOpen, float cheerAmt,
     // brow: a short line above the eye, echoing the same tilt
     const int browY = EYE_Y + (int)(eyeRad * 1.35f) + (int)(tilt * 10.0f);
     if (rh_abs(ra) < hR && rh_abs(b - browY) < 3) {
-      const uint8_t l = (uint8_t)(40 + rh_abs(tilt) * 60);
+      const uint8_t l = (uint8_t)(40 + fabsf(tilt) * 60);
       if (l > bestLum) { bestLum = l; bestHue = accentHue; }
     }
   }
