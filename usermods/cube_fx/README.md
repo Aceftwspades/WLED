@@ -14,15 +14,22 @@ how the project builds.
 ```
 cube_fx_common.h         shared helpers - #include this, don't duplicate from it
 cube_fx_00_cube_axes.cpp
-cube_fx_01_cube_noise.cpp
-cube_fx_02_cube_ripples.cpp
+cube_fx_01_cube_ripples.cpp
+cube_fx_02_spectral_globe.cpp
 ...
-cube_fx_43_tempo_scope.cpp
+cube_fx_23_gyro_rain.cpp
 ```
 
-The number prefix matches the original numbering in the old file's effect list
-(there's no #10 — it was retired before this split and the gap was preserved
-rather than renumbering everything).
+The number prefix is just a stable sort order, contiguous from 00. It used to
+carry the original numbering from the old monolithic file, gaps and all, but
+once enough effects had been retired the gaps outnumbered the entries and the
+numbers stopped telling you anything. They are renumbered on a cull now; the
+prefix is a filing convention, not an identity.
+
+Effects are keyed by NAME everywhere it matters — WLED assigns the runtime
+effect id at boot in registration order, and `cube_fx_param_memory.cpp` hashes
+the effect name rather than that id for exactly this reason. So renumbering
+files never invalidates saved per-effect settings.
 
 Each `cube_fx_NN_name.cpp` is fully self-contained:
 - its `mode_x()` function
@@ -48,8 +55,8 @@ Holds only things genuinely shared across effects:
 - frame-timing helpers: `fx_dt`, `fx_dt8`, `fx_step`, `fx_fade`
 - `mq_scale` (pixel scale/dim — used by every effect from Question Block on)
 - the wall/face surface toolkit (`cfx_buildBand`, `lf_fwd`, `lf_inv`,
-  `cfx_buildDirLut`, `cfx_buildCells`) used by Question Block, Invaders, Snake,
-  Tetris, Tron, Highway, Life, Pac-Man and Split GEQ
+  `cfx_buildDirLut`, `cfx_buildCells`) used by Question Block, Tron, Split GEQ,
+  Matrix Rain and Breakout
 
 Two things got promoted into this header during the split even though they
 weren't textually next to the other shared helpers in the old file:
@@ -69,9 +76,9 @@ effect's own file, same as before.
 ## Adding a new effect
 
 1. Copy `cube_fx_00_cube_axes.cpp` (the smallest one) to
-   `cube_fx_NN_your_effect.cpp`, where `NN` is the next free prefix - check the
-   folder listing rather than hardcoding a number here, since it drifts every
-   time an effect is added (currently 42 is the highest in use).
+   `cube_fx_NN_your_effect.cpp`, where `NN` is one past the highest prefix in
+   the folder listing. Don't hardcode the number from this file - it drifts
+   every time an effect is added or the set is renumbered.
 2. Write `mode_your_effect()` and `_data_FX_MODE_YOUR_EFFECT`.
 3. Update the bottom `Usermod`/`REGISTER_USERMOD` block to match your names.
 4. That's it — no other file changes. Nothing else even needs to be recompiled

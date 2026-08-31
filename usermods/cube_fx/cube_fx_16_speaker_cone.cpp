@@ -2,7 +2,7 @@
 #include "cube_fx_common.h"
 
 // ===========================================================================
-// 29. CUBE SPEAKER
+// 16. CUBE SPEAKER
 // ===========================================================================
 // Every face becomes its own paper speaker cone: a bright dust-cap breathes
 // in and out with the bass envelope, faint ridges creep across the cone's

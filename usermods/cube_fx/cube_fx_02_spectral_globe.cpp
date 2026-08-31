@@ -2,7 +2,7 @@
 #include "cube_fx_common.h"
 
 // ===========================================================================
-// 3. SPECTRAL GLOBE
+// 2. SPECTRAL GLOBE
 // ===========================================================================
 // Spherical coordinates on the cube: latitude selects the frequency band, so
 // the spectrum forms rings that close around all four walls and cap at the

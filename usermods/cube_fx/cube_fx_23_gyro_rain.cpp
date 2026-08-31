@@ -3,7 +3,7 @@
 #include "cube_fx_imu.h"
 
 // ===========================================================================
-// 42. ACE GYRO RAIN
+// 23. ACE GYRO RAIN
 // ===========================================================================
 // Rain falling through the ROOM, with the cube held up in the middle of it.
 // Turn the cube and the streaks stay vertical; the surface just slides across

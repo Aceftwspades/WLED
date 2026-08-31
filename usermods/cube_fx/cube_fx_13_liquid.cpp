@@ -3,7 +3,7 @@
 #include "cube_fx_imu.h"
 
 // ===========================================================================
-// 25. ACE 3-D LIQUID  /  ACE GYRO LIQUID
+// 13. ACE 3-D LIQUID  /  ACE GYRO LIQUID
 // ===========================================================================
 // The first effect here that treats the cube as a VOLUME rather than a
 // surface. A tilting plane cuts through the solid and everything below it is

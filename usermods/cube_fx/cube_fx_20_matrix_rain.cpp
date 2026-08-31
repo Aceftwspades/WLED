@@ -2,7 +2,7 @@
 #include "cube_fx_audio.h"
 
 // ===========================================================================
-// 38. ACE 3-D MATRIX RAIN
+// 20. ACE 3-D MATRIX RAIN
 // ===========================================================================
 // Falling code. On a flat panel that is the effect everybody has already seen.
 // On the cube it needed one decision, and the decision is the whole file.

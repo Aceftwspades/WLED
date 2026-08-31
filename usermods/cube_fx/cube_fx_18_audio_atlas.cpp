@@ -3,7 +3,7 @@
 #include "cube_fx_imu.h"
 
 // ===========================================================================
-// 36. ACE 3-D AUDIO ATLAS
+// 18. ACE GYRO AUDIO ATLAS
 // ===========================================================================
 // Every analyzer this codebase has, on one cube, at once - and still readable.
 // Audio Scope is the diagnostic that proves the analyzers work; this is the

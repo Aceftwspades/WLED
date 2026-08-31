@@ -43,21 +43,31 @@
  * Cube-native audio-reactive effects for WLED (0.15 / 16.x / 17-dev)
  * ===========================================================================
  *
- *   Cube Axes        calibration - XYZ as RGB, verify the net mapping
- *   Cube Noise       3D noise tumbling through the cube surface
- *   Cube Ripples     beat-spawned spherical wavefronts crossing every edge
- *   Spectral Globe   latitude = frequency, azimuth folded into petals
- *   Cube Slice       tumbling plane of spectrum sweeping through the solid
- *   Cube Edges       edges lined, beat pulses edge<->centre, wave along edges
- *   Cube Frame       free-floating wireframe you can spin out of alignment
- *   Cube Chladni     nodal surface of a 3D box mode, cut by the cube's faces
- *   Cube Bloom       lobed shells, each shape fixed from the FFT at the beat
- *   Rubiks Cube      real 3x3 puzzle: scramble, then unwind on the beat
- *   Cube Plate       two-mode Chladni - broader, calmer sibling of Cube Chladni
- *   Cube Cell        Waving Cell's nested sines, evaluated on the 3D surface
- *   Cube Wire        edges only, beat pulses running ALONG them with trails
- *   Question Block   ? block -> smash -> item roulette -> the item's own show
- *   Simon / Invaders / Snake   games on the five faces and the wall cylinder
+ *   00 Cube Axes        calibration - XYZ as RGB, verify the net mapping
+ *   01 Cube Ripples     beat-spawned spherical wavefronts crossing every edge
+ *   02 Spectral Globe   latitude = frequency, azimuth folded into petals
+ *   03 Cube Slice       tumbling plane of spectrum sweeping through the solid
+ *   04 Cube Edges       edges lined, beat pulses edge<->centre, wave along edges
+ *   05 Cube Frame       free-floating wireframe you can spin out of alignment
+ *   06 Cube Chladni     nodal surface of a 3D box mode, cut by the cube's faces
+ *   07 Cube Bloom       lobed shells, each shape fixed from the FFT at the beat
+ *   08 Rubiks Cube      real 3x3 puzzle: scramble, then unwind on the beat
+ *   09 Cube Cell        Waving Cell's nested sines, evaluated on the 3D surface
+ *   10 Cube Wire        edges only, beat pulses running ALONG them with trails
+ *                       (+ Gyro Wire)
+ *   11 Question Block   ? block -> item roulette; shake hard and it shatters
+ *   12 Tron             light cycles on the five faces
+ *   13 Liquid           a level that stays level (+ Gyro Liquid)
+ *   14 Split GEQ        equator-split bars, or a circular GEQ on every face
+ *   15 Quadrant Labyrinth
+ *   16 Cube Speaker     the cube as a driver cone
+ *   17 DNA Helix
+ *   18 Audio Atlas      gyro-locked band map (Gyro)
+ *   19 Plasma           summed plane waves, one per band
+ *   20 Matrix Rain      glyph columns pouring off the lid and down the walls
+ *   21 Breakout         two-player, played from the encoders
+ *   22 Gyro Sand        a glass box of sand, poured by real gravity
+ *   23 Gyro Rain
  *
  * The idea: every pixel gets a 3D position on the cube's surface. Effects are
  * then functions of (X,Y,Z), so they are continuous across folds for free -
@@ -699,7 +709,7 @@ static void cfx_buildCube(int8_t *cx, int8_t *cy, int8_t *cz,
 
 // ---------------------------------------------------------------------------
 // Shared pixel/colour helper (originally introduced alongside Question Block,
-// reused from Simon onward through Maze Racers - promoted here so every
+// reused widely since - promoted here so every
 // effect file can reach it without depending on another effect's file).
 // ---------------------------------------------------------------------------
 static inline uint32_t mq_scale(uint32_t c, uint8_t s) {
@@ -710,7 +720,7 @@ static inline uint32_t mq_scale(uint32_t c, uint8_t s) {
 // ---------------------------------------------------------------------------
 // Shared surface toolkit: wall "band" unwrap, face forward/inverse projection,
 // direction lookup table, and pixel->cell mapping. Used by Question Block,
-// Invaders, Snake, Tetris, Tron, Highway, Life, Pac-Man and Split GEQ.
+// Tron, Split GEQ, Matrix Rain and Breakout.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Wall band: the four side faces are a seamless 4B x B cylinder. bu[] is the

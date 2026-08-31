@@ -920,6 +920,7 @@ static void auiPop() {
 // it was so a hold-to-home from six levels deep puts you back on the entry you
 // came in through, which is almost always the one you want next.
 static void auiHome() {
+  aceUiGameRelease();     // Home is the universal escape hatch; it frees the knobs too
   auiDepth = 1;
   auiToast[0] = 0;
   auiConfirmKind = AUI_CF_NONE;
@@ -984,6 +985,15 @@ static void auiTurn(uint8_t enc, int16_t d, bool shift) {
   AceUiBus &b = aceUi();
   const uint8_t role = enc < ACE_UI_MAX_ENC ? b.encRole[enc] : (uint8_t)AUI_ROLE_NAV;
 
+  // Game control outranks every role, MASTER included. Handing the knobs to a
+  // game and then having one of them still ride brightness would make the
+  // cube dim while you played, and the player has no way to know which knob
+  // was configured as Master.
+  if (aceUiGameActive()) {
+    if (enc < ACE_UI_MAX_ENC) b.game.axis[enc] = (int16_t)(b.game.axis[enc] + (shift ? d * 3 : d));
+    return;
+  }
+
   if (role == AUI_ROLE_MASTER) {
     auiSet(AUI_P_BRI, (int32_t)bri + d * (shift ? 10 : 1));
     b.view.hudUntil = millis() + 1200; auiRefresh(); return;
@@ -1047,6 +1057,16 @@ static void auiTurn(uint8_t enc, int16_t d, bool shift) {
 static void auiClick(uint8_t enc) {
   AceUiBus &b = aceUi();
   const uint8_t role = enc < ACE_UI_MAX_ENC ? b.encRole[enc] : (uint8_t)AUI_ROLE_NAV;
+
+  // While a game holds the knobs a click belongs to the game - it is the serve
+  // button. Checked before the MASTER role so a Master knob cannot cut the
+  // power mid-rally, and before the toast dismissal so serving does not get
+  // eaten by whatever message is on screen.
+  if (aceUiGameActive()) {
+    if (enc < ACE_UI_MAX_ENC && b.game.fire[enc] < 8) b.game.fire[enc]++;
+    return;
+  }
+
   if (role == AUI_ROLE_MASTER) { auiTogglePower(); return; }
 
   if (auiToast[0]) { auiToast[0] = 0; auiRefresh(); return; }
@@ -1071,8 +1091,21 @@ static void auiClick(uint8_t enc) {
       break;
 
     // Drilling in from the status page lands on the running effect's own
-    // parameters, which is the whole point of the entry.
-    case SC_NOWPLAY: auiBuildParams(); auiPush(SC_PARAMS); break;
+    // parameters, which is the whole point of the entry - UNLESS the running
+    // effect is asking for the knobs, in which case a click here hands them
+    // over and you are playing. Params stay reachable from the Params row on
+    // the main menu, which is where someone hunting for sliders looks anyway.
+    //
+    // Release is the existing 500 ms BACK hold, handled in auiBack().
+    case SC_NOWPLAY:
+      if (aceUiGameWanted()) {
+        aceUiGameRelease();          // start from a clean slate, then arm
+        b.game.active = true;
+        auiToastSet("knobs: paddles - hold to exit", 1400);
+        break;
+      }
+      auiBuildParams(); auiPush(SC_PARAMS);
+      break;
 
     // A click LEAVES the meter, same as the network page - there is nothing on
     // this screen to select, and a gesture that did nothing would be worse
@@ -1186,6 +1219,15 @@ static uint8_t auiHoldMark(uint8_t enc) {
 
 // 500 ms hold on a full-grammar knob, or any click on a back button.
 static void auiBack(uint8_t enc) {
+  // Handing the knobs back is what BACK means while a game holds them, and it
+  // has to be tested before the toast dismissal below - otherwise the very
+  // toast that says "hold to exit" would swallow the first exit attempt.
+  if (aceUiGameActive()) {
+    aceUiGameRelease();
+    auiToastSet("knobs: menu", 900);
+    return;
+  }
+
   if (auiToast[0]) { auiToast[0] = 0; auiRefresh(); return; }
 
   // On a preset row, a medium hold arms the save. Destructive actions never

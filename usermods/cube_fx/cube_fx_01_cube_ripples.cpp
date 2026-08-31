@@ -2,7 +2,7 @@
 #include "cube_fx_common.h"
 
 // ===========================================================================
-// 2. CUBE RIPPLES
+// 1. CUBE RIPPLES
 // ===========================================================================
 // Beats drop a point source somewhere on the surface; each expands as a
 // spherical shell through 3D space. Because the shell is a function of true

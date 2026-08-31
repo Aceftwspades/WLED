@@ -2,7 +2,7 @@
 #include "cube_fx_common.h"
 
 // ===========================================================================
-// 8. CUBE BLOOM
+// 7. CUBE BLOOM
 // ===========================================================================
 // Cube Ripples' sibling. Same expanding-shell idea, but every shell is a
 // different SHAPE, and the shape is fixed from the spectrum at the instant the

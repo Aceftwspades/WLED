@@ -2,7 +2,7 @@
 #include "cube_fx_common.h"
 
 // ===========================================================================
-// 29. QUADRANT LABYRINTH
+// 15. QUADRANT LABYRINTH
 // ===========================================================================
 // Each face is split into four quadrants meeting at the face's centre pixel
 // pair. Every quadrant gets its own randomly-carved perfect maze (recursive

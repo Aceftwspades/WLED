@@ -2,7 +2,7 @@
 #include "cube_fx_common.h"
 
 // ===========================================================================
-// 6. CUBE FRAME
+// 5. CUBE FRAME
 // ===========================================================================
 // The same edge skeleton, but as a free-floating wireframe that can be
 // rotated out of alignment with the physical cube. With all three spin rates

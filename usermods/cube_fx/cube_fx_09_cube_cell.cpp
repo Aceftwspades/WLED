@@ -2,7 +2,7 @@
 #include "cube_fx_common.h"
 
 // ===========================================================================
-// 12. CUBE CELL   (Waving Cell, made cube-native)
+// 9. CUBE CELL   (Waving Cell, made cube-native)
 // ===========================================================================
 // WLED's Waving Cell owes its look to two things worth keeping:
 //   1. a NESTED sine - a sine whose phase is itself a sine - which is what

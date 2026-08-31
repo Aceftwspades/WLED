@@ -2,7 +2,7 @@
 #include "cube_fx_common.h"
 
 // ===========================================================================
-// 7. CUBE CHLADNI
+// 6. CUBE CHLADNI
 // ===========================================================================
 // A flat Chladni figure is the nodal set of a plate mode. The cube version is
 // the nodal SURFACE of a 3D standing wave in a solid cube, intersected with

@@ -2,7 +2,7 @@
 #include "cube_fx_common.h"
 
 // ===========================================================================
-// 9. RUBIKS CUBE
+// 8. RUBIKS CUBE
 // ===========================================================================
 // Each 16-pixel face splits into a 3x3 of 4-pixel stickers with a 1-pixel dark
 // line between them and around the rim, which reads as the black plastic.

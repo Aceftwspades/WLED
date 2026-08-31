@@ -116,7 +116,7 @@
 //    "top up" and trims it out. Changing AxisX/Y/Z afterwards discards it
 //    automatically; the trim is stored in cube frame, and re-mapping moves the
 //    frame out from under it.
-// 5. Open "Ace 3-D IMU Axes". The horizon band must stay level in the room
+// 5. Open "Ace Gyro Sand". The horizon band must stay level in the room
 //    however you turn the cube, and tipping the top toward you must drop the
 //    band on the face you are looking at.
 // 6. Last check, and it catches a whole class of bug: the amber cross must sit
@@ -630,7 +630,7 @@ class AceImuUsermod : public Usermod {
     hw.add(buf); hw.add(F("&deg;C"));
 
     // The one line that tells you the throttle is doing its job: run a plain
-    // GEQ effect and this should read idle at ~8 Hz; switch to IMU Axes and it
+    // GEQ effect and this should read idle at ~8 Hz; switch to a Gyro effect and it
     // should read active at ~100 Hz within a frame.
     JsonArray rt = user.createNestedArray(F("IMU poll"));
     snprintf_P(buf, sizeof(buf), PSTR("%s, %u Hz, SDA %d SCL %d"),

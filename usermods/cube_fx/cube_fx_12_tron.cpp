@@ -2,7 +2,7 @@
 #include "cube_fx_common.h"
 
 // ===========================================================================
-// 19. ACE 3-D TRON
+// 12. ACE 3-D TRON
 // ===========================================================================
 // Cycles run over the WHOLE surface now, top face included, using the
 // directional transition table - so a cycle can climb a wall, cross the top

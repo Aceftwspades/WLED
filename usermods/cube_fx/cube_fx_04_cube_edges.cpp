@@ -2,7 +2,7 @@
 #include "cube_fx_common.h"
 
 // ===========================================================================
-// 5. CUBE EDGES
+// 4. CUBE EDGES
 // ===========================================================================
 // Lines the twelve edges of the cube, sends pulses travelling between the
 // edges and the face centres on each beat, and runs a wave along the edges

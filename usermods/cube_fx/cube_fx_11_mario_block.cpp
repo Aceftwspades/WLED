@@ -1,13 +1,14 @@
 #include "wled.h"
 #include "cube_fx_common.h"
+#include "cube_fx_imu.h"
 
 // ===========================================================================
-// 14. ACE 3-D QUESTION BLOCK
+// 11. ACE GYRO QUESTION BLOCK
 // ===========================================================================
 // The cube IS the block: all five faces carry the same 16x16 sprite, which is
 // the resolution the original was drawn at, so no scaling is needed.
 //
-// Cycle:  IDLE (glyph shimmers) -> SMASH (bursts outward) -> SPIN (item
+// Cycle:  IDLE (glyph shimmers) -> BUMP (bursts outward) -> SPIN (item
 // roulette, decelerating like a slot reel) -> RESULT (the item's own show,
 // held for a duration that belongs to that item).
 //
@@ -15,10 +16,54 @@
 // winner is simply steps % ITEMS, so the deceleration curve always lands
 // exactly on the item it stops at.
 //
+// ---------------------------------------------------------------------------
+// THE GYRO PART
+// ---------------------------------------------------------------------------
+// Knock the cube and the block takes the hit: imu.shake punches it into the
+// reel, imu.jolt lifts it as it is struck, and the glint on the question mark
+// travels with imu.heading so turning the cube moves the shine across it.
+//
+// BREAKING IT is deliberately hard to do by accident. It is not on a shake
+// threshold - a threshold fires on one spike, and one spike is what you get
+// carrying the cube across a room. It is on a RAGE METER that only violence
+// fills and that leaks the whole time, so the block breaks when you keep
+// shaking it and never when you knock it once. Fragments tumble out along
+// their own paths, thin out, and the block builds itself back.
+//
+// WITH NO SENSOR the cycle still runs on its timer and on the beat; there is
+// simply no way to punch or break it.
+//
 // Each wall needs its own rotation or the sprite reads sideways or upside
 // down once the net is folded. Those five numbers are in MQ_ROT.
 // ---------------------------------------------------------------------------
 #define MQ_ITEMS 6
+
+#define MQ_P_IDLE  0
+#define MQ_P_BUMP  1
+#define MQ_P_SPIN  2
+#define MQ_P_RES   3
+#define MQ_P_BREAK 4                 // reached only by shaking, never by the cycle
+
+#ifndef MQ_HIT_SHAKE
+  #define MQ_HIT_SHAKE 70            // a knock this hard punches the block
+#endif
+#ifndef MQ_RAGE_FULL
+  #define MQ_RAGE_FULL 250           // rage needed to shatter it
+#endif
+#ifndef MQ_RAGE_LEAK
+  #define MQ_RAGE_LEAK 4             // per 23 ms - what makes it need SUSTAINED shaking
+#endif
+#ifndef MQ_BREAK_MS
+  #define MQ_BREAK_MS 1500           // fragments out, then it reassembles
+#endif
+
+// Stable per-chunk scatter, so a fragment keeps one heading for the whole
+// break instead of shimmering between directions frame to frame.
+static inline uint8_t mq_chunkHash(int a, int b) {
+  uint32_t h = (uint32_t)a * 374761393u + (uint32_t)b * 668265263u;
+  h = (h ^ (h >> 13)) * 1274126177u;
+  return (uint8_t)(h >> 24);
+}
 
 // '.' transparent, '0'..'3' palette slots
 static const char *const MQ_BLOCK[16] = {
@@ -76,7 +121,8 @@ static FX_RET mode_mario_block() {
   const int cols = SEG_W, rows = SEG_H;
   if (cols < 8 || rows < 8) { SEGMENT.fill(SEGCOLOR(0)); FX_DONE; }
   if (!SEGENV.allocateData(16)) { SEGMENT.fill(SEGCOLOR(0)); FX_DONE; }
-  uint8_t *st = SEGENV.data;   // [0] phase [1..2] phase start [3] winner [4] steps
+  // [0] phase [1..2] phase start [3] winner [4] steps [5] rage [6..7] clock
+  uint8_t *st = SEGENV.data;
 
   const bool cube = cfx_isCube(cols, rows);
   const int  B    = cube ? (cols / 3) : 1;
@@ -90,32 +136,69 @@ static FX_RET mode_mario_block() {
   int bass, mid, treb;
   cfx_bands(fft, bass, mid, treb);
 
+  const CfxImuState &imu = cfx_imu();
+
   const uint16_t nowT = (uint16_t)strip.now;
-  if (SEGENV.call == 0) { st[0] = 0; st[1] = (uint8_t)nowT; st[2] = (uint8_t)(nowT >> 8); }
+  if (SEGENV.call == 0) { for (int k = 0; k < 16; k++) st[k] = 0;
+                          st[1] = (uint8_t)nowT; st[2] = (uint8_t)(nowT >> 8); }
   const uint16_t t0 = (uint16_t)st[1] | ((uint16_t)st[2] << 8);
   const uint16_t el = (uint16_t)(nowT - t0);
+  const uint16_t dt = fx_dt8(st + 6);
 
   const int holdMs  = 1500 + (int)SEGMENT.custom1 * 14;
   const int smashMs = 700;
   const int spinMs  = 900 + (255 - (int)SEGMENT.speed) * 7;
   const int resMs   = ((int)MQ_DUR[st[3] % MQ_ITEMS] * (64 + (int)SEGMENT.custom2)) / 192;
 
+  // --- rage: what it takes to actually break it -----------------------------
+  // Filled only by real violence and leaking constantly, so carrying the cube
+  // or knocking it once can never get there - the block breaks when you keep
+  // shaking it, which is the whole point of the gesture.
+  {
+    int rage = (int)st[5];
+    if (imu.shake > 80)  rage += (int)imu.shake >> 2;
+    if (imu.motion > 140) rage += ((int)imu.motion - 140) >> 3;
+    rage -= (int)fx_step(MQ_RAGE_LEAK, dt);
+    if (rage < 0) rage = 0; else if (rage > 255) rage = 255;
+    st[5] = (uint8_t)rage;
+  }
+
   // --- advance the state machine -------------------------------------------
   bool step = false;
   switch (st[0]) {
-    case 0: if (el > holdMs || (SEGMENT.check1 && peak && el > 600)) step = true; break;
-    case 1: if (el > smashMs) step = true; break;
-    case 2: if (el > spinMs)  step = true; break;
-    default: if (el > resMs)  step = true; break;
+    case MQ_P_IDLE:  if (el > holdMs || (SEGMENT.check1 && peak && el > 600)
+                         || (imu.shake > MQ_HIT_SHAKE && el > 400)) step = true; break;
+    case MQ_P_BUMP:  if (el > smashMs) step = true; break;
+    case MQ_P_SPIN:  if (el > spinMs)  step = true; break;
+    case MQ_P_BREAK: if (el > MQ_BREAK_MS) step = true; break;
+    default:         if (el > resMs)   step = true; break;
   }
   if (step) {
-    st[0] = (uint8_t)((st[0] + 1) & 3);
-    if (st[0] == 2) {                       // entering the reel: draw the result
+    // BREAK is not part of the ring - it is entered only by shaking and always
+    // falls back to IDLE, so the block reassembles rather than paying out an
+    // item for having been smashed.
+    st[0] = (uint8_t)((st[0] >= MQ_P_RES) ? MQ_P_IDLE : (st[0] + 1));
+    if (st[0] == MQ_P_SPIN) {               // entering the reel: draw the result
       st[4] = (uint8_t)(14 + hw_random16(18));
       st[3] = (uint8_t)(st[4] % MQ_ITEMS);
     }
     st[1] = (uint8_t)nowT; st[2] = (uint8_t)(nowT >> 8);
   }
+
+  // Rage overrides whatever the cycle was doing - a block being shaken apart
+  // does not wait politely for the roulette to finish.
+  if (st[5] >= MQ_RAGE_FULL && st[0] != MQ_P_BREAK) {
+    st[0] = MQ_P_BREAK;
+    st[5] = 0;
+    st[1] = (uint8_t)nowT; st[2] = (uint8_t)(nowT >> 8);
+  }
+
+  // Re-read the phase clock AFTER any transition. Rendering off the stale one
+  // meant the first frame of a new phase was drawn with the previous phase's
+  // elapsed time - harmless for a slow fade, but it would have shown the break
+  // fully exploded for one frame before restarting from nothing.
+  const uint16_t t0n = (uint16_t)st[1] | ((uint16_t)st[2] << 8);
+  const uint16_t elp = (uint16_t)(nowT - t0n);
 
   const int phase = st[0];
   const int item  = st[3] % MQ_ITEMS;
@@ -123,25 +206,32 @@ static FX_RET mode_mario_block() {
 
   // --- per-phase setup ------------------------------------------------------
   int   shrink = 256, dropout = 0, whiteout = 0, bob = 0, hueSpin = 0;
-  int   reelIdx = 0, reelFrac = 0;
-  if (phase == 1) {
-    const int u = (el * 255) / smashMs;                       // 0..255
+  int   reelIdx = 0, reelFrac = 0, breakU = 0;
+  if (phase == MQ_P_BUMP) {
+    const int u = (elp * 255) / smashMs;                      // 0..255
     shrink   = 256 - (u * 190) / 255;                         // sprite flies outward
     dropout  = (u > 60) ? ((u - 60) * 255) / 195 : 0;
     whiteout = (u < 40) ? (255 - (u * 255) / 40) : 0;
     if (SEGMENT.custom3) dropout = (dropout * (int)SEGMENT.custom3) / 31;
-  } else if (phase == 2) {
-    const int32_t uu = ((int32_t)el << 8) / (spinMs ? spinMs : 1);   // 0..256
+  } else if (phase == MQ_P_SPIN) {
+    const int32_t uu = ((int32_t)elp << 8) / (spinMs ? spinMs : 1);  // 0..256
     const int32_t inv = 256 - ((uu > 256) ? 256 : uu);
     const int32_t f = ((int32_t)st[4] * (65536 - inv * inv)) >> 8;   // ease-out
     reelIdx  = (int)(f >> 8);
     reelFrac = (int)(f & 0xFF);
     if (reelIdx > st[4]) { reelIdx = st[4]; reelFrac = 0; }
-  } else if (phase == 3) {
+  } else if (phase == MQ_P_RES) {
     bob = (int)((sin8_t((uint8_t)(strip.now >> 3)) - 128) * (fh / 12) / 128);
     if (item == 2) hueSpin = (int)(strip.now >> 3);            // star goes rainbow
+  } else if (phase == MQ_P_BREAK) {
+    breakU   = (elp * 255) / MQ_BREAK_MS;
+    if (breakU > 255) breakU = 255;
+    whiteout = (breakU < 30) ? (255 - (breakU * 255) / 30) : 0;   // the crack
   } else {
     if (SEGMENT.check2) bob = -(bass * (fh / 14)) / 255;       // block bounces on bass
+    // A knock lifts the block off its line, so the cube answers the hand even
+    // when the state machine has nothing to say yet.
+    bob -= ((int)imu.jolt * (fh / 12)) / 255;
   }
 
   SEGMENT.fill(SEGCOLOR(0));
@@ -171,14 +261,30 @@ static FX_RET mode_mario_block() {
       const uint32_t *pal = MQ_BPAL;
       uint8_t lum = drive;
 
-      if (phase == 1) {                                        // SMASH
+      if (phase == MQ_P_BREAK) {                               // SHATTER
+        // The block comes apart in 4x4 fragments. Each one keeps its own
+        // heading for the whole break (the hash is over the chunk, not the
+        // pixel), so it reads as pieces tumbling off rather than as the sprite
+        // dissolving where it stands.
+        const int cxk = gx >> 2, cyk = gy >> 2;
+        const uint8_t h = mq_chunkHash(cxk, cyk);
+        const int jx = (((int)(h & 7) - 3) * breakU) / 70;
+        const int jy = (((int)((h >> 3) & 7) - 3) * breakU) / 70;
+        const int expand = 256 + breakU * 2;                   // and the whole lot flies out
+        const int mx = 8 + (((gx - 8) - jx) * 256) / expand;
+        const int my = 8 + (((gy - 8) - jy) * 256) / expand;
+        if (mx >= 0 && mx < 16 && my >= 0 && my < 16) {
+          if ((int)hw_random8() >= (breakU * 210) / 255) ch = MQ_BLOCK[my][mx];
+        }
+        lum = (uint8_t)(((int)drive * (255 - breakU)) >> 8);
+      } else if (phase == MQ_P_BUMP) {                         // BUMP
         int mx = 8 + ((gx - 8) * 256) / shrink;
         int my = 8 + ((gy - 8) * 256) / shrink;
         if (mx >= 0 && mx < 16 && my >= 0 && my < 16) {
           if ((int)hw_random8() >= dropout) ch = MQ_BLOCK[my][mx];
         }
-        lum = (uint8_t)(((int)drive * (255 - (el * 200) / smashMs)) >> 8);
-      } else if (phase == 2) {                                 // SPIN
+        lum = (uint8_t)(((int)drive * (255 - (elp * 200) / smashMs)) >> 8);
+      } else if (phase == MQ_P_SPIN) {                         // SPIN
         const int shift = (reelFrac * 16) >> 8;
         int rg = gy + shift;
         const int i0 = reelIdx % MQ_ITEMS, i1 = (reelIdx + 1) % MQ_ITEMS;
@@ -186,7 +292,7 @@ static FX_RET mode_mario_block() {
         if (rg >= 16) rg -= 16;
         ch  = MQ_SPR[which][rg][gx];
         pal = MQ_PAL[which];
-      } else if (phase == 3) {                                 // RESULT
+      } else if (phase == MQ_P_RES) {                          // RESULT
         if (gy >= 0 && gy < 16) ch = MQ_SPR[item][gy][gx];
         pal = MQ_PAL[item];
         if (ch == '.') {                                       // item-tinted glow
@@ -200,7 +306,11 @@ static FX_RET mode_mario_block() {
         if (item == 2) lum = (uint8_t)qadd8(drive, sin8_t((uint8_t)(hueSpin << 2)) >> 1);
       } else {                                                 // IDLE
         if (gy >= 0 && gy < 16) ch = MQ_BLOCK[gy][gx];
-        if (ch == '3') lum = (uint8_t)qadd8(drive, sin8_t((uint8_t)(strip.now >> 3)) >> 2);
+        // The shine travels with the cube's heading as well as with the clock,
+        // so turning it in your hands moves the light across the face instead
+        // of the glint being a thing that only happens on a timer.
+        if (ch == '3') lum = (uint8_t)qadd8(drive,
+                          sin8_t((uint8_t)((strip.now >> 3) + imu.heading)) >> 2);
       }
 
       if (ch == '.' || ch < '0' || ch > '3') continue;
@@ -215,7 +325,7 @@ static FX_RET mode_mario_block() {
 }
 
 static const char _data_FX_MODE_MARIO_BLOCK[] PROGMEM =
-  "Ace 3-D Question Block@Reel speed,Brightness,Hold time,Item length,Shatter,Smash on beat,Bass bounce,Flat mode;;;2f;sx=140,ix=140,c1=110,c2=128,c3=24,o1=1,o2=1";
+  "Ace Gyro Question Block@Reel speed,Brightness,Hold time,Item length,Shatter,Hit on beat,Bass bounce,Flat mode;;;2f;sx=140,ix=140,c1=110,c2=128,c3=24,o1=1,o2=1";
 
 // ---------------------------------------------------------------------------
 // Registration - self-contained, so adding a new effect never means editing

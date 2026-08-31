@@ -2,7 +2,7 @@
 #include "cube_fx_common.h"
 
 // ===========================================================================
-// 4. CUBE SLICE
+// 3. CUBE SLICE
 // ===========================================================================
 // A stack of spectrum slabs cutting through the solid at a tumbling angle.
 // Every pixel is coloured by which slab its 3D position falls in, so the

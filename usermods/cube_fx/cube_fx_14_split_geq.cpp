@@ -46,16 +46,17 @@ static void cfx_buildFaceCircle(uint8_t *rad, uint8_t *ang, uint8_t *faceId,
 }
 
 // ===========================================================================
-// 28. ACE 3-D SPLIT GEQ
+// 14. ACE 3-D SPLIT GEQ
 // ===========================================================================
 // Baseline: the four walls run a GEQ split at the equator - bars grow away
 // from the middle row toward the top and bottom rims together, the way a
-// mirrored analyser normally works. The top face always runs a CIRCULAR
-// inverse GEQ: each wedge fills from the rim INWARD as its band gets louder,
-// so silence leaves it dark and volume closes the ring toward the centre.
+// mirrored analyser normally works. The top face runs a CIRCULAR GEQ: each
+// wedge grows from the centre OUTWARD as its band gets louder, exactly the
+// treatment the walls take when Circles in all faces is on.
 //
-// Inverse edge EQ (o1) applies that same rim-inward logic to the walls: bars
-// stop growing from the equator and instead fill inward from each rim.
+// Inverse edge EQ (o1) flips the fill direction everywhere, top face included:
+// wall bars fill inward from each rim instead of outward from the equator, and
+// the circles close from the rim toward their centres.
 //
 // Circles in all faces (o2) replaces the wall bars with the top face's own
 // treatment - every wall becomes a small circular GEQ centred on itself.
@@ -63,8 +64,24 @@ static void cfx_buildFaceCircle(uint8_t *rad, uint8_t *ang, uint8_t *faceId,
 // With BOTH on, every face is a circle running rim-inward, and a bright ring
 // spawns on every beat and collapses from the rim to the centre across all
 // five faces at once - the requested "circles pulsing inwards".
+//
+// ---------------------------------------------------------------------------
+// SPIN
+// ---------------------------------------------------------------------------
+// The second slider is rotation, not brightness. 128 is locked; above that
+// spins one way and below it the other, faster the further from centre. Each
+// face turns about ITS OWN centre - the angular coordinate is built per face -
+// so the whole net appears to rotate together rather than as one flat image
+// being spun. In bar mode there is no angle to turn, so the same control walks
+// the band assignment around the ring instead and the bars march around the
+// cube.
 // ---------------------------------------------------------------------------
 #define SG_PULSE 2
+
+// Slider counts either side of centre that still count as "locked". Without it
+// a slider resting one step off centre creeps round over a few minutes, which
+// looks like a bug rather than a very slow spin.
+#define SG_SPIN_DEAD 2
 
 static FX_RET mode_split_geq() {
   if (!strip.isMatrix || !SEGMENT.is2D()) { SEGMENT.fill(SEGCOLOR(0)); FX_DONE; }
@@ -80,7 +97,8 @@ static FX_RET mode_split_geq() {
   uint8_t *fid = ang + n;
   uint8_t *spec = fid + n;             // smoothed 16-band spectrum
   uint8_t *st   = spec + 16;
-  // st: [0] built [1..2] clock [3] round robin, then SG_PULSE * (born lo,hi,strength)
+  // st: [0] built [1..2] clock [3] round robin, [4..11] SG_PULSE x (born lo,hi,
+  //     strength,live), [12..13] rotation phase
 
   const bool cube = cfx_isCube(cols, rows);
   const int  B    = cube ? (cols / 3) : 1;
@@ -129,7 +147,22 @@ static FX_RET mode_split_geq() {
     pN++;
   }
 
-  const uint8_t drive = cfx_drive(vol, 1.0f, 130 + (SEGMENT.intensity >> 1));
+  // --- face rotation ---------------------------------------------------------
+  // Accumulated at 1/256 of an angle unit so the slowest settings still turn
+  // smoothly instead of stepping a whole pixel at a time. st[12..13] are the
+  // last two bytes of the state block, past the SG_PULSE ring slots.
+  const int spin = (int)SEGMENT.intensity - 128;            // -128 locked-centre +127
+  uint16_t rphase = (uint16_t)st[12] | ((uint16_t)st[13] << 8);
+  if (spin > SG_SPIN_DEAD || spin < -SG_SPIN_DEAD)
+    rphase = (uint16_t)((int32_t)rphase + fx_step((int32_t)spin * 24, dtQ));
+  st[12] = (uint8_t)(rphase & 0xFF);
+  st[13] = (uint8_t)(rphase >> 8);
+  const uint8_t angOff = (uint8_t)(rphase >> 8);
+
+  const int ringW   = cube ? (4 * B) : cols;
+  const int ringOff = ((int)angOff * ringW) / 256;          // same turn, in ring columns
+
+  const uint8_t drive = cfx_drive(vol, 1.0f, 170);
   const uint8_t hue   = (uint8_t)(strip.now >> 8);
 
   SEGMENT.fill(SEGCOLOR(0));
@@ -140,6 +173,7 @@ static FX_RET mode_split_geq() {
     for (int x = 0; x < cols; x++, i++) {
       CFX_NET_SKIP(x);
       const bool isTop = (fid[i] == 0);
+      const uint8_t angR = (uint8_t)(ang[i] + angOff);      // this face, turned
       uint8_t lum = 0;
 
       // Everything - top's fixed inverse circle, wall bars, wall circles when
@@ -149,13 +183,19 @@ static FX_RET mode_split_geq() {
       // that boundary, so both directions share one formula.
       uint8_t pos, fillFrac; bool inv;
       if (isTop || circWall) {                              // circular GEQ
-        const uint8_t bin = (uint8_t)(((uint16_t)ang[i] * 16) >> 8);
+        const uint8_t bin = (uint8_t)(((uint16_t)angR * 16) >> 8);
         const int fillRaw = ((int)spec[bin] * gain) >> 8;
         fillFrac = (uint8_t)((fillRaw > 255) ? 255 : fillRaw);
         pos = rad[i];
-        inv = isTop || invEdge;                             // top is always inverse
+        // Follows Inverse edge EQ like every other face. It used to be pinned
+        // inverse, so the toggle appeared to do nothing to the top and the lid
+        // was rim-inward while the walls grew centre-out - two different
+        // treatments on one cube, with no way to line them up.
+        inv = invEdge;
       } else {                                              // split bar around the equator
-        const uint8_t bin = (uint8_t)(((uint16_t)bu[i] * 16) / (cube ? (4 * B) : cols));
+        int bcol = (int)bu[i] + ringOff;                    // spin walks the bands round
+        if (bcol >= ringW) bcol -= ringW;
+        const uint8_t bin = (uint8_t)(((uint16_t)bcol * 16) / ringW);
         const int fillRaw = ((int)spec[bin] * gain) >> 8;
         fillFrac = (uint8_t)((fillRaw > 255) ? 255 : fillRaw);
         const int dEq = (int)bv[i] - half;
@@ -174,7 +214,7 @@ static FX_RET mode_split_geq() {
       }
 
       if (!lum) continue;
-      const uint32_t c = SEGMENT.color_from_palette((uint8_t)(fid[i] * 40 + (ang[i] >> 2) + hue),
+      const uint32_t c = SEGMENT.color_from_palette((uint8_t)(fid[i] * 40 + (angR >> 2) + hue),
                                                     false, false, 0);
       SEGMENT.setPixelColorXY(x, y, mq_scale(c, scale8((uint8_t)lum, drive)));
     }
@@ -183,7 +223,7 @@ static FX_RET mode_split_geq() {
 }
 
 static const char _data_FX_MODE_SPLIT_GEQ[] PROGMEM =
-  "Ace 3-D Split GEQ@Speed,Brightness,Gain,Softness,Smoothing,Inverse edge EQ,Circles in all faces,Flat mode;;!;2f;sx=110,ix=150,c1=170,c2=110,c3=10,o1=0,o2=0";
+  "Ace 3-D Split GEQ@Ring speed,Spin,Gain,Softness,Smoothing,Inverse edge EQ,Circles in all faces,Flat mode;;!;2f;sx=110,ix=128,c1=170,c2=110,c3=10,o1=0,o2=0";
 
 
 // ---------------------------------------------------------------------------

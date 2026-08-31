@@ -243,6 +243,32 @@ struct AceUiView {
 };
 
 // ---------------------------------------------------------------------------
+// Game input channel
+// ---------------------------------------------------------------------------
+// A running effect can ask for the knobs. This is deliberately NOT a fifth
+// encoder role: a role is a permanent property of a knob, and "the knobs drive
+// paddles" is a property of what is on the CUBE right now. Wiring it as a role
+// would mean reconfiguring hardware settings to play a game and reconfiguring
+// them back afterwards.
+//
+// `wantedMs` is a timestamp, not a flag, and that is the whole trick: an
+// effect stamps it every frame it wants input, so the offer EXPIRES on its own
+// the moment a different effect starts drawing. Effects are plain functions
+// with no teardown hook - nothing tells them they have been switched away from
+// - so a sticky boolean here would strand the UI in game mode with no way back
+// but a reboot.
+//
+// The menu owns `active`; effects only ever read it. Deltas accumulate in
+// axis[] and clicks in fire[], and the EFFECT clears them as it consumes them
+// - both sides run in the same loop() on one thread, so no locking is needed.
+struct AceUiGame {
+  uint32_t wantedMs = 0;                  // last millis() an effect asked for the knobs
+  bool     active   = false;              // menu has handed them over
+  int16_t  axis[ACE_UI_MAX_ENC] = {0};    // unconsumed detents, per encoder
+  uint8_t  fire[ACE_UI_MAX_ENC] = {0};    // unconsumed clicks, per encoder
+};
+
+// ---------------------------------------------------------------------------
 // Diagnostics
 // ---------------------------------------------------------------------------
 // The decision rule, written down so it is not relitigated later: under ~8%
@@ -269,6 +295,7 @@ struct AceUiBus {
 
   AceUiView  view;
   AceUiStats stats;
+  AceUiGame  game;
 
   // published by the encoder so the menu can interpret events without having
   // to reach into another usermod's config
@@ -338,6 +365,50 @@ inline bool aceUiPop(AceUiEvent &e) {
 
 inline bool aceUiPending() { return aceUi().tail != aceUi().head; }
 inline void aceUiTouch()   { aceUi().view.serial++; }
+
+// ---------------------------------------------------------------------------
+// Game input helpers
+// ---------------------------------------------------------------------------
+// An effect calls aceUiGameWant() once per frame to keep the offer alive. The
+// window is generous on purpose: effects run at whatever rate the strip
+// manages, and a cube that has dropped to 4 fps under a heavy effect should
+// still count as "asking".
+#ifndef AUI_GAME_WANT_MS
+  #define AUI_GAME_WANT_MS 400
+#endif
+
+inline void aceUiGameWant() { aceUi().game.wantedMs = millis(); }
+
+inline bool aceUiGameWanted() {
+  const uint32_t t = aceUi().game.wantedMs;
+  return t && (millis() - t) < AUI_GAME_WANT_MS;
+}
+
+// Live only while the effect that asked is still the one drawing - so a stale
+// `active` can never survive an effect switch, however the switch happened.
+inline bool aceUiGameActive() { return aceUi().game.active && aceUiGameWanted(); }
+
+inline void aceUiGameRelease() {
+  AceUiBus &b = aceUi();
+  b.game.active = false;
+  for (uint8_t i = 0; i < ACE_UI_MAX_ENC; i++) { b.game.axis[i] = 0; b.game.fire[i] = 0; }
+}
+
+// Consume the detents accumulated for one encoder since the last call.
+inline int16_t aceUiGameTakeAxis(uint8_t enc) {
+  if (enc >= ACE_UI_MAX_ENC) return 0;
+  const int16_t v = aceUi().game.axis[enc];
+  aceUi().game.axis[enc] = 0;
+  return v;
+}
+
+// Consume one click if any are pending. Returns true at most once per click.
+inline bool aceUiGameTakeFire(uint8_t enc) {
+  if (enc >= ACE_UI_MAX_ENC) return false;
+  if (!aceUi().game.fire[enc]) return false;
+  aceUi().game.fire[enc]--;
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // Menu entry points - implemented in ace_ui_menu.cpp

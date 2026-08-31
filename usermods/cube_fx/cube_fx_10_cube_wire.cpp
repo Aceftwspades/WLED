@@ -3,7 +3,7 @@
 #include "cube_fx_imu.h"
 
 // ===========================================================================
-// 13. CUBE WIRE  /  ACE GYRO WIRE
+// 10. CUBE WIRE  /  ACE GYRO WIRE
 // ===========================================================================
 // Cube Edges stripped to the wireframe. No edge<->centre travel at all: the
 // beat pulses run ALONG the edges instead of across them.

@@ -2,7 +2,7 @@
 #include "cube_fx_common.h"
 
 // ===========================================================================
-// 35. ACE 3-D DNA HELIX
+// 17. ACE 3-D DNA HELIX
 // ===========================================================================
 // A two-oscillator sine generator that happens to look like a molecule.
 //

@@ -31,14 +31,11 @@
  * ===========================================================================
  *
  *   Chladni Plate       standing-wave nodal lines, modes from the two loudest bins
- *   Beat Mandala        radially folded spectrum, golden-angle jump on beat
  *   Spectral RD         Gray-Scott reaction-diffusion, bass=feed, treble=kill
  *   Harmonic Lissajous  locks on consonant intervals, wanders on dissonance
  *   Kaleidoscope        true mirror-fold of a live noise chamber
- *   Hex Quilt           p6m wallpaper symmetry, no centre, tiles the panel
  *   Moire Rosette       interference between two counter-rotating gratings
  *   Spectral Wormhole   log-polar spiral, spectrum falling inward forever
- *   Feedback Echo       iterated affine resample of its own previous frame
  *   Glass Kaleidoscope  discrete chips - circles, squares, triangles, stars
  *
  * All are 2D and frequency-reactive; all scale their detail to the panel, so
@@ -281,7 +278,7 @@ static const char _data_FX_MODE_CHLADNI[] PROGMEM =
   "Ace 2-D Chladni Plate@Morph speed,Sharpness,Drive,Base scale,Audio span,Snap to beat;;!;2f;sx=90,ix=110,c1=128,c2=0,c3=31,o1=1";
 
 // ===========================================================================
-// 3. SPECTRAL RD  (Gray-Scott reaction-diffusion)
+// 2. SPECTRAL RD  (Gray-Scott reaction-diffusion)
 // ===========================================================================
 //   dU = Du*lap(U) - U*V^2 + F*(1-U)
 //   dV = Dv*lap(V) + U*V^2 - (F+k)*V
@@ -403,7 +400,7 @@ static const char _data_FX_MODE_SPECTRAL_RD[] PROGMEM =
   "Ace 2-D Spectral RD@Sim speed,Brightness,,,,Seed on beat;;!;2f;sx=160,ix=140,o1=1";
 
 // ===========================================================================
-// 4. HARMONIC LISSAJOUS
+// 3. HARMONIC LISSAJOUS
 // ===========================================================================
 // A root note is captured on a beat. Each frame the dominant frequency is
 // compared to that root, folded into one octave and snapped to the nearest
@@ -484,7 +481,7 @@ static const char _data_FX_MODE_HARMONIC_LISSAJOUS[] PROGMEM =
   "Ace 2-D Harmonic Lissajous@Drift,Trail,Drive,,,Re-root on beat,Glow;;!;2f;sx=64,ix=200,c1=128,o1=1,o2=1";
 
 // ===========================================================================
-// 5. KALEIDOSCOPE
+// 4. KALEIDOSCOPE
 // ===========================================================================
 // The honest version: a chaotic source chamber seen through N mirrors. The LUT
 // folds every pixel back into the fundamental wedge and records where in the
@@ -585,7 +582,7 @@ static const char _data_FX_MODE_KALEIDOSCOPE[] PROGMEM =
   "Ace 2-D Kaleidoscope@Chamber spin,Brightness,Mirrors,Zoom,Sparkle,Shake on beat;;!;2f;sx=48,ix=200,c1=110,c2=100,c3=16,o1=1";
 
 // ===========================================================================
-// 7. MOIRE ROSETTE
+// 5. MOIRE ROSETTE
 // ===========================================================================
 // Two radial gratings with different spoke counts, counter-rotating. The
 // visible rosette has |S1-S2| arms even though neither grating does - the
@@ -658,7 +655,7 @@ static const char _data_FX_MODE_MOIRE_ROSETTE[] PROGMEM =
   "Ace 2-D Moire Rosette@Spin,Sharpness,Spokes,Spiral twist,,Flip on beat,Vignette;;!;2f;sx=80,ix=120,c1=128,c2=128,o1=1,o2=1";
 
 // ===========================================================================
-// 8. SPECTRAL WORMHOLE
+// 6. SPECTRAL WORMHOLE
 // ===========================================================================
 // Log-polar: the LUT stores log2(radius), so a pattern periodic in that
 // coordinate zooms into the centre forever without ever repeating a seam.
@@ -725,7 +722,7 @@ static const char _data_FX_MODE_SPECTRAL_WORMHOLE[] PROGMEM =
   "Ace 2-D Spectral Wormhole@Fall rate,Band width,Mirrors,Spiral twist,Smoothing,Reverse on beat;;!;2f;sx=110,ix=100,c1=96,c2=140,c3=8,o1=1";
 
 // ===========================================================================
-// 10. GLASS KALEIDOSCOPE
+// 7. GLASS KALEIDOSCOPE
 // ===========================================================================
 // A real kaleidoscope's chamber holds loose chips of coloured glass, not a
 // continuous smear. This puts discrete shapes in the chamber - circles,
