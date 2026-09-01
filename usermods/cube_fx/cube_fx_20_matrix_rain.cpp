@@ -1,5 +1,6 @@
 #include "wled.h"
 #include "cube_fx_audio.h"
+#include "cube_fx_bank.h"
 
 // ===========================================================================
 // 20. ACE 3-D MATRIX RAIN
@@ -561,17 +562,9 @@ static const char _data_FX_MODE_MATRIX_RAIN[] PROGMEM =
   "Ace 3-D Matrix Rain@Fall speed,Glow,Density,Trail,Glyph rate,Spawn on beat,Spectrum ring,Flat mode;;!;2f;sx=130,ix=150,c1=120,c2=140,c3=120,o1=1,o2=1";
 
 
-// ---------------------------------------------------------------------------
-// Registration - self-contained, so adding a new effect never means editing
-// another file. Each cube_fx_*.cpp registers only its own effect(s).
-// ---------------------------------------------------------------------------
-class CubeFx_MatrixRainUsermod : public Usermod {
- public:
-  void setup() override {
-    strip.addEffect(255, &mode_matrix_rain, _data_FX_MODE_MATRIX_RAIN);
-  }
-  void loop() override {}
-};
 
-static CubeFx_MatrixRainUsermod cube_fx_matrix_rain;
-REGISTER_USERMOD(cube_fx_matrix_rain);
+// ---------------------------------------------------------------------------
+// Registration - joins the effect bank, which decides whether this effect
+// claims one of the device's limited effect slots. See cube_fx_bank.h.
+// ---------------------------------------------------------------------------
+static CfxBankReg cube_fx_20_matrix_rain_reg(&mode_matrix_rain, _data_FX_MODE_MATRIX_RAIN);

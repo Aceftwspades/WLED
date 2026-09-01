@@ -1,5 +1,6 @@
 #include "wled.h"
 #include "cube_fx_common.h"
+#include "cube_fx_bank.h"
 
 // Linear falloff around a signed boundary distance: full at d<=-soft, zero at
 // d>=soft, a straight ramp between. Used for every soft edge in Split GEQ so
@@ -226,17 +227,9 @@ static const char _data_FX_MODE_SPLIT_GEQ[] PROGMEM =
   "Ace 3-D Split GEQ@Ring speed,Spin,Gain,Softness,Smoothing,Inverse edge EQ,Circles in all faces,Flat mode;;!;2f;sx=110,ix=128,c1=170,c2=110,c3=10,o1=0,o2=0";
 
 
-// ---------------------------------------------------------------------------
-// Registration - self-contained, so adding a new effect never means editing
-// another file. Each cube_fx_*.cpp registers only its own effect(s).
-// ---------------------------------------------------------------------------
-class CubeFx_SplitGeqUsermod : public Usermod {
- public:
-  void setup() override {
-    strip.addEffect(255, &mode_split_geq, _data_FX_MODE_SPLIT_GEQ);
-  }
-  void loop() override {}
-};
 
-static CubeFx_SplitGeqUsermod cube_fx_split_geq;
-REGISTER_USERMOD(cube_fx_split_geq);
+// ---------------------------------------------------------------------------
+// Registration - joins the effect bank, which decides whether this effect
+// claims one of the device's limited effect slots. See cube_fx_bank.h.
+// ---------------------------------------------------------------------------
+static CfxBankReg cube_fx_14_split_geq_reg(&mode_split_geq, _data_FX_MODE_SPLIT_GEQ);

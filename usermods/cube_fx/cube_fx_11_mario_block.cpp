@@ -1,6 +1,7 @@
 #include "wled.h"
 #include "cube_fx_common.h"
 #include "cube_fx_imu.h"
+#include "cube_fx_bank.h"
 
 // ===========================================================================
 // 11. ACE GYRO QUESTION BLOCK
@@ -327,17 +328,9 @@ static FX_RET mode_mario_block() {
 static const char _data_FX_MODE_MARIO_BLOCK[] PROGMEM =
   "Ace Gyro Question Block@Reel speed,Brightness,Hold time,Item length,Shatter,Hit on beat,Bass bounce,Flat mode;;;2f;sx=140,ix=140,c1=110,c2=128,c3=24,o1=1,o2=1";
 
-// ---------------------------------------------------------------------------
-// Registration - self-contained, so adding a new effect never means editing
-// another file. Each cube_fx_*.cpp registers only its own effect(s).
-// ---------------------------------------------------------------------------
-class CubeFx_MarioBlockUsermod : public Usermod {
- public:
-  void setup() override {
-    strip.addEffect(255, &mode_mario_block, _data_FX_MODE_MARIO_BLOCK);
-  }
-  void loop() override {}
-};
 
-static CubeFx_MarioBlockUsermod cube_fx_mario_block;
-REGISTER_USERMOD(cube_fx_mario_block);
+// ---------------------------------------------------------------------------
+// Registration - joins the effect bank, which decides whether this effect
+// claims one of the device's limited effect slots. See cube_fx_bank.h.
+// ---------------------------------------------------------------------------
+static CfxBankReg cube_fx_11_mario_block_reg(&mode_mario_block, _data_FX_MODE_MARIO_BLOCK);

@@ -1,5 +1,6 @@
 #include "wled.h"
 #include "cube_fx_common.h"
+#include "cube_fx_bank.h"
 
 // ===========================================================================
 // 1. CUBE RIPPLES
@@ -106,17 +107,9 @@ static const char _data_FX_MODE_CUBE_RIPPLES[] PROGMEM =
   "Ace 3-D Cube Ripples@Speed,Thickness,,Persistence,,,,Flat mode;;!;2f;sx=110,ix=90,c2=140";
 
 
-// ---------------------------------------------------------------------------
-// Registration - self-contained, so adding a new effect never means editing
-// another file. Each cube_fx_*.cpp registers only its own effect(s).
-// ---------------------------------------------------------------------------
-class CubeFx_CubeRipplesUsermod : public Usermod {
- public:
-  void setup() override {
-    strip.addEffect(255, &mode_cube_ripples, _data_FX_MODE_CUBE_RIPPLES);
-  }
-  void loop() override {}
-};
 
-static CubeFx_CubeRipplesUsermod cube_fx_cube_ripples;
-REGISTER_USERMOD(cube_fx_cube_ripples);
+// ---------------------------------------------------------------------------
+// Registration - joins the effect bank, which decides whether this effect
+// claims one of the device's limited effect slots. See cube_fx_bank.h.
+// ---------------------------------------------------------------------------
+static CfxBankReg cube_fx_01_cube_ripples_reg(&mode_cube_ripples, _data_FX_MODE_CUBE_RIPPLES);

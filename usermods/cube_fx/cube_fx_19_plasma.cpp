@@ -1,5 +1,6 @@
 #include "wled.h"
 #include "cube_fx_audio.h"
+#include "cube_fx_bank.h"
 
 // ===========================================================================
 // 19. ACE 3-D PLASMA
@@ -387,17 +388,9 @@ static const char _data_FX_MODE_ACE_PLASMA[] PROGMEM =
   "Ace 3-D Plasma@Flow,Glow,Scale,Warp,Audio depth,Beat ripples,Tone colour,Flat mode;;!;2f;sx=110,ix=150,c1=90,c2=130,c3=170,o1=1,o2=1";
 
 
-// ---------------------------------------------------------------------------
-// Registration - self-contained, so adding a new effect never means editing
-// another file. Each cube_fx_*.cpp registers only its own effect(s).
-// ---------------------------------------------------------------------------
-class CubeFx_PlasmaUsermod : public Usermod {
- public:
-  void setup() override {
-    strip.addEffect(255, &mode_ace_plasma, _data_FX_MODE_ACE_PLASMA);
-  }
-  void loop() override {}
-};
 
-static CubeFx_PlasmaUsermod cube_fx_plasma;
-REGISTER_USERMOD(cube_fx_plasma);
+// ---------------------------------------------------------------------------
+// Registration - joins the effect bank, which decides whether this effect
+// claims one of the device's limited effect slots. See cube_fx_bank.h.
+// ---------------------------------------------------------------------------
+static CfxBankReg cube_fx_19_plasma_reg(&mode_ace_plasma, _data_FX_MODE_ACE_PLASMA);

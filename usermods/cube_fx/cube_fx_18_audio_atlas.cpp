@@ -1,13 +1,14 @@
 #include "wled.h"
 #include "cube_fx_audio.h"
 #include "cube_fx_imu.h"
+#include "cube_fx_bank.h"
 
 // ===========================================================================
 // 18. ACE GYRO AUDIO ATLAS
 // ===========================================================================
 // Every analyzer this codebase has, on one cube, at once - and still readable.
-// Audio Scope is the diagnostic that proves the analyzers work; this is the
-// thing you actually leave running.
+// Where the plain analysers each show one facet, this folds volume, spectrum,
+// beat and orientation together into the thing you actually leave running.
 //
 // ---------------------------------------------------------------------------
 // THE ONE IDEA: THE CUBE IS A GLOBE, AND FREQUENCY IS LATITUDE
@@ -475,17 +476,9 @@ static const char _data_FX_MODE_AUDIO_ATLAS[] PROGMEM =
   "Ace Gyro Audio Atlas@Speed,Glow,Band width,Impact,Sparkle,World lock,Bar beacon,Flat mode;;!;2f;sx=140,ix=150,c1=110,c2=160,c3=130,o1=1,o2=1";
 
 
-// ---------------------------------------------------------------------------
-// Registration - self-contained, so adding a new effect never means editing
-// another file. Each cube_fx_*.cpp registers only its own effect(s).
-// ---------------------------------------------------------------------------
-class CubeFx_AudioAtlasUsermod : public Usermod {
- public:
-  void setup() override {
-    strip.addEffect(255, &mode_audio_atlas, _data_FX_MODE_AUDIO_ATLAS);
-  }
-  void loop() override {}
-};
 
-static CubeFx_AudioAtlasUsermod cube_fx_audio_atlas;
-REGISTER_USERMOD(cube_fx_audio_atlas);
+// ---------------------------------------------------------------------------
+// Registration - joins the effect bank, which decides whether this effect
+// claims one of the device's limited effect slots. See cube_fx_bank.h.
+// ---------------------------------------------------------------------------
+static CfxBankReg cube_fx_18_audio_atlas_reg(&mode_audio_atlas, _data_FX_MODE_AUDIO_ATLAS);

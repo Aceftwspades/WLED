@@ -1,5 +1,6 @@
 #include "wled.h"
 #include "cube_fx_common.h"
+#include "cube_fx_bank.h"
 
 // ===========================================================================
 // 17. ACE 3-D DNA HELIX
@@ -466,17 +467,9 @@ static const char _data_FX_MODE_DNA_HELIX[] PROGMEM =
   "Ace 3-D DNA Helix@Speed,Helix width,Frequency,LFO rate,LFO depth,Base pairs,Pairs on beat,Flat mode;;!;2f;sx=140,ix=160,c1=128,c2=40,c3=130,o1=1,o2=0";
 
 
-// ---------------------------------------------------------------------------
-// Registration - self-contained, so adding a new effect never means editing
-// another file. Each cube_fx_*.cpp registers only its own effect(s).
-// ---------------------------------------------------------------------------
-class CubeFx_DnaHelixUsermod : public Usermod {
- public:
-  void setup() override {
-    strip.addEffect(255, &mode_dna_helix, _data_FX_MODE_DNA_HELIX);
-  }
-  void loop() override {}
-};
 
-static CubeFx_DnaHelixUsermod cube_fx_dna_helix;
-REGISTER_USERMOD(cube_fx_dna_helix);
+// ---------------------------------------------------------------------------
+// Registration - joins the effect bank, which decides whether this effect
+// claims one of the device's limited effect slots. See cube_fx_bank.h.
+// ---------------------------------------------------------------------------
+static CfxBankReg cube_fx_17_dna_helix_reg(&mode_dna_helix, _data_FX_MODE_DNA_HELIX);

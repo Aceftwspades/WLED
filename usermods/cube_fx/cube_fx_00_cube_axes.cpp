@@ -1,5 +1,6 @@
 #include "wled.h"
 #include "cube_fx_common.h"
+#include "cube_fx_bank.h"
 
 // ===========================================================================
 // 0. CUBE AXES  (calibration, not an effect)
@@ -44,17 +45,9 @@ static const char _data_FX_MODE_CUBE_AXES[] PROGMEM =
   "Ace 3-D Cube Axes@,,,,,,,Flat mode;;;2";
 
 
-// ---------------------------------------------------------------------------
-// Registration - self-contained, so adding a new effect never means editing
-// another file. Each cube_fx_*.cpp registers only its own effect(s).
-// ---------------------------------------------------------------------------
-class CubeFx_CubeAxesUsermod : public Usermod {
- public:
-  void setup() override {
-    strip.addEffect(255, &mode_cube_axes, _data_FX_MODE_CUBE_AXES);
-  }
-  void loop() override {}
-};
 
-static CubeFx_CubeAxesUsermod cube_fx_cube_axes;
-REGISTER_USERMOD(cube_fx_cube_axes);
+// ---------------------------------------------------------------------------
+// Registration - joins the effect bank, which decides whether this effect
+// claims one of the device's limited effect slots. See cube_fx_bank.h.
+// ---------------------------------------------------------------------------
+static CfxBankReg cube_fx_00_cube_axes_reg(&mode_cube_axes, _data_FX_MODE_CUBE_AXES);

@@ -1,6 +1,7 @@
 #include "wled.h"
 #include "cube_fx_common.h"
 #include "cube_fx_imu.h"
+#include "cube_fx_bank.h"
 
 // ===========================================================================
 // 10. CUBE WIRE  /  ACE GYRO WIRE
@@ -239,18 +240,10 @@ static const char _data_FX_MODE_CUBE_WIRE_GYRO[] PROGMEM =
   "Ace Gyro Wire@Speed,Thickness,Wave cycles,Wave height,Wave shape,Pulse on hit,Trails,Flat mode;;!;2f;sx=120,ix=130,c1=16,c2=150,c3=6,o1=1,o2=1";
 
 
-// ---------------------------------------------------------------------------
-// Registration - self-contained, so adding a new effect never means editing
-// another file. Each cube_fx_*.cpp registers only its own effect(s).
-// ---------------------------------------------------------------------------
-class CubeFx_CubeWireUsermod : public Usermod {
- public:
-  void setup() override {
-    strip.addEffect(255, &mode_cube_wire,      _data_FX_MODE_CUBE_WIRE);
-    strip.addEffect(255, &mode_cube_wire_gyro, _data_FX_MODE_CUBE_WIRE_GYRO);
-  }
-  void loop() override {}
-};
 
-static CubeFx_CubeWireUsermod cube_fx_cube_wire;
-REGISTER_USERMOD(cube_fx_cube_wire);
+// ---------------------------------------------------------------------------
+// Registration - joins the effect bank, which decides whether this effect
+// claims one of the device's limited effect slots. See cube_fx_bank.h.
+// ---------------------------------------------------------------------------
+static CfxBankReg cube_fx_10_cube_wire_reg_0(&mode_cube_wire, _data_FX_MODE_CUBE_WIRE);
+static CfxBankReg cube_fx_10_cube_wire_reg_1(&mode_cube_wire_gyro, _data_FX_MODE_CUBE_WIRE_GYRO);

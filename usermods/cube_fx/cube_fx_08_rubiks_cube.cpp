@@ -1,5 +1,6 @@
 #include "wled.h"
 #include "cube_fx_common.h"
+#include "cube_fx_bank.h"
 
 // ===========================================================================
 // 8. RUBIKS CUBE
@@ -277,17 +278,9 @@ static const char _data_FX_MODE_RUBIKS_CUBE[] PROGMEM =
   "Ace 3-D Rubiks Cube@Scramble speed,Pulse depth,Scramble length,Solve pace,Palette blend,Beat pulse,Solve on beat,Flat mode;;!;2f;sx=200,ix=120,c1=110,c2=110,c3=0,o1=1,o2=1";
 
 
-// ---------------------------------------------------------------------------
-// Registration - self-contained, so adding a new effect never means editing
-// another file. Each cube_fx_*.cpp registers only its own effect(s).
-// ---------------------------------------------------------------------------
-class CubeFx_RubiksCubeUsermod : public Usermod {
- public:
-  void setup() override {
-    strip.addEffect(255, &mode_rubiks_cube, _data_FX_MODE_RUBIKS_CUBE);
-  }
-  void loop() override {}
-};
 
-static CubeFx_RubiksCubeUsermod cube_fx_rubiks_cube;
-REGISTER_USERMOD(cube_fx_rubiks_cube);
+// ---------------------------------------------------------------------------
+// Registration - joins the effect bank, which decides whether this effect
+// claims one of the device's limited effect slots. See cube_fx_bank.h.
+// ---------------------------------------------------------------------------
+static CfxBankReg cube_fx_08_rubiks_cube_reg(&mode_rubiks_cube, _data_FX_MODE_RUBIKS_CUBE);

@@ -1,6 +1,7 @@
 #include "wled.h"
 #include "cube_fx_common.h"
 #include "cube_fx_imu.h"
+#include "cube_fx_bank.h"
 
 // ===========================================================================
 // 13. ACE 3-D LIQUID  /  ACE GYRO LIQUID
@@ -310,18 +311,10 @@ static const char _data_FX_MODE_LIQUID_GYRO[] PROGMEM =
   "Ace Gyro Liquid@Ripple speed,Surface,Fill,Slosh,Ripple size,Bass fills,Splash on hit,Flat mode;;!;2f;sx=130,ix=140,c1=130,c2=120,c3=14,o1=1,o2=1";
 
 
-// ---------------------------------------------------------------------------
-// Registration - self-contained, so adding a new effect never means editing
-// another file. Each cube_fx_*.cpp registers only its own effect(s).
-// ---------------------------------------------------------------------------
-class CubeFx_LiquidUsermod : public Usermod {
- public:
-  void setup() override {
-    strip.addEffect(255, &mode_liquid,      _data_FX_MODE_LIQUID);
-    strip.addEffect(255, &mode_liquid_gyro, _data_FX_MODE_LIQUID_GYRO);
-  }
-  void loop() override {}
-};
 
-static CubeFx_LiquidUsermod cube_fx_liquid;
-REGISTER_USERMOD(cube_fx_liquid);
+// ---------------------------------------------------------------------------
+// Registration - joins the effect bank, which decides whether this effect
+// claims one of the device's limited effect slots. See cube_fx_bank.h.
+// ---------------------------------------------------------------------------
+static CfxBankReg cube_fx_13_liquid_reg_0(&mode_liquid, _data_FX_MODE_LIQUID);
+static CfxBankReg cube_fx_13_liquid_reg_1(&mode_liquid_gyro, _data_FX_MODE_LIQUID_GYRO);

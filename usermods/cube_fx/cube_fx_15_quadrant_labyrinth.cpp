@@ -1,5 +1,6 @@
 #include "wled.h"
 #include "cube_fx_common.h"
+#include "cube_fx_bank.h"
 
 // ===========================================================================
 // 15. QUADRANT LABYRINTH
@@ -430,17 +431,9 @@ static const char _data_FX_MODE_QUADRANT_LABYRINTH[] PROGMEM =
   "Ace 3-D Quadrant Labyrinth@Speed,Thickness,Trail,Glow,Spread,Reshuffle on beat,Stagger faces,Unify net;;!;2f;sx=150,ix=110,c1=175,c2=70,c3=140,o1=1,o2=1";
 
 
-// ---------------------------------------------------------------------------
-// Registration - self-contained, so adding a new effect never means editing
-// another file. Each cube_fx_*.cpp registers only its own effect(s).
-// ---------------------------------------------------------------------------
-class CubeFx_QuadrantLabyrinthUsermod : public Usermod {
- public:
-  void setup() override {
-    strip.addEffect(255, &mode_quadrant_labyrinth, _data_FX_MODE_QUADRANT_LABYRINTH);
-  }
-  void loop() override {}
-};
 
-static CubeFx_QuadrantLabyrinthUsermod cube_fx_quadrant_labyrinth;
-REGISTER_USERMOD(cube_fx_quadrant_labyrinth);
+// ---------------------------------------------------------------------------
+// Registration - joins the effect bank, which decides whether this effect
+// claims one of the device's limited effect slots. See cube_fx_bank.h.
+// ---------------------------------------------------------------------------
+static CfxBankReg cube_fx_15_quadrant_labyrinth_reg(&mode_quadrant_labyrinth, _data_FX_MODE_QUADRANT_LABYRINTH);

@@ -1,5 +1,6 @@
 #include "wled.h"
 #include "cube_fx_common.h"
+#include "cube_fx_bank.h"
 
 // ===========================================================================
 // 5. CUBE FRAME
@@ -134,17 +135,9 @@ static const char _data_FX_MODE_CUBE_FRAME[] PROGMEM =
   "Ace 3-D Cube Frame@Beat depth,Thickness,Spin X,Spin Y,Spin Z,Pulse in on beat,Beat flash,Flat mode;;!;2f;sx=70,ix=110,c1=134,c2=128,c3=16,o1=1,o2=1";
 
 
-// ---------------------------------------------------------------------------
-// Registration - self-contained, so adding a new effect never means editing
-// another file. Each cube_fx_*.cpp registers only its own effect(s).
-// ---------------------------------------------------------------------------
-class CubeFx_CubeFrameUsermod : public Usermod {
- public:
-  void setup() override {
-    strip.addEffect(255, &mode_cube_frame, _data_FX_MODE_CUBE_FRAME);
-  }
-  void loop() override {}
-};
 
-static CubeFx_CubeFrameUsermod cube_fx_cube_frame;
-REGISTER_USERMOD(cube_fx_cube_frame);
+// ---------------------------------------------------------------------------
+// Registration - joins the effect bank, which decides whether this effect
+// claims one of the device's limited effect slots. See cube_fx_bank.h.
+// ---------------------------------------------------------------------------
+static CfxBankReg cube_fx_05_cube_frame_reg(&mode_cube_frame, _data_FX_MODE_CUBE_FRAME);

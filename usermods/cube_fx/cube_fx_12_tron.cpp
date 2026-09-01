@@ -1,5 +1,6 @@
 #include "wled.h"
 #include "cube_fx_common.h"
+#include "cube_fx_bank.h"
 
 // ===========================================================================
 // 12. ACE 3-D TRON
@@ -111,17 +112,9 @@ static const char _data_FX_MODE_TRON[] PROGMEM =
   "Ace 3-D Tron@Speed,Brightness,,,,,,Flat mode;;;2f;sx=170,ix=170";
 
 
-// ---------------------------------------------------------------------------
-// Registration - self-contained, so adding a new effect never means editing
-// another file. Each cube_fx_*.cpp registers only its own effect(s).
-// ---------------------------------------------------------------------------
-class CubeFx_TronUsermod : public Usermod {
- public:
-  void setup() override {
-    strip.addEffect(255, &mode_tron, _data_FX_MODE_TRON);
-  }
-  void loop() override {}
-};
 
-static CubeFx_TronUsermod cube_fx_tron;
-REGISTER_USERMOD(cube_fx_tron);
+// ---------------------------------------------------------------------------
+// Registration - joins the effect bank, which decides whether this effect
+// claims one of the device's limited effect slots. See cube_fx_bank.h.
+// ---------------------------------------------------------------------------
+static CfxBankReg cube_fx_12_tron_reg(&mode_tron, _data_FX_MODE_TRON);

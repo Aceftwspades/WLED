@@ -1,6 +1,7 @@
 #include "wled.h"
 #include "cube_fx_common.h"
 #include "cube_fx_imu.h"
+#include "cube_fx_bank.h"
 
 // ===========================================================================
 // 23. ACE GYRO RAIN
@@ -242,17 +243,9 @@ static const char _data_FX_MODE_GYRO_RAIN[] PROGMEM =
   "Ace Gyro Rain@Fall speed,Glow,Density,Streak,Splash,Bass downpour,Beat drops,Flat mode;;!;2f;sx=140,ix=128,c1=120,c2=90,c3=110,o1=1,o2=1";
 
 
-// ---------------------------------------------------------------------------
-// Registration - self-contained, so adding a new effect never means editing
-// another file. Each cube_fx_*.cpp registers only its own effect(s).
-// ---------------------------------------------------------------------------
-class CubeFx_GyroRainUsermod : public Usermod {
- public:
-  void setup() override {
-    strip.addEffect(255, &mode_gyro_rain, _data_FX_MODE_GYRO_RAIN);
-  }
-  void loop() override {}
-};
 
-static CubeFx_GyroRainUsermod cube_fx_gyro_rain;
-REGISTER_USERMOD(cube_fx_gyro_rain);
+// ---------------------------------------------------------------------------
+// Registration - joins the effect bank, which decides whether this effect
+// claims one of the device's limited effect slots. See cube_fx_bank.h.
+// ---------------------------------------------------------------------------
+static CfxBankReg cube_fx_23_gyro_rain_reg(&mode_gyro_rain, _data_FX_MODE_GYRO_RAIN);

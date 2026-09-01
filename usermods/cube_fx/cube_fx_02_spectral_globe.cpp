@@ -1,5 +1,6 @@
 #include "wled.h"
 #include "cube_fx_common.h"
+#include "cube_fx_bank.h"
 
 // ===========================================================================
 // 2. SPECTRAL GLOBE
@@ -77,17 +78,9 @@ static const char _data_FX_MODE_SPECTRAL_GLOBE[] PROGMEM =
   "Ace 3-D Spectral Globe@Spin,Band width,Symmetry,Twist,Petal depth,Golden spin,,Flat mode;;!;2f;sx=60,ix=100,c1=96,c2=140,c3=12,o1=1";
 
 
-// ---------------------------------------------------------------------------
-// Registration - self-contained, so adding a new effect never means editing
-// another file. Each cube_fx_*.cpp registers only its own effect(s).
-// ---------------------------------------------------------------------------
-class CubeFx_SpectralGlobeUsermod : public Usermod {
- public:
-  void setup() override {
-    strip.addEffect(255, &mode_spectral_globe, _data_FX_MODE_SPECTRAL_GLOBE);
-  }
-  void loop() override {}
-};
 
-static CubeFx_SpectralGlobeUsermod cube_fx_spectral_globe;
-REGISTER_USERMOD(cube_fx_spectral_globe);
+// ---------------------------------------------------------------------------
+// Registration - joins the effect bank, which decides whether this effect
+// claims one of the device's limited effect slots. See cube_fx_bank.h.
+// ---------------------------------------------------------------------------
+static CfxBankReg cube_fx_02_spectral_globe_reg(&mode_spectral_globe, _data_FX_MODE_SPECTRAL_GLOBE);

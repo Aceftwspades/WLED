@@ -1,5 +1,6 @@
 #include "wled.h"
 #include "cube_fx_common.h"
+#include "cube_fx_bank.h"
 
 // ===========================================================================
 // 7. CUBE BLOOM
@@ -235,17 +236,9 @@ static const char _data_FX_MODE_CUBE_BLOOM[] PROGMEM =
   "Ace 3-D Cube Bloom@Speed,Thickness,Lobing,Persistence,Max blooms,Spawn on beat,Spectral placement,Flat mode;;!;2f;sx=110,ix=110,c1=150,c2=150,c3=18,o1=1,o2=1";
 
 
-// ---------------------------------------------------------------------------
-// Registration - self-contained, so adding a new effect never means editing
-// another file. Each cube_fx_*.cpp registers only its own effect(s).
-// ---------------------------------------------------------------------------
-class CubeFx_CubeBloomUsermod : public Usermod {
- public:
-  void setup() override {
-    strip.addEffect(255, &mode_cube_bloom, _data_FX_MODE_CUBE_BLOOM);
-  }
-  void loop() override {}
-};
 
-static CubeFx_CubeBloomUsermod cube_fx_cube_bloom;
-REGISTER_USERMOD(cube_fx_cube_bloom);
+// ---------------------------------------------------------------------------
+// Registration - joins the effect bank, which decides whether this effect
+// claims one of the device's limited effect slots. See cube_fx_bank.h.
+// ---------------------------------------------------------------------------
+static CfxBankReg cube_fx_07_cube_bloom_reg(&mode_cube_bloom, _data_FX_MODE_CUBE_BLOOM);

@@ -1,5 +1,6 @@
 #include "wled.h"
 #include "cube_fx_common.h"
+#include "cube_fx_bank.h"
 
 // ===========================================================================
 // 9. CUBE CELL   (Waving Cell, made cube-native)
@@ -169,17 +170,9 @@ static const char _data_FX_MODE_CUBE_CELL[] PROGMEM =
   "Ace 3-D Cube Cell@Speed,Drive,Beat shift X,Beat shift Y,Beat shift Z,Beat snap,Tumble,Flat mode;;!;2f;sx=128,ix=150,c1=200,c2=64,c3=26,o1=1,o2=1";
 
 
-// ---------------------------------------------------------------------------
-// Registration - self-contained, so adding a new effect never means editing
-// another file. Each cube_fx_*.cpp registers only its own effect(s).
-// ---------------------------------------------------------------------------
-class CubeFx_CubeCellUsermod : public Usermod {
- public:
-  void setup() override {
-    strip.addEffect(255, &mode_cube_cell, _data_FX_MODE_CUBE_CELL);
-  }
-  void loop() override {}
-};
 
-static CubeFx_CubeCellUsermod cube_fx_cube_cell;
-REGISTER_USERMOD(cube_fx_cube_cell);
+// ---------------------------------------------------------------------------
+// Registration - joins the effect bank, which decides whether this effect
+// claims one of the device's limited effect slots. See cube_fx_bank.h.
+// ---------------------------------------------------------------------------
+static CfxBankReg cube_fx_09_cube_cell_reg(&mode_cube_cell, _data_FX_MODE_CUBE_CELL);
