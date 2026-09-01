@@ -1,6 +1,7 @@
 #include "wled.h"
 #include "cube_fx_common.h"
 #include "cube_fx_imu.h"
+#include "cube_fx_bank.h"
 
 // ===========================================================================
 // 22. ACE GYRO SAND
@@ -75,6 +76,9 @@
 #endif
 #ifndef SD_VCAP
   #define SD_VCAP 110                 // terminal velocity, Q4 per 23 ms
+#endif
+#ifndef SD_FILL_TARGET
+  #define SD_FILL_TARGET 120          // pile levels off near this height, of 254
 #endif
 
 struct SdGrain {
@@ -221,7 +225,19 @@ static FX_RET mode_gyro_sand() {
   const int accel  = 1 + ((int)SEGMENT.speed * 6) / 255;    // hourglass pour rate
   const int bounce = (int)SEGMENT.custom3 >> 3;             // 0..31, wall restitution
   const int active = 32 + ((int)SEGMENT.custom1 * (NP - 32)) / 255;
-  const int deposit = 3 + (700 / (NP / (SD_HG * SD_HG) + 1));
+
+  // How much one settled grain raises its column, chosen so the pile levels off
+  // at ~SD_FILL_TARGET of the 254-unit depth once the grains are down, not so it
+  // slams into the ceiling. Deriving it from `active` (roughly the settled
+  // count at rest) rather than a constant is what makes that height hold: a
+  // column receives active/SD_HG^2 grains on average, so deposit *
+  // (active/SD_HG^2) ~= SD_FILL_TARGET by construction, independent of how many
+  // grains the Fill slider is running. The old fixed ~80 filled a column in
+  // three grains, saturated every column in a second, and left later grains
+  // settling on the ceiling. Floored at 2 so a very dense field still builds
+  // visible relief instead of a flat layer lost to integer truncation.
+  int deposit = ((int)SD_HG * SD_HG * SD_FILL_TARGET) / (active < 1 ? 1 : active);
+  if (deposit < 2) deposit = 2;
 
   for (int i = 0; i < active; i++) {
     SdGrain &q = g[i];
@@ -336,17 +352,9 @@ static const char _data_FX_MODE_GYRO_SAND[] PROGMEM =
   "Ace Gyro Sand@Pour rate,Glow,Fill,Burst size,Bounce,Beat bursts,Spectral push,Flat mode;;!;2f;sx=120,ix=150,c1=200,c2=120,c3=110,o1=1,o2=1";
 
 
-// ---------------------------------------------------------------------------
-// Registration - self-contained, so adding a new effect never means editing
-// another file. Each cube_fx_*.cpp registers only its own effect(s).
-// ---------------------------------------------------------------------------
-class CubeFx_GyroSandUsermod : public Usermod {
- public:
-  void setup() override {
-    strip.addEffect(255, &mode_gyro_sand, _data_FX_MODE_GYRO_SAND);
-  }
-  void loop() override {}
-};
 
-static CubeFx_GyroSandUsermod cube_fx_gyro_sand;
-REGISTER_USERMOD(cube_fx_gyro_sand);
+// ---------------------------------------------------------------------------
+// Registration - joins the effect bank, which decides whether this effect
+// claims one of the device's limited effect slots. See cube_fx_bank.h.
+// ---------------------------------------------------------------------------
+static CfxBankReg cube_fx_22_gyro_sand_reg(&mode_gyro_sand, _data_FX_MODE_GYRO_SAND);

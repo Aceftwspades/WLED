@@ -1,6 +1,7 @@
 #include "wled.h"
 #include "cube_fx_common.h"
 #include "ace_ui_bus.h"
+#include "cube_fx_bank.h"
 
 // ===========================================================================
 // 21. ACE 3-D BREAKOUT  (two-player, playable from the knobs)
@@ -91,6 +92,9 @@
 #ifndef BO_STALL_MS
   #define BO_STALL_MS 7000      // no brick and no paddle for this long = stuck, re-serve
 #endif
+#ifndef BO_IDLE_RELEASE_MS
+  #define BO_IDLE_RELEASE_MS 45000  // knobs untouched this long: give them back, go to demo
+#endif
 
 // Ball speed is per 23 ms, matching fx_step's calibration, so the game plays
 // the same on a cube running 20 fps and one running 60.
@@ -111,6 +115,7 @@ struct BoState {
   uint8_t  hitPad;              // who touched it last - where a rescue re-serves
   uint8_t  parkOn;              // which paddle the un-served ball rides
   uint8_t  grabbed;             // panel-less builds take the knobs once, not every frame
+  uint8_t  chaser;              // which auto paddle owns the ball - sticky, see the AI block
   uint16_t serveAt;
   uint16_t actAt;               // last brick break or paddle touch, for the stall watchdog
   uint8_t  clk[2];              // fx_dt8 store
@@ -351,6 +356,22 @@ static FX_RET mode_breakout() {
       s->grabbed   = 1;
       ui.game.active = true;
     }
+
+    // Hand the knobs back after a spell with nothing touching them.
+    //
+    // Without this, taking control once kept it FOREVER: game.active is only
+    // cleared by an explicit BACK or Home, and while it is set the knobs are
+    // routed to the paddles, so you cannot even navigate away. Walk off
+    // mid-rally and whichever paddle was yours simply stops - which is exactly
+    // the "auto mode never engages" this is meant to fix, because the effect
+    // was still, correctly, treating you as present.
+    //
+    // Skipped on a panel-less build: there the menu is not reachable, so a
+    // release would strand the knobs with no way to ask for them back.
+    if (ui.screenReady && ui.game.active &&
+        (millis() - ui.lastInputMs) > BO_IDLE_RELEASE_MS) {
+      aceUiGameRelease();
+    }
   }
   const bool playing = aceUiGameActive();
 
@@ -370,6 +391,7 @@ static FX_RET mode_breakout() {
     s->flash  = 0;
     s->hitPad  = 0;
     s->grabbed = 0;
+    s->chaser  = 0;
     s->pad[0] = boSnap((int32_t)(ringW / 4) << 8);
     s->pad[1] = boSnap((int32_t)(3 * ringW / 4) << 8);
     s->clk[0] = s->clk[1] = 0;
@@ -416,9 +438,11 @@ static FX_RET mode_breakout() {
   const bool human0 = playing && !SEGMENT.check1 && (aceUi().encCount >= 1);
   const bool human1 = playing && !SEGMENT.check2 && (aceUi().encCount >= 2);
 
-  // Centres must stay this far apart for the spans not to overlap - the same
-  // half-width boOnPaddle() tests with, doubled.
-  const int32_t minSep = 2 * ((int32_t)(halfW + 1) << 8);
+  // Closest the centres may get. Each paddle lights 2*halfW+1 columns, so a
+  // separation of exactly that puts them edge to edge - touching, with no gap
+  // and no overlap. It was 2*(halfW+1), one column more, which left a permanent
+  // dead column between them that the ball could drop through.
+  const int32_t minSep = (int32_t)(2 * halfW + 1) << 8;
 
   if (human0) {
     int32_t lo, hi;
@@ -440,7 +464,18 @@ static FX_RET mode_breakout() {
     if (!human0 && !human1) {
       int32_t d0 = boLoopDelta(s->pad[0], ball, ringQ); if (d0 < 0) d0 = -d0;
       int32_t d1 = boLoopDelta(s->pad[1], ball, ringQ); if (d1 < 0) d1 = -d1;
-      chaser = (d0 <= d1) ? 0 : 1;
+
+      // Sticky, with a margin before the roles swap. Taking whichever is
+      // nearer outright makes the pair trade jobs on almost every frame while
+      // they are near-equidistant - and because the two targets are half a
+      // ring apart, each paddle's aim then jumps back and forth by that much
+      // every frame. Capped step speed turns that into a twitch on the spot:
+      // both paddles look busy and neither ever arrives at the ball.
+      uint8_t c = (s->chaser < 2) ? s->chaser : 0;
+      const int32_t margin = ringQ / 8;
+      if (c == 0 ? (d1 + margin < d0) : (d0 + margin < d1)) c ^= 1;
+      s->chaser = c;
+      chaser = (int)c;
     }
 
     for (int p = 0; p < 2; p++) {
@@ -672,17 +707,9 @@ static const char _data_FX_MODE_BREAKOUT[] PROGMEM =
   "Ace 3-D Breakout@Ball speed,Glow,Paddle width,Brick depth,AI skill,Auto P1,Auto P2,Flat mode;;!;2f;sx=120,ix=200,c1=110,c2=140,c3=16,o1=0,o2=0";
 
 
-// ---------------------------------------------------------------------------
-// Registration - self-contained, so adding a new effect never means editing
-// another file. Each cube_fx_*.cpp registers only its own effect(s).
-// ---------------------------------------------------------------------------
-class CubeFx_BreakoutUsermod : public Usermod {
- public:
-  void setup() override {
-    strip.addEffect(255, &mode_breakout, _data_FX_MODE_BREAKOUT);
-  }
-  void loop() override {}
-};
 
-static CubeFx_BreakoutUsermod cube_fx_breakout;
-REGISTER_USERMOD(cube_fx_breakout);
+// ---------------------------------------------------------------------------
+// Registration - joins the effect bank, which decides whether this effect
+// claims one of the device's limited effect slots. See cube_fx_bank.h.
+// ---------------------------------------------------------------------------
+static CfxBankReg cube_fx_21_breakout_reg(&mode_breakout, _data_FX_MODE_BREAKOUT);

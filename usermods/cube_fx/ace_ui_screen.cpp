@@ -4,14 +4,15 @@
 // ===========================================================================
 // ace_ui_screen.cpp - u8g2 panel that cannot cost you frames
 // ===========================================================================
-// Needs the library. Add to platformio_override.ini, in your env:
+// Needs U8g2, which is declared in this folder's library.json - NOT in
+// platformio.ini and not in your env. That is the right place for it: the
+// dependency belongs to the usermod, so it follows the usermod into whatever
+// environment builds it, and an S3 env needs no more setup than the classic
+// ESP32 one did.
 //
-//     lib_deps = ${env.lib_deps}
-//                olikraus/U8g2 @ ^2.35.19
-//
-// Without it this file compiles to nothing at all (see __has_include below),
-// so a missing lib_deps line is a screen that does not appear, not a build
-// that fails at 90%.
+// If it ever goes missing this file compiles to nothing at all (see
+// __has_include below), so the symptom is a screen that never appears rather
+// than a build that fails at 90%.
 //
 // ---------------------------------------------------------------------------
 // THE TWO-COLOUR PANEL, USED ON PURPOSE
@@ -25,8 +26,13 @@
 //
 //     rows  0.. 7   the RUNNING EFFECT, on every screen, scrolled if long
 //     rows  8..15   where you are (Menu / Palette / Params ...) and how far
-//                   through, or brightness when there is nothing to say
-//     rows 16..63   the body - list, value editor, status, info page
+//                   through, or brightness when there is nothing to say. The
+//                   left half is clipped to whatever the right-hand readout
+//                   leaves it, so a long title cannot run under the percentage
+//     rows 16..63   the body - list, value editor, status, info page. In a
+//                   list the HIGHLIGHTED row scrolls if it overruns, clipped
+//                   short of the scrollbar; the rest clip. One moving row is
+//                   easier to read than a screen where every long name marches
 //
 // The IP address used to sit on row 0 of the front page. It is gone; it lives
 // on System -> Network now, with the SSID and the key, at a size you can read
@@ -36,9 +42,12 @@
 // ---------------------------------------------------------------------------
 // THE ARITHMETIC THAT DRIVES EVERY OTHER DESIGN CHOICE HERE
 // ---------------------------------------------------------------------------
-// The panel sits on Wire1, GPIO23/22, on its own peripheral; the IMU keeps the
-// shared bus (SDA 21 / SCL 13) to itself. At 400 kHz and 9 bits per byte that
-// is 22.5 us per byte:
+// By default the panel gets Wire1, its own I2C peripheral, and the IMU keeps
+// WLED's shared bus to itself. Every pin here is a setting - the numbers that
+// used to be quoted in this paragraph were one particular ESP32 wiring, and two
+// of them do not even exist on an S3. The budget below is what matters, and it
+// depends only on the clock. At 400 kHz and 9 bits per byte that is 22.5 us
+// per byte:
 //
 //     one 128-byte tile row        ~2.9 ms      12% of a 23 ms frame
 //     a full 1024-byte refresh    ~23.0 ms      exactly one dropped frame
@@ -82,10 +91,11 @@
 //     idle > sleepSec  -> panel off entirely, and the first input back is
 //                         swallowed as a wake rather than acted on
 //
-// The dim step matters more than it sounds: at 25% the panel stops being the
+// The dim step matters more than it sounds: dimmed, the panel stops being the
 // brightest thing in a dark room and stops washing out the cube, and because
 // scrolling stops with it the bus goes completely silent between interactions.
-// All four numbers are on the settings page.
+// All four numbers are on the settings page - the percentages above are the
+// defaults, not fixed values.
 //
 // ---------------------------------------------------------------------------
 // WHY THE CONTRAST SETTING DID NOTHING - TWO SEPARATE FAULTS
@@ -120,11 +130,19 @@
 // Info tells the truth, because this file owns its I2C byte callback and
 // therefore checks the ACK that u8g2's own callback discards:
 //
-//   "no ACK - check VCC, pin order, address"   nothing is answering at 0x3C
+//   "no ACK - check VCC, pin order, address"   I2C: nothing is answering at 0x3C
 //   "Wire1 pins clash..."                      w1Sda/w1Scl overlap the shared
 //                                              pair. two masters, one bus
 //   "Panel NAKs: n"                            it answered once and stopped.
 //                                              wiring or rise time, not code
+//   "CS/DC/RST already in use"                 SPI: something else - an LED
+//                                              output, another usermod - owns
+//                                              one of the panel's pins
+//   "no panel - check wiring and the          SPI: the pins are ours, nothing
+//    global SPI pins"                          came back. usually SCLK/MOSI
+//                                              unset in LED Preferences, since
+//                                              those come from WLED's bus and
+//                                              not from this usermod
 // ===========================================================================
 
 #if __has_include(<U8g2lib.h>)
@@ -288,6 +306,12 @@ class AceUiScreenUsermod : public Usermod {
   uint32_t flushAcc = 0; uint16_t flushN = 0;
   uint16_t pagesSec = 0;
   int16_t  scrollX = 0;
+  // The header band and the highlighted LIST ROW scroll independently. They
+  // have to: the header carries the running effect and the row carries the one
+  // you are pointing at, and those are different strings that overrun by
+  // different amounts.
+  int16_t  rowScrollX = 0;
+  uint32_t lastRowScrollMs = 0;
 
   // -1 = "nothing has been written yet". A uint8_t seeded to 255 could not
   // express that, because 255 is what 100% resolves to - which is the whole of
@@ -343,6 +367,20 @@ class AceUiScreenUsermod : public Usermod {
     return g->getStrWidth(s);
   }
 
+  // Width a list row's text may occupy: from the text column at x=10 to just
+  // short of the scrollbar. One definition, used by both the scroll advance
+  // and the draw - if those two disagreed about the limit, a row would either
+  // scroll without needing to or overrun without scrolling.
+  static inline int listAvail(int W) { return W - 10 - 5; }
+
+  // Measure a list row in the SAME font drawList() will draw it in. drawList
+  // picks by display height, not by hdrPx, so nameWidth() is the wrong ruler
+  // here and would mis-measure by a pixel per character on a 64-row panel.
+  int rowWidth(const char *s) {
+    g->setFont((g->getDisplayHeight() >= 64) ? u8g2_font_6x10_tf : u8g2_font_5x8_tf);
+    return g->getStrWidth(s);
+  }
+
   // The yellow band. Drawn identically on every screen so the running effect
   // never moves, never disappears behind a menu, and never has to share a row
   // with a status line nobody reads.
@@ -363,8 +401,15 @@ class AceUiScreenUsermod : public Usermod {
     else snprintf(r, sizeof(r), "%d%%", (int)(((int)bri * 100 + 127) / 255));
     r[sizeof(r) - 1] = 0;
 
+    // The title is clipped to whatever the right-hand readout leaves it. They
+    // are drawn into the same row from opposite ends, so without this a long
+    // title runs straight under the percentage or the breadcrumb and both
+    // become unreadable at once.
+    const int rw = g->getStrWidth(r);
+    g->setClipWindow(0, 8, (rw < W - 3) ? (W - rw - 3) : W, 16);
     g->drawStr(0, 15, v.title);
-    g->drawStr(W - g->getStrWidth(r), 15, r);
+    g->setMaxClipWindow();
+    g->drawStr(W - rw, 15, r);
   }
 
   void drawNowPlaying(const AceUiView &v, int W, int H) {
@@ -406,7 +451,25 @@ class AceUiScreenUsermod : public Usermod {
       // a list that cannot show both is why mode-cycling UIs feel lost.
       if (v.live == top + i) g->drawDisc(4, y + rowH / 2, 2);
       if (v.rowFn) v.rowFn(top + i, buf, sizeof(buf)); else buf[0] = 0;
-      g->drawStr(10, y + rowH - 3, buf);
+
+      // Long names used to be drawn straight out to the right and simply run
+      // off the panel - over the scrollbar on the way - so anything past about
+      // 19 characters was unreadable and unidentifiable. The HIGHLIGHTED row
+      // scrolls instead; the others stay put and clip, because a list where
+      // every long row is moving at once is harder to read than one that
+      // clips, not easier.
+      const int tw = g->getStrWidth(buf);
+      if (sel && tw > listAvail(W)) {
+        // Clipped to the text column so the moving copy cannot paint over the
+        // scrollbar or the applied-effect dot.
+        g->setClipWindow(10, y, 10 + listAvail(W), y + rowH);
+        const int sx = 10 - rowScrollX;
+        g->drawStr(sx, y + rowH - 3, buf);
+        g->drawStr(sx + tw + 16, y + rowH - 3, buf);   // wrap-around copy
+        g->setMaxClipWindow();
+      } else {
+        g->drawStr(10, y + rowH - 3, buf);
+      }
       g->setDrawColor(1);
     }
     if (v.count > shown) {                            // scrollbar
@@ -804,6 +867,17 @@ class AceUiScreenUsermod : public Usermod {
 
     if (busSel == AUI_BUS_SPI) {
       if (spiCs < 0 || spiDc < 0) return;
+      // CS/DC/RST have to be claimed the same way the Wire1 pins are. Without
+      // this the PinManager has no idea the panel owns them, so an LED output
+      // or another usermod can be handed the same pin with no complaint from
+      // either side - and a display that half-works because something else is
+      // driving its DC line is a genuinely horrible thing to debug.
+      //
+      // SCLK and MOSI are deliberately NOT claimed here: they belong to WLED's
+      // global SPI bus, which allocated them under PinOwner::HW_SPI at boot.
+      // Claiming a pin that is already owned would fail, and correctly so.
+      if (!auiAllocPin((int8_t)spiCs) || !auiAllocPin((int8_t)spiDc) ||
+          !auiAllocPin((int8_t)spiRst)) { pinFail = true; return; }
     } else if (busSel == AUI_BUS_WIRE1) {
       if (w1Sda < 0 || w1Scl < 0) return;
       // Wire1 is a separate peripheral. Handing it a pin the shared bus is
@@ -889,6 +963,12 @@ class AceUiScreenUsermod : public Usermod {
 
     bool redraw = (b.view.serial != seenSerial);
 
+    // Any change to the model restarts the row scroll. Moving the cursor onto a
+    // new row must show that row from its beginning - inheriting the previous
+    // row's offset would drop you into the middle of a name you have not read
+    // the start of yet.
+    if (redraw) rowScrollX = 0;
+
     // Scroll only while the panel is at full brightness. Once it dims, the
     // whole thing goes static and the bus falls silent until you touch it.
     if (scroll && !wantDim && b.view.fxName[0] && hdrPx > 0) {
@@ -902,6 +982,23 @@ class AceUiScreenUsermod : public Usermod {
         }
       } else if (scrollX) { scrollX = 0; redraw = true; }
     } else if (scrollX) { scrollX = 0; redraw = true; }
+
+    // Same treatment for the highlighted list row. Kept on its own timer so the
+    // two scrollers do not have to be in step - locking them together makes a
+    // long name and a long header visibly march as one block, which reads as a
+    // rendering glitch rather than as two independent labels.
+    if (scroll && !wantDim && b.view.kind == AUI_V_LIST && b.view.rowFn && b.view.count > 0) {
+      char rb[AUI_ROW_LEN];
+      b.view.rowFn(b.view.cursor, rb, sizeof(rb));
+      const int tw = rowWidth(rb);
+      if (tw > listAvail(g->getDisplayWidth())) {
+        if (now - lastRowScrollMs > 70) {
+          lastRowScrollMs = now;
+          if (++rowScrollX > tw + 16) rowScrollX = 0;
+          redraw = true;
+        }
+      } else if (rowScrollX) { rowScrollX = 0; redraw = true; }
+    } else if (rowScrollX) { rowScrollX = 0; redraw = true; }
 
     // The BAND is optional decoration and vuMode governs it. The SCREEN is not
     // - you navigated to it deliberately, and a meter that switches itself off
@@ -961,8 +1058,12 @@ class AceUiScreenUsermod : public Usermod {
     JsonArray s = user.createNestedArray(FPSTR(_name));
     if (!enabled)      s.add(F("disabled"));
     else if (clash)    s.add(F("Wire1 pins clash with the shared bus"));
-    else if (pinFail)  s.add(F("Wire1 pins already in use"));
-    else if (!ready)   s.add(F("no ACK - check VCC, pin order, address"));
+    // pinFail can now come from either lane, so it cannot name Wire1 any more.
+    else if (pinFail)  s.add(busSel == AUI_BUS_SPI ? F("CS/DC/RST already in use")
+                                                   : F("Wire1 pins already in use"));
+    else if (!ready && busSel != AUI_BUS_SPI)
+                       s.add(F("no ACK - check VCC, pin order, address"));
+    else if (!ready)   s.add(F("no panel - check wiring and the global SPI pins"));
     else if (blanked)  s.add(F("asleep"));
     else               s.add(F("ok"));
     s.add(busSel == AUI_BUS_WIRE1 ? F(" on Wire1") :
