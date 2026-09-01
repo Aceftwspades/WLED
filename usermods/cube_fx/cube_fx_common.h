@@ -67,7 +67,12 @@
  *   20 Matrix Rain      glyph columns pouring off the lid and down the walls
  *   21 Breakout         two-player, played from the encoders
  *   22 Gyro Sand        a glass box of sand, poured by real gravity
- *   23 Gyro Rain
+ *   23 Gyro Rain        rain that falls down whichever way the cube is held
+ *   24 Whirlpool        an eye on the lid, arms spiralling out onto the walls
+ *   25 Cube Fire        smoulders at the base, climbs the walls, pools on the lid
+ *
+ * The seven flat 2-D analysers live together in cube_fx.cpp. Full catalogue,
+ * accessory requirements and setup are in README.md.
  *
  * The idea: every pixel gets a 3D position on the cube's surface. Effects are
  * then functions of (X,Y,Z), so they are continuous across folds for free -
@@ -90,13 +95,9 @@
  * effect degrades sensibly (ripples become circles, the globe becomes a polar
  * mandala, the slice becomes sweeping bands).
  *
- * Cube detection is automatic (square, divisible by 3); the "Flat mode"
- * checkbox forces the plane if you ever run a square flat panel.
- *
- * Drop next to cube_fx.cpp in the same usermod folder - one
- * library.json covers every .cpp in the directory. The few static helpers are
- * duplicated from that file on purpose: keeping this separate means the nine
- * working effects don't get rewritten every time we iterate on cube geometry.
+ * Cube detection is automatic (square side, a multiple of 3, at least 12); the
+ * "Flat mode" checkbox forces the plane on a square panel that would otherwise
+ * be misread as a cube. See README.md for the size table and the caveat.
  * ===========================================================================
  */
 

@@ -84,10 +84,10 @@
 // THE EFFECT FILTER IS A TABLE, NOT A SWITCH
 // ---------------------------------------------------------------------------
 // Effects -> Show lists one row per FAMILY, and a family is nothing more than
-// a name prefix. "Ace Gyro Horizon" is not an "Ace 3-D" effect and never
-// matched either of the two original prefixes, so the whole gyro roster was
-// only reachable by scrolling All effects past 180 stock WLED modes - which is
-// to say it was not reachable.
+// a name prefix. "Ace Gyro Sand" is not an "Ace 3-D" effect and never matched
+// either of the two original prefixes, so the whole gyro roster was only
+// reachable by scrolling All effects past 180 stock WLED modes - which is to
+// say it was not reachable.
 //
 // Adding a family is now ONE line in AUI_FILT and one in AUI_FILT_PRE, right
 // next to each other so they cannot drift apart. That is the same property the
