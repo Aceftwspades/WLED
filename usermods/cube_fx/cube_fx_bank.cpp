@@ -103,23 +103,34 @@ class CubeFxBankUsermod : public Usermod {
     };
 
     // --- the dropdowns -------------------------------------------------------
-    // One per slot, each listing every compiled effect grouped by family. The
-    // family is the name prefix, the same rule the on-cube menu groups by, so
-    // the two stay in step without a second table to maintain.
+    // The option list is emitted ONCE as a JS array and then cloned into every
+    // slot select, rather than re-printed into all CFX_BANK_SLOTS of them.
+    //
+    // The naive way - a full addOption() per effect per slot - is ~36 x 35
+    // script lines, tens of KB, and the whole usermod settings block is wrapped
+    // in one function that must parse as a unit. Past a certain size the
+    // generated script does not arrive intact, and a script cut off mid-call
+    // silently fails to run, leaving every field as the raw number input it
+    // started life as. That is the "dropdowns turned into numbers" failure.
+    // One shared array is ~36x smaller and also renders far faster.
     CfxBankEntry *r = cfxBankRoster();
     const uint8_t n = cfxBankCount();
     char nm[40], key[4];
 
+    s.print(F("var CFXO=[['-- empty --',0]"));
+    for (uint8_t e = 0; e < n; e++) {
+      cfxBankName(r[e].data, nm, sizeof(nm));
+      s.print(F(",['")); jsq(nm); s.print(F("',")); s.print(r[e].hash); s.print(F("]"));
+    }
+    s.print(F("];var CFXD=[];"));
+
     for (uint8_t i = 0; i < CFX_BANK_SLOTS; i++) {
       slotKey(i, key);
-      s.print(F("dd=addDropdown('")); s.print(FPSTR(_name));
-      s.print(F("','")); s.print(key); s.print(F("');"));
-      s.print(F("addOption(dd,'-- empty --',0);"));
-      for (uint8_t e = 0; e < n; e++) {
-        cfxBankName(r[e].data, nm, sizeof(nm));
-        s.print(F("addOption(dd,'")); jsq(nm); s.print(F("',")); s.print(r[e].hash); s.print(F(");"));
-      }
+      s.print(F("CFXD.push(addDropdown('")); s.print(FPSTR(_name));
+      s.print(F("','")); s.print(key); s.print(F("')); "));
     }
+    s.print(F("for(var _k=0;_k<CFXD.length;_k++){var _s=CFXD[_k];if(!_s)continue;"
+              "for(var _m=0;_m<CFXO.length;_m++)addOption(_s,CFXO[_m][0],CFXO[_m][1]);}"));
 
     // --- grey-out ------------------------------------------------------------
     // An effect chosen in one slot is disabled in the others, so two slots
@@ -143,6 +154,37 @@ class CubeFxBankUsermod : public Usermod {
       "document.addEventListener('change',function(e){"
       "if(e.target&&e.target.name&&e.target.name.indexOf('CubeFXBank:s')==0)window.cfxBankSync();});"
       "setTimeout(window.cfxBankSync,300);}"));
+
+    // --- Assign all / Clear all ----------------------------------------------
+    // A fresh build otherwise means setting every slot by hand. Assign all
+    // fills each EMPTY slot with the next unused effect in roster order and
+    // leaves your existing picks untouched, so you populate once and then edit
+    // the few you care about. Clear all empties them. Both are one-shot actions
+    // on the live dropdowns - nothing is saved until you press Save - so a
+    // button is the honest control, not a checkbox that would imply a stored
+    // state. They close over the CFXO option list emitted above.
+    s.print(F(
+      "window.cfxBankAssign=function(){"
+      "var f=Array.prototype.slice.call(document.getElementsByTagName('select'))"
+      ".filter(function(x){return x.name&&x.name.indexOf('CubeFXBank:s')==0;});"
+      "f.sort(function(a,b){return a.name<b.name?-1:1;});"
+      "var u={};f.forEach(function(s){if(s.value!='0')u[s.value]=1;});"
+      "var oi=1;f.forEach(function(s){if(s.value!='0')return;"
+      "while(oi<CFXO.length&&u[CFXO[oi][1]])oi++;"
+      "if(oi<CFXO.length){s.value=String(CFXO[oi][1]);u[CFXO[oi][1]]=1;oi++;}});"
+      "window.cfxBankSync();};"
+      "window.cfxBankClear=function(){"
+      "var f=document.getElementsByTagName('select');for(var i=0;i<f.length;i++)"
+      "{if(f[i].name&&f[i].name.indexOf('CubeFXBank:s')==0)f[i].value='0';}"
+      "window.cfxBankSync();};"
+      "(function(){var h=document.getElementsByName('CubeFXBank:enabled')[0];if(!h)return;"
+      "var bar=document.createElement('div');bar.style.margin='8px 0';"
+      "var mk=function(t,fn){var b=document.createElement('button');b.type='button';"
+      "b.innerHTML=t;b.onclick=fn;b.style.marginRight='8px';return b;};"
+      "bar.appendChild(mk('Assign all',window.cfxBankAssign));"
+      "bar.appendChild(mk('Clear all',window.cfxBankClear));"
+      "var c=document.createElement('span');c.id='cfxBankCount';bar.appendChild(c);"
+      "h.parentNode.insertBefore(bar,h.nextSibling);})();"));
 
     auto info = [&](const char *k, const char *html) {
       s.print(F("addInfo('")); s.print(FPSTR(_name)); s.print(F(":")); s.print(k);
