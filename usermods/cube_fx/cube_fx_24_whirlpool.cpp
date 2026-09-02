@@ -71,7 +71,10 @@
 // ===========================================================================
 
 #define WP_Q       8                  // fixed point for the backward trace
-#define WP_ARMS_MAX 5
+// Integer truncation in the arm formula means the reachable maximum is
+// (WP_ARMS_MAX - 2) - 1, so 6 here yields 2..5 arms, with 5 across the top
+// quarter of the Arms slider.
+#define WP_ARMS_MAX 6
 
 #ifndef WP_FADE
   #define WP_FADE 2                   // dye lost per frame, so old dye cannot pile up
@@ -247,12 +250,12 @@ static FX_RET mode_whirlpool() {
   // Core angular rate, Q8 cells per tick. Winding rate and arm pitch are the
   // same number, so bass tightening the spiral and bass speeding it up are one
   // effect, not two. Scaled so default Speed turns the eye about once every
-  // 3-4 s and full Speed nearer 1.5 s - a whirlpool has to visibly rotate, and
-  // the old scale (~17 s per revolution at default) read as a slow drift. Only
-  // the CORE runs at this rate; wp_omega falls off as 1/r^2 outside it, so the
-  // arms still lag and wind however fast the eye spins.
-  int32_t w0 = ((int32_t)SEGMENT.speed * 220) / 255 + 12;
-  if (SEGMENT.check2) w0 += ((int32_t)s->bassEnv * 90) / 255;
+  // 2.5 s and full Speed nearer 1.2 s. The arms stay legible even at the top of
+  // this range because more of them are thinner, distinct streams rather than
+  // one smear. Only the CORE runs at this rate; wp_omega falls off as 1/r^2
+  // outside it, so the arms still lag and wind however fast the eye spins.
+  int32_t w0 = ((int32_t)SEGMENT.speed * 300) / 255 + 8;
+  if (SEGMENT.check2) w0 += ((int32_t)s->bassEnv * 110) / 255;
   w0 = (w0 * (int32_t)dt) / 23;
 
   const int32_t v0 = (((int32_t)SEGMENT.custom2 * 300) / 255 + 20) * (int32_t)dt / 23;
