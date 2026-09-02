@@ -35,6 +35,9 @@
 #ifndef CFX_PM_SETTLE_MS
   #define CFX_PM_SETTLE_MS 1500          // how long the sliders must hold still before we record them
 #endif
+#ifndef CFX_PM_RESTORE_MS
+  #define CFX_PM_RESTORE_MS 600          // how long a pending restore keeps looking for its moment
+#endif
 
 // millis() comparisons done as a signed difference so a 49-day rollover cannot
 // park a pending write forever.
@@ -52,6 +55,7 @@ static uint8_t  cfxPmLastMode = 0;
 static bool     cfxPmHaveLast = false;
 static uint32_t cfxPmDirtyAt  = 0;        // millis() a save is owed by, 0 = nothing pending
 static uint32_t cfxPmSettleAt = 0;        // millis() the live sliders count as "stopped moving"
+static uint32_t cfxPmRestoreBy = 0;       // a restore is owed until this millis(), 0 = none pending
 
 // Continuously-refreshed copy of "whatever the current effect is showing
 // right now" - captured every loop() so that the INSTANT a mode change is
@@ -135,7 +139,27 @@ static bool cfxPmRestore(Segment &sg, uint8_t forMode) {
   sg.check1    = (r->checks & 1) != 0;
   sg.check2    = (r->checks & 2) != 0;
   sg.check3    = (r->checks & 4) != 0;
-  sg.markForReset();
+
+  // Deliberately NO markForReset() here, and it must stay that way.
+  //
+  // Every value above is read live, every frame, by the effect - which is
+  // exactly why moving a slider in the web UI does not reset the segment
+  // either. Resetting was doing something the normal path never does, and it is
+  // expensive in a way that is easy to miss: resetIfRequired() FREES the
+  // segment buffer outright rather than clearing it whenever the buffer is
+  // larger than FAIR_DATA_PER_SEG (about 2 KB), so a big effect had its whole
+  // allocation thrown away and had to find that many contiguous bytes again on
+  // the very next frame - competing with the JSON buffers of the web request
+  // that triggered the restore. On Soap, at ~26 KB, that request loses often
+  // enough to raise "error 8 / effect RAM depleted" whenever a control is
+  // touched.
+  //
+  // Nothing needs the reset. Sliders and checkboxes take effect on the next
+  // frame regardless, an actual effect CHANGE is reset by WLED anyway, and the
+  // one case that really does invalidate cached state - Flat mode flipping the
+  // cube/flat geometry - is caught by each effect's own "did my mode change"
+  // rebuild test. The geometry watchdog below still resets, because a dimension
+  // change genuinely does strand stale coordinate tables.
   return true;
 }
 
@@ -234,8 +258,32 @@ class CubeFx_ParamMemoryUsermod : public Usermod {
       cfxPmLastMode = mode;
     } else if (mode != cfxPmLastMode) {
       cfxPmStash(cfxPmLastMode);
-      if (cfxAtDefaults(sg, mode) && cfxPmRestore(sg, mode)) stateUpdated(CALL_MODE_BUTTON);
-      cfxPmLastMode = mode;
+      cfxPmLastMode  = mode;
+      cfxPmRestoreBy = millis() + CFX_PM_RESTORE_MS;   // owed, not yet attempted
+    }
+
+    // Keep trying to restore for a short window rather than taking a single shot
+    // on the frame the mode change is noticed.
+    //
+    // That single shot was the bug behind "the web UI loads an effect on its
+    // defaults instead of my saved values". The UI does not necessarily deliver
+    // the new effect id and its default slider values in the same message, so
+    // there is a window where the mode has already changed but the sliders still
+    // hold the OUTGOING effect's numbers. cfxAtDefaults() is false for that
+    // frame, the restore was skipped - and because cfxPmLastMode had already
+    // been updated, it was never reconsidered. The saved values then sat unused
+    // until something else happened to read them back.
+    //
+    // Waiting for the defaults to actually land fixes it without weakening the
+    // guard: a preset or an explicit JSON call sets values that are NOT the
+    // defaults, so the window simply expires and memory stays out of the way.
+    if (cfxPmRestoreBy) {
+      if (cfxAtDefaults(sg, mode)) {
+        if (cfxPmRestore(sg, mode)) stateUpdated(CALL_MODE_BUTTON);
+        cfxPmRestoreBy = 0;                            // taken
+      } else if (CFX_DUE(cfxPmRestoreBy)) {
+        cfxPmRestoreBy = 0;                            // deliberate values won
+      }
     }
 
     // Record the CURRENT effect once its sliders stop moving, rather than only
