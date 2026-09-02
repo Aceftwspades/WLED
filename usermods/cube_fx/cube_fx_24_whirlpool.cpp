@@ -244,10 +244,15 @@ static FX_RET mode_whirlpool() {
 
   // --- vortex parameters --------------------------------------------------------
   const int rc = 1 + (((int)SEGMENT.custom1 * (rad / 3)) >> 8);   // core radius
-  // Winding rate and arm pitch are the same number, so the bass tightening the
-  // spiral and the bass speeding it up are not two effects - they are one.
-  int32_t w0 = ((int32_t)SEGMENT.speed * 40) / 255 + 4;
-  if (SEGMENT.check2) w0 += ((int32_t)s->bassEnv * 40) / 255;
+  // Core angular rate, Q8 cells per tick. Winding rate and arm pitch are the
+  // same number, so bass tightening the spiral and bass speeding it up are one
+  // effect, not two. Scaled so default Speed turns the eye about once every
+  // 3-4 s and full Speed nearer 1.5 s - a whirlpool has to visibly rotate, and
+  // the old scale (~17 s per revolution at default) read as a slow drift. Only
+  // the CORE runs at this rate; wp_omega falls off as 1/r^2 outside it, so the
+  // arms still lag and wind however fast the eye spins.
+  int32_t w0 = ((int32_t)SEGMENT.speed * 220) / 255 + 12;
+  if (SEGMENT.check2) w0 += ((int32_t)s->bassEnv * 90) / 255;
   w0 = (w0 * (int32_t)dt) / 23;
 
   const int32_t v0 = (((int32_t)SEGMENT.custom2 * 300) / 255 + 20) * (int32_t)dt / 23;
