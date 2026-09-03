@@ -1,0 +1,367 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Cube FX Simulator</title>
+<style>
+  :root { --bg:#111318; --panel:#181b22; --line:#2a2f3a; --tx:#d7dbe3; --dim:#8b93a3; --acc:#5aa9e6; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--tx);
+         font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  header { padding:10px 14px; border-bottom:1px solid var(--line); display:flex;
+           gap:14px; align-items:center; flex-wrap:wrap; }
+  h1 { font-size:13px; margin:0 0 0 0; font-weight:600; }
+  label { color:var(--dim); }
+  select,input[type=number],button { background:var(--panel); color:var(--tx);
+        border:1px solid var(--line); border-radius:4px; padding:3px 7px; font:inherit; }
+  button { cursor:pointer; } button:hover { border-color:var(--acc); }
+  main { display:grid; grid-template-columns:1fr 1fr 320px; gap:14px; padding:14px; align-items:start; }
+  @media (max-width:1100px){ main { grid-template-columns:1fr 1fr; } .side { grid-column:1/-1; } }
+  @media (max-width:760px){ main { grid-template-columns:1fr; } }
+  .pane { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; }
+  .pane h2 { font-size:11px; margin:0 0 8px; color:var(--dim); font-weight:600;
+             text-transform:uppercase; letter-spacing:.06em; }
+  canvas { display:block; width:100%; height:auto; border-radius:4px; background:#000; }
+  #net { image-rendering:pixelated; }
+  #gl { aspect-ratio:1/1; cursor:grab; } #gl:active { cursor:grabbing; }
+  .row { display:grid; grid-template-columns:88px 1fr 34px; gap:8px; align-items:center; margin:5px 0; }
+  .row span:first-child { color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .row output { color:var(--acc); text-align:right; }
+  input[type=range] { width:100%; accent-color:var(--acc); }
+  .chk { display:flex; gap:6px; align-items:center; margin:5px 0; color:var(--dim); }
+  #err { color:#ff9b9b; padding:14px; white-space:pre-wrap; }
+  footer { padding:0 14px 20px; color:var(--dim); }
+  code { color:var(--acc); }
+</style>
+
+<header>
+  <h1>Cube FX Simulator</h1>
+  <span><label>effect</label> <select id="fx"></select></span>
+  <span><label>face B</label>
+    <select id="bsel"><option value="4">4 (12²)</option><option value="8">8 (24²)</option>
+      <option value="16" selected>16 (48²)</option></select></span>
+  <span><label>palette</label>
+    <select id="pal"><option value="1">Rainbow</option><option value="2">Fire</option>
+      <option value="3">Ocean</option><option value="4">Party</option>
+      <option value="5">Mono</option><option value="6">Sunset</option>
+      <option value="0">Default (segment colour)</option></select></span>
+  <button id="play">pause</button>
+  <button id="step">step</button>
+  <button id="reset">restart fx</button>
+  <span id="stat" style="color:var(--dim)"></span>
+</header>
+
+<div id="err" hidden></div>
+
+<main>
+  <div class="pane"><h2>Unfolded net</h2><canvas id="net"></canvas></div>
+  <div class="pane"><h2>Cube — drag to rotate</h2><canvas id="gl"></canvas></div>
+  <div class="pane side">
+    <h2>Parameters</h2><div id="params"></div>
+    <h2 style="margin-top:14px">Audio</h2><div id="audio"></div>
+  </div>
+</main>
+
+<footer>
+  Runs the <b>actual effect sources</b> from <code>usermods/cube_fx/</code>, compiled to
+  WebAssembly against a shim — including WLED's own <code>perlin8</code>, <code>sin8_t</code>
+  and palette blending, so magnitudes tuned here hold on the cube.
+  Rebuild after editing an effect: <code>python build.py</code>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ===========================================================================
+// Geometry - a direct transcription of cfx_pos() in cube_fx_common.h.
+// This is the one thing that must not drift: if the simulator's idea of where a
+// pixel lives differs from the firmware's, everything judged here is worthless.
+// ===========================================================================
+function surfacePos(bx, by, a, b) {
+  if (bx === 1 && by === 1) return [ a, -b,  1];   // TOP
+  if (bx === 1 && by === 0) return [ a,  1,  b];   // NORTH
+  if (bx === 1 && by === 2) return [ a, -1, -b];   // SOUTH
+  if (bx === 0 && by === 1) return [-1, -b,  a];   // WEST
+  if (bx === 2 && by === 1) return [ 1, -b, -a];   // EAST
+  return [a, -b, -1];                              // gap corners (unlit)
+}
+const isGap = (bx, by) => bx !== 1 && by !== 1;
+
+// ===========================================================================
+let M = null, B = 16, cols = 48, rows = 48, playing = true, effIdx = 0, meta = [];
+let px32 = 0, fx = { sx:128, ix:128, c1:128, c2:128, c3:16, o1:0, o2:0, o3:0 };
+const el = id => document.getElementById(id);
+
+// The metadata string is the same one the web UI parses, so sliders get their
+// real names per effect rather than "custom2".
+//   "Name@S1,S2,C1,C2,C3,O1,O2,O3;;!;2f;sx=110,ix=200,c1=140,..."
+function parseMeta(s) {
+  const at = s.indexOf('@');
+  const name = at < 0 ? s : s.slice(0, at);
+  const rest = at < 0 ? '' : s.slice(at + 1);
+  const seg = rest.split(';');
+  const labels = (seg[0] || '').split(',');
+  const defs = {};
+  (seg[4] || '').split(',').forEach(kv => {
+    const [k, v] = kv.split('='); if (k && v !== undefined) defs[k.trim()] = +v;
+  });
+  return { name, labels, defs };
+}
+
+function buildControls() {
+  const m = meta[effIdx];
+  const keys = ['sx','ix','c1','c2','c3'], host = el('params');
+  host.innerHTML = '';
+  keys.forEach((k, i) => {
+    const lab = (m.labels[i] || '').trim();
+    if (!lab || lab === '!') { /* '!' means the generic name; still show it */ }
+    const shown = (!lab || lab === '!') ? ({sx:'Speed',ix:'Intensity',c1:'Custom 1',c2:'Custom 2',c3:'Custom 3'})[k] : lab;
+    fx[k] = m.defs[k] !== undefined ? m.defs[k] : (k === 'c3' ? 16 : 128);
+    const max = k === 'c3' ? 31 : 255;
+    const d = document.createElement('div'); d.className = 'row';
+    d.innerHTML = `<span title="${shown}">${shown}</span>
+      <input type=range min=0 max=${max} value="${fx[k]}"><output>${fx[k]}</output>`;
+    const r = d.querySelector('input'), o = d.querySelector('output');
+    r.oninput = () => { fx[k] = +r.value; o.textContent = r.value; push(); };
+    host.appendChild(d);
+  });
+  ['o1','o2','o3'].forEach((k, i) => {
+    const lab = (m.labels[5 + i] || '').trim();
+    if (!lab) return;
+    fx[k] = m.defs[k] ? 1 : 0;
+    const d = document.createElement('label'); d.className = 'chk';
+    d.innerHTML = `<input type=checkbox ${fx[k] ? 'checked' : ''}> ${lab}`;
+    d.querySelector('input').onchange = e => { fx[k] = e.target.checked ? 1 : 0; push(); };
+    host.appendChild(d);
+  });
+  push();
+}
+
+// --- audio you can drive by hand -------------------------------------------
+// The beat needs more care than "set a peak flag". fx_lowBeat() only reports a
+// beat when ALL of these hold: the peak flag has a RISING edge, the low band
+// clears FX_BEAT_FLOOR, the low band exceeds the high band, and - the one that
+// caught me out - the low band sits at least FX_BEAT_RISE (38) above a ~260 ms
+// slewing floor. That last test exists to reject held notes, and a CONSTANT
+// bass slider can never pass it: the floor simply rises to meet it. So the
+// simulated kick has to be a real transient, spiking the low bins and decaying
+// back, exactly as a drum would.
+let vol = 90, bass = 45, mid = 50, treb = 35, autoBeat = true, bpm = 120, peak = 0;
+let simMs = 0, lastBeat = -1e9, kickReq = false, beatFlash = 0;
+
+function buildAudio() {
+  const host = el('audio'); host.innerHTML = '';
+  const mk = (name, get, set, max, min = 0) => {
+    const d = document.createElement('div'); d.className = 'row';
+    d.innerHTML = `<span>${name}</span><input type=range min=${min} max=${max} value="${get()}"><output>${get()}</output>`;
+    const r = d.querySelector('input'), o = d.querySelector('output');
+    r.oninput = () => { set(+r.value); o.textContent = r.value; };
+    host.appendChild(d);
+  };
+  mk('volume', () => vol,  v => vol = v,  255);
+  mk('bass',   () => bass, v => bass = v, 255);
+  mk('mid',    () => mid,  v => mid = v,  255);
+  mk('treble', () => treb, v => treb = v, 255);
+  mk('bpm',    () => bpm,  v => bpm = v,  200, 30);
+
+  const d = document.createElement('label'); d.className = 'chk';
+  d.innerHTML = `<input type=checkbox checked> auto beat`;
+  d.querySelector('input').onchange = e => autoBeat = e.target.checked;
+  host.appendChild(d);
+
+  const b = document.createElement('button');
+  b.textContent = 'kick now'; b.style.marginTop = '6px';
+  b.onclick = () => kickReq = true;
+  host.appendChild(b);
+
+  const ind = document.createElement('div');
+  ind.id = 'beatled'; ind.style.cssText =
+    'margin-top:8px;height:6px;border-radius:3px;background:#2a2f3a;transition:background .08s';
+  host.appendChild(ind);
+}
+
+let fftPtr = 0;
+function pushAudio() {
+  if (!fftPtr) fftPtr = M.ccall('simFftPtr', 'number', [], []);
+  // The view is rebuilt each call on purpose: ALLOW_MEMORY_GROWTH can replace
+  // the underlying ArrayBuffer, which silently detaches any view held across
+  // that moment.
+  const arr = new Uint8Array(M.HEAPU8.buffer, fftPtr, 16);
+
+  // Beat timing runs on the SIMULATED clock, not the wall clock. The effects
+  // measure everything in strip.now, and stepping frame by frame must not drift
+  // relative to the beat - a beat you can land on deterministically is the
+  // whole reason to have this.
+  const period = 60000 / bpm;
+  let fire = kickReq;
+  if (autoBeat && (simMs - lastBeat) >= period) fire = true;
+  if (fire) { lastBeat = simMs; kickReq = false; beatFlash = 6; }
+
+  // A kick that decays over ~200 ms, so the low band genuinely rises above its
+  // floor and then falls back - which is what makes it read as a transient
+  // rather than as a louder held note.
+  const kick = Math.max(0, 165 * (1 - (simMs - lastBeat) / 200));
+
+  for (let i = 0; i < 16; i++) {
+    const base = i < 3 ? bass
+               : i < 9 ? bass + (mid - bass) * ((i - 3) / 6)
+                       : mid  + (treb - mid) * ((i - 9) / 7);
+    arr[i] = Math.max(0, Math.min(255, (base + (i < 3 ? kick : 0)) | 0));
+  }
+
+  // peak is set for exactly the firing frame, so fx_lowBeat sees a clean rising
+  // edge; leaving it high would latch prevPeak and suppress every later beat.
+  peak = fire ? 1 : 0;
+  M.ccall('simAudioSet', null, ['number','number'], [Math.min(255, vol + kick * 0.4), peak]);
+
+  const led = el('beatled');
+  if (led) { led.style.background = beatFlash > 0 ? '#5aa9e6' : '#2a2f3a'; if (beatFlash) beatFlash--; }
+}
+
+function push() {
+  M.ccall('simParams', null, Array(9).fill('number'),
+    [fx.sx, fx.ix, fx.c1, fx.c2, fx.c3, fx.o1, fx.o2, fx.o3, +el('pal').value]);
+}
+
+// ===========================================================================
+// Flat view
+// ===========================================================================
+const net = el('net'), nctx = net.getContext('2d');
+let imgData = null;
+function drawNet(u32) {
+  const d = imgData.data;
+  for (let i = 0, p = 0; i < cols * rows; i++) {
+    const c = u32[i];
+    d[p++] = (c >> 16) & 255; d[p++] = (c >> 8) & 255; d[p++] = c & 255; d[p++] = 255;
+  }
+  nctx.putImageData(imgData, 0, 0);
+}
+
+// ===========================================================================
+// Cube view - one quad per lit pixel, corners evaluated through the same face
+// rules so a quad covers the surface the pixel actually occupies.
+// ===========================================================================
+const glc = el('gl');
+const renderer = new THREE.WebGLRenderer({ canvas: glc, antialias: true });
+renderer.setClearColor(0x000000, 1);
+const scene = new THREE.Scene();
+const cam = new THREE.PerspectiveCamera(38, 1, 0.1, 100);
+let geo = null, mesh = null, colAttr = null, quadPix = [];
+
+function buildMesh() {
+  if (mesh) { scene.remove(mesh); geo.dispose(); mesh.material.dispose(); }
+  const pos = [], idx = []; quadPix = []; let v = 0;
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+    const bx = (x / B) | 0, by = (y / B) | 0;
+    if (isGap(bx, by)) continue;
+    const lx = x % B, ly = y % B, h = 1 / B;
+    const a0 = 2 * lx / B - 1, a1 = a0 + 2 * h, b0 = 2 * ly / B - 1, b1 = b0 + 2 * h;
+    for (const [ca, cb] of [[a0,b0],[a1,b0],[a1,b1],[a0,b1]]) {
+      const p = surfacePos(bx, by, ca, cb);
+      pos.push(p[0], p[2], -p[1]);              // cube +Z up -> three.js +Y up
+    }
+    idx.push(v, v+1, v+2, v, v+2, v+3); quadPix.push(y * cols + x); v += 4;
+  }
+  geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  colAttr = new THREE.Float32BufferAttribute(new Float32Array(pos.length), 3);
+  geo.setAttribute('color', colAttr);
+  geo.setIndex(idx);
+  mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors:true, side:THREE.DoubleSide }));
+  scene.add(mesh);
+}
+function paintMesh(u32) {
+  const c = colAttr.array;
+  for (let q = 0; q < quadPix.length; q++) {
+    const v = u32[quadPix[q]];
+    const r = ((v>>16)&255)/255, g = ((v>>8)&255)/255, b = (v&255)/255;
+    for (let k = 0; k < 4; k++) { const j = (q*4+k)*3; c[j]=r; c[j+1]=g; c[j+2]=b; }
+  }
+  colAttr.needsUpdate = true;
+}
+
+let yaw = -0.6, pitch = 0.75, drag = null;
+glc.addEventListener('pointerdown', e => { drag=[e.clientX,e.clientY]; glc.setPointerCapture(e.pointerId); });
+glc.addEventListener('pointerup',   () => drag = null);
+glc.addEventListener('pointermove', e => {
+  if (!drag) return;
+  yaw += (e.clientX-drag[0])*0.01;
+  pitch = Math.max(-1.45, Math.min(1.45, pitch + (e.clientY-drag[1])*0.01));
+  drag = [e.clientX, e.clientY];
+});
+function fit() {
+  const w = glc.clientWidth || 400;
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(w, w, false);
+  cam.aspect = 1; cam.updateProjectionMatrix();
+}
+addEventListener('resize', fit);
+
+// ===========================================================================
+function resize(nb) {
+  B = nb; cols = rows = 3 * B;
+  net.width = cols; net.height = rows;
+  imgData = nctx.createImageData(cols, rows);
+  M.ccall('simInit', null, ['number','number'], [cols, rows]);
+  px32 = M.ccall('simPixels', 'number', [], []);
+  buildMesh(); push();
+  el('stat').textContent = `${cols}×${rows} · ${5*B*B} lit`;
+}
+
+function frame(dt) {
+  simMs += dt;                       // mirrors strip.now inside the wasm
+  M.ccall('simFrame', null, ['number','number'], [effIdx, dt]);
+  const u32 = new Uint32Array(M.HEAPU32.buffer, px32, cols * rows);
+  drawNet(u32); paintMesh(u32);
+}
+
+let last = 0;
+function loop(t) {
+  if (playing) { pushAudio(); frame(23); }
+  const R = 4.6;
+  cam.position.set(R*Math.cos(pitch)*Math.sin(yaw), R*Math.sin(pitch), R*Math.cos(pitch)*Math.cos(yaw));
+  cam.lookAt(0,0,0);
+  renderer.render(scene, cam);
+  requestAnimationFrame(loop);
+}
+
+// The glue and the wasm are loaded with a cache-buster rather than a plain
+// <script src>. Without it the browser happily serves the previous build after
+// `python build.py`, and you end up staring at an unchanged effect wondering why
+// your edit did nothing - which is the exact failure mode this tool exists to
+// remove.
+const bust = '?t=' + Date.now();
+function loadGlue() {
+  return new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'cubefx.js' + bust;
+    s.onload = res;
+    s.onerror = () => rej(new Error('could not load cubefx.js — run:  python build.py'));
+    document.head.appendChild(s);
+  });
+}
+
+loadGlue().then(() => CubeFX({ locateFile: p => p + bust })).then(mod => {
+  M = mod;
+  const n = M.ccall('simEffectCount', 'number', [], []);
+  const sel = el('fx');
+  for (let i = 0; i < n; i++) {
+    meta.push(parseMeta(M.ccall('simEffectMeta', 'string', ['number'], [i])));
+    const o = document.createElement('option'); o.value = i; o.textContent = meta[i].name;
+    sel.appendChild(o);
+  }
+  sel.onchange = () => { effIdx = +sel.value; M.ccall('simSelect'); buildControls(); };
+  el('bsel').onchange = e => { M.ccall('simSelect'); resize(+e.target.value); buildControls(); };
+  el('pal').onchange = push;
+  el('play').onclick  = e => { playing = !playing; e.target.textContent = playing ? 'pause' : 'play'; };
+  el('step').onclick  = () => { pushAudio(); frame(23); };
+  el('reset').onclick = () => M.ccall('simSelect');
+
+  resize(16); buildAudio(); buildControls(); fit();
+  requestAnimationFrame(loop);
+}).catch(e => {
+  el('err').hidden = false;
+  el('err').textContent =
+    'Failed to start.\n\n' + e +
+    '\n\nIf this says something about fetch or CORS: the .wasm cannot load from file://.' +
+    '\nServe the folder instead, from cube_sim/:\n\n    python -m http.server 8000\n\n' +
+    'then open http://localhost:8000/';
+});
+</script>

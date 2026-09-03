@@ -1,0 +1,4 @@
+# Build products - regenerate with `python build.py`
+cubefx.js
+cubefx.wasm
+gen/
