@@ -199,11 +199,23 @@ function pushAudio() {
   // rather than as a louder held note.
   const kick = Math.max(0, 165 * (1 - (simMs - lastBeat) / 200));
 
+  // Per-bin movement on top of the three-point envelope. The envelope alone is
+  // a straight interpolation between bass, mid and treble, which no real signal
+  // has ever looked like - every bin is a predictable function of its
+  // neighbours, so any effect that reads the SHAPE of the spectrum (a GEQ, most
+  // obviously) sees a smooth ramp and shows a smooth ramp. Three incommensurate
+  // sines per bin give bins that rise and fall independently without being
+  // noise, so the shape is always changing but never jitters frame to frame.
+  const T = simMs / 1000;
   for (let i = 0; i < 16; i++) {
     const base = i < 3 ? bass
                : i < 9 ? bass + (mid - bass) * ((i - 3) / 6)
                        : mid  + (treb - mid) * ((i - 9) / 7);
-    arr[i] = Math.max(0, Math.min(255, (base + (i < 3 ? kick : 0)) | 0));
+    const wob = 0.55 * base * (
+        0.5 * Math.sin(T * (0.7 + i * 0.13) + i * 1.7)
+      + 0.3 * Math.sin(T * (1.9 + i * 0.07) + i * 0.9)
+      + 0.2 * Math.sin(T * (3.3 - i * 0.05) + i * 2.6));
+    arr[i] = Math.max(0, Math.min(255, (base + wob + (i < 3 ? kick : 0)) | 0));
   }
 
   // peak is set for exactly the firing frame, so fx_lowBeat sees a clean rising

@@ -174,6 +174,10 @@ experience."
 | Plasma | mic | Summed plane waves, one per band, with real dark negative space. |
 | Matrix Rain | mic | Glyph columns pouring off the lid and down the walls. |
 | Whirlpool | mic | An eye on the lid with arms spiralling out onto the walls (fluid advection). |
+| Cube Fire | mic | A smouldering base flaring on bass hits; the lid carries the heat leading off the wall tops. |
+| Soap | mic | Curl-noise flow folding palette colour over the whole solid — the cube-native answer to WLED's Soap. |
+| Black Hole | mic | A round void on the lid, an accretion disc winding into it, and one bright arc riding the horizon. |
+| Spectral Wormhole (3-D) | mic | A spectrum analyser around the bottom edge pouring water up the walls into a swirling film on the lid. Bands wrap once around, or mirror per wall so bass meets bass at two corners and treble at the other two. |
 
 ### Gyro (motion) — best with the MPU6050
 
@@ -204,7 +208,7 @@ cube too.
 | Harmonic Lissajous | mic | Locks on consonant intervals, wanders on dissonance. |
 | Kaleidoscope | mic | A true mirror-fold of a live noise chamber. |
 | Moire Rosette | mic | Interference between two counter-rotating gratings. |
-| Spectral Wormhole | mic | A log-polar spiral, spectrum falling inward forever. |
+| Spectral Wormhole (2-D) | mic | A log-polar spiral, spectrum falling inward forever. Unrelated to the 3-D effect of the same name above, which shares only the title. |
 | Glass Kaleidoscope | mic | Discrete glass chips — circles, squares, triangles, stars. |
 
 ---
