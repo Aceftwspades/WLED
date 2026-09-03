@@ -80,12 +80,40 @@
 
 struct SoapState {
   uint8_t  mode;
-  uint16_t nx, ny, nz;              // potential-field time coords
-  uint16_t ct;                      // colour-source noise time
+  // Q8. The clocks are fractional because the slider now reaches speeds BELOW
+  // one noise unit per frame, and at whole-unit resolution "slower than 1" is
+  // simply not a representable number - it rounds to 1 or to stopped.
+  uint32_t nx, ny, nz;              // potential-field time coords, Q8
+  uint32_t ct;                      // colour-source noise time, Q8
   uint8_t  splash;                  // beat envelope for the colour refresh
   uint8_t  bassEnv;                 // bass envelope, also drives colour
   uint8_t  clk[2];
 };
+
+// Index of a LIT pixel in the compacted buffers.
+//
+// The net is a plus shape: four of its nine blocks are unlit gap corners, so
+// 44% of the rectangle is never drawn. The CFX_NET_* macros have always skipped
+// computing those pixels, but every effect still SIZED its buffers to the whole
+// rectangle and carried storage for them anyway. That is invisible at one byte
+// per pixel and expensive here, where Soap keeps three bytes per pixel twice
+// over - which is what made it the largest allocation in the set by a wide
+// margin, and what put it at risk of failing to find contiguous space after a
+// segment reset.
+//
+// The mapping is pure arithmetic, so reclaiming that 44% costs no table:
+//
+//   y <  B    NORTH band, x in [B,2B)   -> [0,    B^2)
+//   y < 2B    middle band, x in [0,3B)  -> [B^2,  4B^2)
+//   else      SOUTH band, x in [B,2B)   -> [4B^2, 5B^2)
+//
+// Total 5*B^2 - one block per lit face - against 9*B^2 for the rectangle.
+static inline int sp_cidx(int x, int y, int B) {
+  const int BB = B * B;
+  if (y <      B) return          y            * B + (x - B);
+  if (y <  2 * B) return BB + (y - B) * 3      * B +  x;
+  return             4 * BB + (y - 2 * B)      * B + (x - B);
+}
 
 // Which face a surface point sits on - just the dominant axis. sp_face() also
 // normalises, which the curl only needs the normal for, so this is the cheap
@@ -150,6 +178,29 @@ static inline uint8_t sp_lerp(uint8_t A, uint8_t Bv, uint8_t f) {
   return (uint8_t)(((int)A * (255 - (int)f) + (int)Bv * (int)f + 127) / 255);
 }
 
+// Push the tones back apart on the way out.
+//
+// Transport plus interpolation is a mixer, and the first thing a mixer takes is
+// the EXTREMES. Measured against the original: WLED's Soap keeps about a
+// quarter of its pixels near black and a twentieth genuinely hot, while this
+// held 1% and 0% with more than half of everything piled into a single mid
+// band. That missing range IS the readability - the dark gaps are what let the
+// eye find where one swath stops and the next starts, and without them a
+// correct simulation of flowing colour still reads as flat.
+//
+// ease8InOutCubic is a smoothstep: it moves values away from the middle and
+// leaves the two ends where they are, which is the exact inverse of what the
+// blending did. Applied per channel it deepens the darks and lets highlights
+// climb without shifting hue appreciably.
+// Applied twice, at full strength. Once was not close: it moved near-black from
+// 1% of the cube to 6% where the original sits at 24%, because a single
+// smoothstep only nudges values that the mixing had already dragged well into
+// the middle. Two passes bite hard enough on the mid band to open real gaps
+// without touching either end.
+static inline uint8_t sp_contrast(uint8_t v) {
+  return ease8InOutCubic(ease8InOutCubic(v));
+}
+
 static FX_RET mode_soap() {
   if (!strip.isMatrix || !SEGMENT.is2D()) { SEGMENT.fill(SEGCOLOR(0)); FX_DONE; }
   const int cols = SEG_W, rows = SEG_H;
@@ -161,41 +212,60 @@ static FX_RET mode_soap() {
   const int  Bq   = cube ? B : 1;
   const size_t lut = cube ? (size_t)6 * Bq * Bq : 0;
 
-  const size_t need = sizeof(SoapState) + 3 * n      // cube coords
-                    + 3 * n + 3 * n                  // colour buffer + next
-                    + n                              // colour-source noise
+  // Everything below is sized to the LIT pixels only - see sp_cidx().
+  const size_t m = cube ? (size_t)5 * B * B : n;
+
+  const size_t need = sizeof(SoapState) + 3 * m      // surface coords
+                    + 3 * m + 3 * m                  // colour buffer + next
+                    + m                              // colour-source noise
                     + lut * sizeof(uint16_t);
   if (!SEGENV.allocateData(need)) { SEGMENT.fill(SEGCOLOR(0)); FX_DONE; }
 
   SoapState *s  = (SoapState *)SEGENV.data;
   int8_t   *cx  = (int8_t *)(s + 1);
-  int8_t   *cy  = cx + n;
-  int8_t   *cz  = cy + n;
-  uint8_t  *pix = (uint8_t *)(cz + n);       // rgb triplets - the transported field
-  uint8_t  *nxt = pix + 3 * n;
-  uint8_t  *nz3 = nxt + 3 * n;               // smoothed noise: the colour source
-  uint16_t *rev = (uint16_t *)(nz3 + n);
+  int8_t   *cy  = cx + m;
+  int8_t   *cz  = cy + m;
+  uint8_t  *pix = (uint8_t *)(cz + m);       // rgb triplets - the transported field
+  uint8_t  *nxt = pix + 3 * m;
+  uint8_t  *nz3 = nxt + 3 * m;               // smoothed noise: the colour source
+  uint16_t *rev = (uint16_t *)(nz3 + m);
 
   const uint8_t want = (uint8_t)(cube ? 1 : 2);
   const bool init = (SEGENV.call == 0 || s->mode != want);
   if (init) {
-    cfx_buildCube(cx, cy, cz, nullptr, nullptr, cols, rows, cube);
-    s->mode = want; s->splash = 0; s->clk[0] = s->clk[1] = 0;
-    s->nx = hw_random16(); s->ny = hw_random16();
-    s->nz = hw_random16(); s->ct = hw_random16();
+    s->mode = want; s->splash = 0; s->bassEnv = 0; s->clk[0] = s->clk[1] = 0;
+    s->nx = (uint32_t)hw_random16() << 8; s->ny = (uint32_t)hw_random16() << 8;
+    s->nz = (uint32_t)hw_random16() << 8; s->ct = (uint32_t)hw_random16() << 8;
 
     if (cube) {
+      // cfx_buildCube writes one entry per RECTANGLE pixel, so it wants 3n
+      // bytes - more than the compacted coord arrays hold. pix and nxt are
+      // adjacent and together give 6m, and 2m >= n always holds for a net
+      // (10*B^2 >= 9*B^2), so they stand in as scratch before either holds any
+      // colour. Both are fully rewritten below, so nothing survives the loan.
+      int8_t *sc = (int8_t *)pix;
+      cfx_buildCube(sc, sc + n, sc + 2 * n, nullptr, nullptr, cols, rows, cube);
+      for (int y = 0; y < rows; y++)
+        for (int x = 0; x < cols; x++) {
+          if ((x / B) != 1 && (y / B) != 1) continue;     // gap corner: no storage
+          const size_t src = (size_t)y * cols + x;
+          const size_t ci  = (size_t)sp_cidx(x, y, B);
+          cx[ci] = sc[src]; cy[ci] = sc[n + src]; cz[ci] = sc[2 * n + src];
+        }
+
       for (size_t k = 0; k < lut; k++) rev[k] = 0xFFFF;
       for (int y = 0; y < rows; y++)
         for (int x = 0; x < cols; x++) {
-          if ((x / B) != 1 && (y / B) != 1) continue;     // gap corner
-          const size_t i = (size_t)y * cols + x;
-          int f, a, b; sp_face(cx[i], cy[i], cz[i], f, a, b);
+          if ((x / B) != 1 && (y / B) != 1) continue;
+          const size_t ci = (size_t)sp_cidx(x, y, B);
+          int f, a, b; sp_face(cx[ci], cy[ci], cz[ci], f, a, b);
           int ai = ((a + 128) * Bq) >> 8, bi = ((b + 128) * Bq) >> 8;
           if (ai < 0) ai = 0; else if (ai >= Bq) ai = Bq - 1;
           if (bi < 0) bi = 0; else if (bi >= Bq) bi = Bq - 1;
-          rev[((size_t)f * Bq + bi) * Bq + ai] = (uint16_t)i;
+          rev[((size_t)f * Bq + bi) * Bq + ai] = (uint16_t)ci;   // compact index
         }
+    } else {
+      cfx_buildCube(cx, cy, cz, nullptr, nullptr, cols, rows, cube);
     }
   }
 
@@ -225,13 +295,35 @@ static FX_RET mode_soap() {
   const int pixAmp = 2 + (((int)SEGMENT.custom1 * 12) >> 8);   // 2..14 pixels
   const int amp = cube ? ((254 / (B > 0 ? B : 1)) * pixAmp) : pixAmp;
 
-  int flowSp = 1 + (((int)SEGMENT.speed * 14) >> 8);
-  if (SEGMENT.check1) flowSp += (int)s->bassEnv >> 5;          // Bass drive
-  const uint16_t adv = (uint16_t)((flowSp * dt) / 23);
-  s->nx = (uint16_t)(s->nx + adv);
-  s->ny = (uint16_t)(s->ny + (adv * 3) / 4);
-  s->nz = (uint16_t)(s->nz + (adv * 5) / 4);
-  s->ct = (uint16_t)(s->ct + (adv + 1) / 2);
+  // Speed, recentred so the setting worth living on sits in the MIDDLE of the
+  // slider instead of pinned against its floor.
+  //
+  //     slider   0  ->  0.125 units/frame   (eight times slower than the middle)
+  //     slider 128  ->  1.0                  the old bottom end, and the default
+  //     slider 255  -> 16.0                  faster than the old top end of 14
+  //
+  // Linear below the middle so the slow half stays controllable, and quadratic
+  // above it so the top half genuinely accelerates rather than creeping.
+  const int sp = SEGMENT.speed;
+  int32_t flowQ;                                               // Q8 units/frame
+  if (sp <= 128) {
+    flowQ = 32 + ((int32_t)(256 - 32) * sp) / 128;
+  } else {
+    const int32_t t = sp - 128;                                // 0..127
+    flowQ = 256 + ((int32_t)3840 * t * t) / (127 * 127);
+  }
+  if (SEGMENT.check1) flowQ += ((int32_t)s->bassEnv * 384) / 255;   // Bass drive
+  flowQ += ((int32_t)s->splash * 512) / 255;                   // beats nudge it on
+
+  const int32_t adv = (flowQ * (int32_t)dt) / 23;
+  s->nx += (uint32_t)adv;
+  s->ny += (uint32_t)((adv * 3) / 4);
+  s->nz += (uint32_t)((adv * 5) / 4);
+  s->ct += (uint32_t)((adv + 1) / 2);
+
+  // Whole-unit offsets for sampling, taken once.
+  const uint16_t ox = (uint16_t)(s->nx >> 8), oy = (uint16_t)(s->ny >> 8),
+                 oz = (uint16_t)(s->nz >> 8), oc = (uint16_t)(s->ct >> 8);
 
   const uint8_t smooth = (uint8_t)MIN(250, (int)SEGMENT.intensity);   // Smoothness
 
@@ -257,34 +349,33 @@ static FX_RET mode_soap() {
   // --- the colour source: a slowly morphing noise field -------------------------
   for (int y = 0; y < rows; y++) {
     for (int x = 0; x < cols; x++) {
-      const size_t i = (size_t)y * cols + x;
-      const int u = cube ? (cx[i] + 128) : ((x * 255) / (cols - 1));
-      const int v = cube ? (cy[i] + 128) : ((y * 255) / (rows - 1));
-      const int w = cube ? (cz[i] + 128) : 0;
-      const uint8_t d = perlin8((uint16_t)(((u * sc) >> 2) + s->ct),
+      if (cube && (x / B) != 1 && (y / B) != 1) continue;      // gap: no storage
+      const size_t ci = cube ? (size_t)sp_cidx(x, y, B) : (size_t)y * cols + x;
+      const int u = cube ? (cx[ci] + 128) : ((x * 255) / (cols - 1));
+      const int v = cube ? (cy[ci] + 128) : ((y * 255) / (rows - 1));
+      const int w = cube ? (cz[ci] + 128) : 0;
+      const uint8_t d = perlin8((uint16_t)(((u * sc) >> 2) + oc),
                                 (uint16_t)((v * sc) >> 2),
                                 (uint16_t)(((w * sc) >> 2) + 700));
-      nz3[i] = init ? d
-                    : (uint8_t)(scale8(nz3[i], smooth) + scale8(d, (uint8_t)(255 - smooth)));
+      nz3[ci] = init ? d
+                     : (uint8_t)(scale8(nz3[ci], smooth) + scale8(d, (uint8_t)(255 - smooth)));
     }
   }
 
   if (init) {                                     // open already marbled
-    for (size_t i = 0; i < n; i++) {
-      const uint32_t c = SEGMENT.color_from_palette((uint8_t)((uint8_t)(~nz3[i]) * 3), false, true, 0);
-      pix[i * 3 + 0] = (uint8_t)((c >> 16) & 0xFF);
-      pix[i * 3 + 1] = (uint8_t)((c >>  8) & 0xFF);
-      pix[i * 3 + 2] = (uint8_t)( c        & 0xFF);
+    for (size_t k = 0; k < m; k++) {
+      const uint32_t c = SEGMENT.color_from_palette((uint8_t)((uint8_t)(~nz3[k]) * 3), false, true, 0);
+      pix[k * 3 + 0] = (uint8_t)((c >> 16) & 0xFF);
+      pix[k * 3 + 1] = (uint8_t)((c >>  8) & 0xFF);
+      pix[k * 3 + 2] = (uint8_t)( c        & 0xFF);
     }
   }
 
   // --- transport ------------------------------------------------------------------
   for (int y = 0; y < rows; y++) {
     for (int x = 0; x < cols; x++) {
-      const size_t i = (size_t)y * cols + x;
-      if (cube && (x / B) != 1 && (y / B) != 1) {
-        nxt[i * 3] = nxt[i * 3 + 1] = nxt[i * 3 + 2] = 0; continue;
-      }
+      if (cube && (x / B) != 1 && (y / B) != 1) continue;     // gap: no storage
+      const size_t i = cube ? (size_t)sp_cidx(x, y, B) : (size_t)y * cols + x;
 
       uint8_t out[3];
 
@@ -305,10 +396,10 @@ static FX_RET mode_soap() {
         // n x grad(psi) is divergence-free by construction, so nothing pools,
         // and the flow circulates around the peaks and troughs of psi. Four
         // samples instead of three buys the whole character.
-        const int p0  = (int)perlin8((uint16_t)(ka + s->nx), (uint16_t)(kb + s->ny), (uint16_t)(kc + s->nz));
-        const int pdx = (int)perlin8((uint16_t)(ka + s->nx + SP_GRAD), (uint16_t)(kb + s->ny), (uint16_t)(kc + s->nz));
-        const int pdy = (int)perlin8((uint16_t)(ka + s->nx), (uint16_t)(kb + s->ny + SP_GRAD), (uint16_t)(kc + s->nz));
-        const int pdz = (int)perlin8((uint16_t)(ka + s->nx), (uint16_t)(kb + s->ny), (uint16_t)(kc + s->nz + SP_GRAD));
+        const int p0  = (int)perlin8((uint16_t)(ka + ox), (uint16_t)(kb + oy), (uint16_t)(kc + oz));
+        const int pdx = (int)perlin8((uint16_t)(ka + ox + SP_GRAD), (uint16_t)(kb + oy), (uint16_t)(kc + oz));
+        const int pdy = (int)perlin8((uint16_t)(ka + ox), (uint16_t)(kb + oy + SP_GRAD), (uint16_t)(kc + oz));
+        const int pdz = (int)perlin8((uint16_t)(ka + ox), (uint16_t)(kb + oy), (uint16_t)(kc + oz + SP_GRAD));
         const int gx = pdx - p0, gy = pdy - p0, gz = pdz - p0;
 
         int nrx = 0, nry = 0, nrz = 0;              // outward face normal
@@ -365,9 +456,9 @@ static FX_RET mode_soap() {
         // Same trick in the plane: rotating the gradient of a potential by 90
         // degrees gives a divergence-free field, so it circulates instead of
         // pooling.
-        const int p0  = (int)perlin8((uint16_t)(ka + s->nx), (uint16_t)(kb + s->ny));
-        const int pdx = (int)perlin8((uint16_t)(ka + s->nx + SP_GRAD), (uint16_t)(kb + s->ny));
-        const int pdy = (int)perlin8((uint16_t)(ka + s->nx), (uint16_t)(kb + s->ny + SP_GRAD));
+        const int p0  = (int)perlin8((uint16_t)(ka + ox), (uint16_t)(kb + oy));
+        const int pdx = (int)perlin8((uint16_t)(ka + ox + SP_GRAD), (uint16_t)(kb + oy));
+        const int pdy = (int)perlin8((uint16_t)(ka + ox), (uint16_t)(kb + oy + SP_GRAD));
         int vx =  (pdy - p0) * SP_CURL;
         int vy = -(pdx - p0) * SP_CURL;
         if (vx >  127) vx =  127; else if (vx < -127) vx = -127;
@@ -398,7 +489,7 @@ static FX_RET mode_soap() {
       nxt[i * 3 + 2] = sp_lerp(out[2], (uint8_t)( fr        & 0xFF), (uint8_t)refresh);
     }
   }
-  memcpy(pix, nxt, 3 * n);
+  memcpy(pix, nxt, 3 * m);
 
   // --- render ---------------------------------------------------------------------
   // Volume drives real dynamics rather than a token wobble. A floor of 190 with
@@ -416,15 +507,18 @@ static FX_RET mode_soap() {
     CFX_NET_ROW(y);
     for (int x = 0; x < cols; x++, i++) {
       CFX_NET_SKIP(x);
+      const size_t ci = cube ? (size_t)sp_cidx(x, y, B) : i;
       SEGMENT.setPixelColorXY(x, y,
-        mq_scale(RGBW32(pix[i * 3], pix[i * 3 + 1], pix[i * 3 + 2], 0), drive));
+        mq_scale(RGBW32(sp_contrast(pix[ci * 3]),
+                        sp_contrast(pix[ci * 3 + 1]),
+                        sp_contrast(pix[ci * 3 + 2]), 0), drive));
     }
   }
   FX_DONE;
 }
 
 static const char _data_FX_MODE_SOAP[] PROGMEM =
-  "Ace 3-D Soap@!,Smoothness,Density,Scale,Splash,Bass drive,Beat splash,Flat mode;;!;2f;sx=110,ix=200,c1=140,c2=90,c3=120,o1=1,o2=1,pal=11";
+  "Ace 3-D Soap@!,Smoothness,Density,Scale,Splash,Bass drive,Beat splash,Flat mode;;!;2f;sx=128,ix=200,c1=140,c2=90,c3=120,o1=1,o2=1,pal=11";
 
 
 // ---------------------------------------------------------------------------
