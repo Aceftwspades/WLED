@@ -70,6 +70,10 @@
  *   23 Gyro Rain        rain that falls down whichever way the cube is held
  *   24 Whirlpool        an eye on the lid, arms spiralling out onto the walls
  *   25 Cube Fire        smoulders at the base, climbs the walls, pools on the lid
+ *   26 Soap             curl-noise flow folding colour over the whole solid
+ *   27 Black Hole       a round void on the lid, disc winding in, arc on the rim
+ *   28 Spectral Wormhole  GEQ round the bottom edge, water up the walls into a
+ *                       swirling film on the lid (Black Hole's flow, reversed)
  *
  * The seven flat 2-D analysers live together in cube_fx.cpp. Full catalogue,
  * accessory requirements and setup are in README.md.
@@ -687,6 +691,90 @@ static inline int cfx_cidx(int x, int y, int cols, int B, bool cube) {
 
 static inline size_t cfx_litCount(int cols, int rows, int B, bool cube) {
   return cube ? (size_t)5 * B * B : (size_t)cols * rows;
+}
+
+// ---------------------------------------------------------------------------
+// Surface topology - reading colour back from an ARBITRARY point on the cube
+// ---------------------------------------------------------------------------
+// Effects that transport colour rather than recompute it need to sample the
+// surface at a point that is not a pixel centre and may not even be on the same
+// face - a flow that carries colour off the lid has to find it continuing down
+// a wall. These four do that, and they are shared because getting the fold
+// crossings right once is worth a great deal more than getting them right
+// several times.
+//
+// The scheme: classify a point by its dominant axis (which face) and its two
+// off-axis coordinates (where on that face). A bilinear tap that runs off the
+// edge of a face is turned back into a 3-D point, which then classifies onto
+// the NEIGHBOUR - so a tap straddling a fold reads the correct pixels on both
+// sides of it, with no special case per edge.
+//
+// Faces are numbered 0..5 = +X,-X,+Y,-Y,+Z,-Z throughout.
+
+#ifndef CFX_GRAD
+  #define CFX_GRAD 10               // finite-difference step for grad(psi)
+#endif
+
+// Which face a surface point sits on - just the dominant axis. The cheap half
+// of cfx_face(), for callers that only need the outward normal.
+static inline int cfx_faceOnly(int x, int y, int z) {
+  const int ax = x < 0 ? -x : x, ay = y < 0 ? -y : y, az = z < 0 ? -z : z;
+  if (az >= ax && az >= ay) return (z >= 0) ? 4 : 5;
+  if (ay >= ax)             return (y >= 0) ? 2 : 3;
+  return (x >= 0) ? 0 : 1;
+}
+
+// Face plus position on it, the off-axis pair normalised to -127..127.
+static inline void cfx_face(int x, int y, int z, int &face, int &a, int &b) {
+  const int ax = x < 0 ? -x : x, ay = y < 0 ? -y : y, az = z < 0 ? -z : z;
+  int m;
+  if (az >= ax && az >= ay) { face = (z >= 0) ? 4 : 5; m = az; a = x; b = y; }
+  else if (ay >= ax)        { face = (y >= 0) ? 2 : 3; m = ay; a = x; b = z; }
+  else                      { face = (x >= 0) ? 0 : 1; m = ax; a = y; b = z; }
+  if (m < 1) m = 1;
+  a = (a * 127) / m;
+  b = (b * 127) / m;
+}
+
+// The exact inverse. Feeding it an a or b beyond +/-127 gives a point past the
+// edge of that face, which cfx_face() then drops onto the neighbour - that is
+// how a bilinear tap crosses a fold.
+static inline void cfx_unface(int face, int a, int b, int &x, int &y, int &z) {
+  switch (face) {
+    case 0:  x =  127; y = a;    z = b;    break;
+    case 1:  x = -127; y = a;    z = b;    break;
+    case 2:  x = a;    y =  127; z = b;    break;
+    case 3:  x = a;    y = -127; z = b;    break;
+    case 4:  x = a;    y = b;    z =  127; break;
+    default: x = a;    y = b;    z = -127; break;
+  }
+}
+
+// Reverse-table read that follows the fold when the cell runs off the face.
+// `rev` is a [6][Bq][Bq] table of compacted pixel indices, built once by the
+// caller; 0xFFFF means "no pixel here".
+static inline uint16_t cfx_rev(const uint16_t *rev, int Bq, int face, int ai, int bi) {
+  if (ai >= 0 && ai < Bq && bi >= 0 && bi < Bq)
+    return rev[((size_t)face * Bq + bi) * Bq + ai];
+
+  const int half = 128 / (Bq > 0 ? Bq : 1);
+  const int a = ((ai * 256) / Bq) - 128 + half;
+  const int b = ((bi * 256) / Bq) - 128 + half;
+  int x, y, z;    cfx_unface(face, a, b, x, y, z);
+  int f2, a2, b2; cfx_face(x, y, z, f2, a2, b2);
+  if (f2 == face) return 0xFFFF;                     // never left: no neighbour
+  int ai2 = ((a2 + 128) * Bq) >> 8, bi2 = ((b2 + 128) * Bq) >> 8;
+  if (ai2 < 0) ai2 = 0; else if (ai2 >= Bq) ai2 = Bq - 1;
+  if (bi2 < 0) bi2 = 0; else if (bi2 >= Bq) bi2 = Bq - 1;
+  return rev[((size_t)f2 * Bq + bi2) * Bq + ai2];
+}
+
+// Symmetric so it cannot drift. The obvious A + (B-A)*f/255 truncates toward
+// zero, which biases every interpolation back toward A - harmless once, but
+// transport runs this on its own output tens of times a second and small biases
+// compound into a visible drift of the whole field.
+static inline uint8_t cfx_lerp8(uint8_t A, uint8_t Bv, uint8_t f) {
+  return (uint8_t)(((int)A * (255 - (int)f) + (int)Bv * (int)f + 127) / 255);
 }
 
 // Waveform selector for the edge ripple. 0 = off.

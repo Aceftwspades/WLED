@@ -71,9 +71,6 @@
 // Speed, Smoothness and Density keep the meanings they have in the original.
 // ===========================================================================
 
-#ifndef SP_GRAD
-  #define SP_GRAD 10                // finite-difference step for grad(psi)
-#endif
 #ifndef SP_CURL
   #define SP_CURL 6                 // gain from that gradient to flow units
 #endif
@@ -90,93 +87,13 @@ struct SoapState {
   uint8_t  clk[2];
 };
 
-// Index of a LIT pixel in the compacted buffers.
-//
-// The net is a plus shape: four of its nine blocks are unlit gap corners, so
-// 44% of the rectangle is never drawn. The CFX_NET_* macros have always skipped
-// computing those pixels, but every effect still SIZED its buffers to the whole
-// rectangle and carried storage for them anyway. That is invisible at one byte
-// per pixel and expensive here, where Soap keeps three bytes per pixel twice
-// over - which is what made it the largest allocation in the set by a wide
-// margin, and what put it at risk of failing to find contiguous space after a
-// segment reset.
-//
-// The mapping is pure arithmetic, so reclaiming that 44% costs no table:
-//
-//   y <  B    NORTH band, x in [B,2B)   -> [0,    B^2)
-//   y < 2B    middle band, x in [0,3B)  -> [B^2,  4B^2)
-//   else      SOUTH band, x in [B,2B)   -> [4B^2, 5B^2)
-//
-// Total 5*B^2 - one block per lit face - against 9*B^2 for the rectangle.
-static inline int sp_cidx(int x, int y, int B) {
-  const int BB = B * B;
-  if (y <      B) return          y            * B + (x - B);
-  if (y <  2 * B) return BB + (y - B) * 3      * B +  x;
-  return             4 * BB + (y - 2 * B)      * B + (x - B);
-}
-
-// Which face a surface point sits on - just the dominant axis. sp_face() also
-// normalises, which the curl only needs the normal for, so this is the cheap
-// half of it.
-static inline int sp_faceOnly(int x, int y, int z) {
-  const int ax = x < 0 ? -x : x, ay = y < 0 ? -y : y, az = z < 0 ? -z : z;
-  if (az >= ax && az >= ay) return (z >= 0) ? 4 : 5;
-  if (ay >= ax)             return (y >= 0) ? 2 : 3;
-  return (x >= 0) ? 0 : 1;
-}
-
-// Classify a point on (or near) the cube surface: which face, and where on it.
-// face 0..5 = +X,-X,+Y,-Y,+Z,-Z; a and b are the two off-axis coordinates
-// normalised to -127..127. Used to build the reverse table AND to look up a
-// traced-back point, so the two can never disagree about the geometry.
-static inline void sp_face(int x, int y, int z, int &face, int &a, int &b) {
-  const int ax = x < 0 ? -x : x, ay = y < 0 ? -y : y, az = z < 0 ? -z : z;
-  int m;
-  if (az >= ax && az >= ay) { face = (z >= 0) ? 4 : 5; m = az; a = x; b = y; }
-  else if (ay >= ax)        { face = (y >= 0) ? 2 : 3; m = ay; a = x; b = z; }
-  else                      { face = (x >= 0) ? 0 : 1; m = ax; a = y; b = z; }
-  if (m < 1) m = 1;
-  a = (a * 127) / m;
-  b = (b * 127) / m;
-}
-
-// The exact inverse: put a face-local (a,b) back into 3D. Feeding it an a or b
-// beyond +/-127 gives a point past the edge of that face, which sp_face() then
-// drops onto the neighbour - that is how a bilinear tap crosses a fold.
-static inline void sp_unface(int face, int a, int b, int &x, int &y, int &z) {
-  switch (face) {
-    case 0:  x =  127; y = a;    z = b;    break;
-    case 1:  x = -127; y = a;    z = b;    break;
-    case 2:  x = a;    y =  127; z = b;    break;
-    case 3:  x = a;    y = -127; z = b;    break;
-    case 4:  x = a;    y = b;    z =  127; break;
-    default: x = a;    y = b;    z = -127; break;
-  }
-}
-
-// Reverse-table read that follows the fold when the cell runs off the face.
-static inline uint16_t sp_rev(const uint16_t *rev, int Bq, int face, int ai, int bi) {
-  if (ai >= 0 && ai < Bq && bi >= 0 && bi < Bq)
-    return rev[((size_t)face * Bq + bi) * Bq + ai];
-
-  const int half = 128 / (Bq > 0 ? Bq : 1);
-  const int a = ((ai * 256) / Bq) - 128 + half;
-  const int b = ((bi * 256) / Bq) - 128 + half;
-  int x, y, z;    sp_unface(face, a, b, x, y, z);
-  int f2, a2, b2; sp_face(x, y, z, f2, a2, b2);
-  if (f2 == face) return 0xFFFF;                     // never left: no neighbour
-  int ai2 = ((a2 + 128) * Bq) >> 8, bi2 = ((b2 + 128) * Bq) >> 8;
-  if (ai2 < 0) ai2 = 0; else if (ai2 >= Bq) ai2 = Bq - 1;
-  if (bi2 < 0) bi2 = 0; else if (bi2 >= Bq) bi2 = Bq - 1;
-  return rev[((size_t)f2 * Bq + bi2) * Bq + ai2];
-}
-
-// Symmetric so it cannot drift. The obvious A + (B-A)*f/255 truncates toward
-// zero, which biases every interpolation back toward A - harmless once, but this
-// runs on its own output tens of times a second and small biases compound.
-static inline uint8_t sp_lerp(uint8_t A, uint8_t Bv, uint8_t f) {
-  return (uint8_t)(((int)A * (255 - (int)f) + (int)Bv * (int)f + 127) / 255);
-}
+// The surface-topology helpers this used to carry privately - face
+// classification, the fold-following reverse lookup and the symmetric lerp -
+// now live in cube_fx_common.h as cfx_face/cfx_unface/cfx_rev/cfx_lerp8, so
+// Spectral Fountain can share them rather than own a second copy. A private
+// index helper went with them: it was byte-for-byte the cube branch of
+// cfx_cidx, which had been added to the common header later without this file
+// ever being updated to use it.
 
 // Push the tones back apart on the way out.
 //
@@ -212,7 +129,7 @@ static FX_RET mode_soap() {
   const int  Bq   = cube ? B : 1;
   const size_t lut = cube ? (size_t)6 * Bq * Bq : 0;
 
-  // Everything below is sized to the LIT pixels only - see sp_cidx().
+  // Everything below is sized to the LIT pixels only - see cfx_cidx().
   const size_t m = cube ? (size_t)5 * B * B : n;
 
   const size_t need = sizeof(SoapState) + 3 * m      // surface coords
@@ -249,7 +166,7 @@ static FX_RET mode_soap() {
         for (int x = 0; x < cols; x++) {
           if ((x / B) != 1 && (y / B) != 1) continue;     // gap corner: no storage
           const size_t src = (size_t)y * cols + x;
-          const size_t ci  = (size_t)sp_cidx(x, y, B);
+          const size_t ci  = (size_t)cfx_cidx(x, y, cols, B, cube);
           cx[ci] = sc[src]; cy[ci] = sc[n + src]; cz[ci] = sc[2 * n + src];
         }
 
@@ -257,8 +174,8 @@ static FX_RET mode_soap() {
       for (int y = 0; y < rows; y++)
         for (int x = 0; x < cols; x++) {
           if ((x / B) != 1 && (y / B) != 1) continue;
-          const size_t ci = (size_t)sp_cidx(x, y, B);
-          int f, a, b; sp_face(cx[ci], cy[ci], cz[ci], f, a, b);
+          const size_t ci = (size_t)cfx_cidx(x, y, cols, B, cube);
+          int f, a, b; cfx_face(cx[ci], cy[ci], cz[ci], f, a, b);
           int ai = ((a + 128) * Bq) >> 8, bi = ((b + 128) * Bq) >> 8;
           if (ai < 0) ai = 0; else if (ai >= Bq) ai = Bq - 1;
           if (bi < 0) bi = 0; else if (bi >= Bq) bi = Bq - 1;
@@ -350,7 +267,7 @@ static FX_RET mode_soap() {
   for (int y = 0; y < rows; y++) {
     for (int x = 0; x < cols; x++) {
       if (cube && (x / B) != 1 && (y / B) != 1) continue;      // gap: no storage
-      const size_t ci = cube ? (size_t)sp_cidx(x, y, B) : (size_t)y * cols + x;
+      const size_t ci = cube ? (size_t)cfx_cidx(x, y, cols, B, cube) : (size_t)y * cols + x;
       const int u = cube ? (cx[ci] + 128) : ((x * 255) / (cols - 1));
       const int v = cube ? (cy[ci] + 128) : ((y * 255) / (rows - 1));
       const int w = cube ? (cz[ci] + 128) : 0;
@@ -375,7 +292,7 @@ static FX_RET mode_soap() {
   for (int y = 0; y < rows; y++) {
     for (int x = 0; x < cols; x++) {
       if (cube && (x / B) != 1 && (y / B) != 1) continue;     // gap: no storage
-      const size_t i = cube ? (size_t)sp_cidx(x, y, B) : (size_t)y * cols + x;
+      const size_t i = cube ? (size_t)cfx_cidx(x, y, cols, B, cube) : (size_t)y * cols + x;
 
       uint8_t out[3];
 
@@ -397,13 +314,13 @@ static FX_RET mode_soap() {
         // and the flow circulates around the peaks and troughs of psi. Four
         // samples instead of three buys the whole character.
         const int p0  = (int)perlin8((uint16_t)(ka + ox), (uint16_t)(kb + oy), (uint16_t)(kc + oz));
-        const int pdx = (int)perlin8((uint16_t)(ka + ox + SP_GRAD), (uint16_t)(kb + oy), (uint16_t)(kc + oz));
-        const int pdy = (int)perlin8((uint16_t)(ka + ox), (uint16_t)(kb + oy + SP_GRAD), (uint16_t)(kc + oz));
-        const int pdz = (int)perlin8((uint16_t)(ka + ox), (uint16_t)(kb + oy), (uint16_t)(kc + oz + SP_GRAD));
+        const int pdx = (int)perlin8((uint16_t)(ka + ox + CFX_GRAD), (uint16_t)(kb + oy), (uint16_t)(kc + oz));
+        const int pdy = (int)perlin8((uint16_t)(ka + ox), (uint16_t)(kb + oy + CFX_GRAD), (uint16_t)(kc + oz));
+        const int pdz = (int)perlin8((uint16_t)(ka + ox), (uint16_t)(kb + oy), (uint16_t)(kc + oz + CFX_GRAD));
         const int gx = pdx - p0, gy = pdy - p0, gz = pdz - p0;
 
         int nrx = 0, nry = 0, nrz = 0;              // outward face normal
-        switch (sp_faceOnly(cx[i], cy[i], cz[i])) {
+        switch (cfx_faceOnly(cx[i], cy[i], cz[i])) {
           case 0:  nrx =  1; break;   case 1:  nrx = -1; break;
           case 2:  nry =  1; break;   case 3:  nry = -1; break;
           case 4:  nrz =  1; break;   default: nrz = -1; break;
@@ -422,7 +339,7 @@ static FX_RET mode_soap() {
         if (qy >  512) qy =  512; else if (qy < -512) qy = -512;
         if (qz >  512) qz =  512; else if (qz < -512) qz = -512;
 
-        int f, a, b; sp_face(qx, qy, qz, f, a, b);
+        int f, a, b; cfx_face(qx, qy, qz, f, a, b);
         const int aq = (a + 128) * Bq, bq = (b + 128) * Bq;
         const int ai = aq >> 8, bi = bq >> 8;
         // Smoothstep the blend weights, exactly as the original does. Straight
@@ -435,19 +352,19 @@ static FX_RET mode_soap() {
         const uint8_t fa = ease8InOutCubic((uint8_t)(aq & 255));
         const uint8_t fb = ease8InOutCubic((uint8_t)(bq & 255));
 
-        uint16_t t00 = sp_rev(rev, Bq, f, ai,     bi);
-        uint16_t t10 = sp_rev(rev, Bq, f, ai + 1, bi);
-        uint16_t t01 = sp_rev(rev, Bq, f, ai,     bi + 1);
-        uint16_t t11 = sp_rev(rev, Bq, f, ai + 1, bi + 1);
+        uint16_t t00 = cfx_rev(rev, Bq, f, ai,     bi);
+        uint16_t t10 = cfx_rev(rev, Bq, f, ai + 1, bi);
+        uint16_t t01 = cfx_rev(rev, Bq, f, ai,     bi + 1);
+        uint16_t t11 = cfx_rev(rev, Bq, f, ai + 1, bi + 1);
         if (t00 == 0xFFFF) t00 = (uint16_t)i;
         if (t10 == 0xFFFF) t10 = t00;
         if (t01 == 0xFFFF) t01 = t00;
         if (t11 == 0xFFFF) t11 = t10;
 
         for (int c = 0; c < 3; c++) {
-          const uint8_t c0 = sp_lerp(pix[(size_t)t00 * 3 + c], pix[(size_t)t10 * 3 + c], fa);
-          const uint8_t c1 = sp_lerp(pix[(size_t)t01 * 3 + c], pix[(size_t)t11 * 3 + c], fa);
-          out[c] = sp_lerp(c0, c1, fb);
+          const uint8_t c0 = cfx_lerp8(pix[(size_t)t00 * 3 + c], pix[(size_t)t10 * 3 + c], fa);
+          const uint8_t c1 = cfx_lerp8(pix[(size_t)t01 * 3 + c], pix[(size_t)t11 * 3 + c], fa);
+          out[c] = cfx_lerp8(c0, c1, fb);
         }
       } else {
         // Flat: the same transport in the plane, which is what Soap always was.
@@ -457,8 +374,8 @@ static FX_RET mode_soap() {
         // degrees gives a divergence-free field, so it circulates instead of
         // pooling.
         const int p0  = (int)perlin8((uint16_t)(ka + ox), (uint16_t)(kb + oy));
-        const int pdx = (int)perlin8((uint16_t)(ka + ox + SP_GRAD), (uint16_t)(kb + oy));
-        const int pdy = (int)perlin8((uint16_t)(ka + ox), (uint16_t)(kb + oy + SP_GRAD));
+        const int pdx = (int)perlin8((uint16_t)(ka + ox + CFX_GRAD), (uint16_t)(kb + oy));
+        const int pdy = (int)perlin8((uint16_t)(ka + ox), (uint16_t)(kb + oy + CFX_GRAD));
         int vx =  (pdy - p0) * SP_CURL;
         int vy = -(pdx - p0) * SP_CURL;
         if (vx >  127) vx =  127; else if (vx < -127) vx = -127;
@@ -475,18 +392,18 @@ static FX_RET mode_soap() {
         const size_t t00 = (size_t)iy  * cols + ix,  t10 = (size_t)iy  * cols + ix1;
         const size_t t01 = (size_t)iy1 * cols + ix,  t11 = (size_t)iy1 * cols + ix1;
         for (int c = 0; c < 3; c++) {
-          const uint8_t c0 = sp_lerp(pix[t00 * 3 + c], pix[t10 * 3 + c], fa);
-          const uint8_t c1 = sp_lerp(pix[t01 * 3 + c], pix[t11 * 3 + c], fa);
-          out[c] = sp_lerp(c0, c1, fb);
+          const uint8_t c0 = cfx_lerp8(pix[t00 * 3 + c], pix[t10 * 3 + c], fa);
+          const uint8_t c1 = cfx_lerp8(pix[t01 * 3 + c], pix[t11 * 3 + c], fa);
+          out[c] = cfx_lerp8(c0, c1, fb);
         }
       }
 
       // Fresh colour bleeds in everywhere, because a closed surface offers no
       // edge for it to enter through.
       const uint32_t fr = SEGMENT.color_from_palette((uint8_t)((uint8_t)(~nz3[i]) * 3), false, true, 0);
-      nxt[i * 3 + 0] = sp_lerp(out[0], (uint8_t)((fr >> 16) & 0xFF), (uint8_t)refresh);
-      nxt[i * 3 + 1] = sp_lerp(out[1], (uint8_t)((fr >>  8) & 0xFF), (uint8_t)refresh);
-      nxt[i * 3 + 2] = sp_lerp(out[2], (uint8_t)( fr        & 0xFF), (uint8_t)refresh);
+      nxt[i * 3 + 0] = cfx_lerp8(out[0], (uint8_t)((fr >> 16) & 0xFF), (uint8_t)refresh);
+      nxt[i * 3 + 1] = cfx_lerp8(out[1], (uint8_t)((fr >>  8) & 0xFF), (uint8_t)refresh);
+      nxt[i * 3 + 2] = cfx_lerp8(out[2], (uint8_t)( fr        & 0xFF), (uint8_t)refresh);
     }
   }
   memcpy(pix, nxt, 3 * m);
@@ -507,7 +424,7 @@ static FX_RET mode_soap() {
     CFX_NET_ROW(y);
     for (int x = 0; x < cols; x++, i++) {
       CFX_NET_SKIP(x);
-      const size_t ci = cube ? (size_t)sp_cidx(x, y, B) : i;
+      const size_t ci = cube ? (size_t)cfx_cidx(x, y, cols, B, cube) : i;
       SEGMENT.setPixelColorXY(x, y,
         mq_scale(RGBW32(sp_contrast(pix[ci * 3]),
                         sp_contrast(pix[ci * 3 + 1]),
