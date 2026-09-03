@@ -323,6 +323,7 @@ class AceUiScreenUsermod : public Usermod {
   bool     blanked = false, ready = false, initDone = false;
   bool     dimmed  = false;
   bool     pinFail = false, clash = false;
+  bool     spiNoBus = false;   // SPI selected but WLED's SCLK/MOSI are unset
   uint32_t lastProbeMs = 0;
 
   // The meter. vuBar is the smoothed level 0..255, vuCap the peak-hold cap in
@@ -867,6 +868,16 @@ class AceUiScreenUsermod : public Usermod {
 
     if (busSel == AUI_BUS_SPI) {
       if (spiCs < 0 || spiDc < 0) return;
+
+      // SCLK and MOSI are NOT ours - they belong to WLED's global SPI bus, set
+      // in LED Preferences. If they were never configured there is no clock and
+      // no data, and the panel cannot work no matter how well CS/DC/RST are
+      // wired. Worth checking explicitly, because SPI has no ACK: probe()
+      // cannot tell a working panel from an absent one, so without this the
+      // Info page cheerfully reported "ok" to a screen that had never been
+      // spoken to.
+      if (spi_sclk < 0 || spi_mosi < 0) { spiNoBus = true; return; }
+      spiNoBus = false;
       // CS/DC/RST have to be claimed the same way the Wire1 pins are. Without
       // this the PinManager has no idea the panel owns them, so an LED output
       // or another usermod can be handed the same pin with no complaint from
@@ -1059,6 +1070,7 @@ class AceUiScreenUsermod : public Usermod {
     if (!enabled)      s.add(F("disabled"));
     else if (clash)    s.add(F("Wire1 pins clash with the shared bus"));
     // pinFail can now come from either lane, so it cannot name Wire1 any more.
+    else if (spiNoBus) s.add(F("set SCLK/MOSI in LED Preferences first"));
     else if (pinFail)  s.add(busSel == AUI_BUS_SPI ? F("CS/DC/RST already in use")
                                                    : F("Wire1 pins already in use"));
     else if (!ready && busSel != AUI_BUS_SPI)

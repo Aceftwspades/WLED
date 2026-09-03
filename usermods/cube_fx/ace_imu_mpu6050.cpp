@@ -167,6 +167,23 @@ static bool aimuAllocPin(int p) {
 #endif
 }
 
+// Is this a pin the chip actually has, and can actually use?
+//
+// Ask WLED rather than comparing against a number. A hard limit of 39 is right
+// for the classic ESP32 and wrong for everything since: an S3 goes to 48, and
+// on an N16R8 the pins that are genuinely FREE are mostly 38 and above, because
+// 19-20 are USB, 22-32 are flash or not bonded out, and 33-37 vanish into octal
+// PSRAM. Hard-coding the old ceiling rejects exactly the pins an S3 build has
+// left to offer.
+static bool aimuPinUsable(int p) {
+  if (p < 0 || p >= WLED_NUM_PINS) return false;
+#if AIMU_LEGACY_PINMGR
+  return pinManager.isPinOk((byte)p, false);
+#else
+  return PinManager::isPinOk((byte)p, false);
+#endif
+}
+
 // --- MPU6050 registers ------------------------------------------------------
 #define AIMU_SMPLRT_DIV    0x19
 #define AIMU_CONFIG        0x1A
@@ -683,14 +700,21 @@ class AceImuUsermod : public Usermod {
     ok &= getJsonValue(top["sda"],     sda,     21);
     ok &= getJsonValue(top["scl"],     scl,     13);
 
-    // Config is JSON, not just the settings-page dropdown, so a value outside
-    // -1..39 has to be caught here - aimuAllocPin() and Wire.begin() narrow it
-    // to (byte)/int differently, and letting a garbage pin number reach either
-    // one is how you allocate or address a pin nobody meant to touch.
-    if ((sda != -1 && (sda < 0 || sda > 39)) || (scl != -1 && (scl < 0 || scl > 39))) {
+    // Config is JSON, not just the settings-page dropdown, so a nonsense pin
+    // number has to be caught here - aimuAllocPin() and Wire.begin() narrow it
+    // to (byte)/int differently, and letting a garbage value reach either one is
+    // how you allocate or address a pin nobody meant to touch.
+    //
+    // The test asks WLED whether the pin exists rather than comparing against a
+    // constant. It used to reject anything above 39, which is the classic
+    // ESP32's ceiling - on an S3 that threw out 40 to 48, and those are most of
+    // what an N16R8 has left once USB, flash and octal PSRAM have taken their
+    // share. The symptom was an IMU that silently refused to move off its
+    // defaults and reported "invalid I2C pin" for perfectly good wiring.
+    if ((sda != -1 && !aimuPinUsable(sda)) || (scl != -1 && !aimuPinUsable(scl))) {
       sda = prevSda; scl = prevScl;
       busOk = false;
-      statusMsg = "invalid I2C pin";
+      statusMsg = "invalid I2C pin for this chip";
       ok = false;
     }
     ok &= getJsonValue(top["force"],   force,   false);

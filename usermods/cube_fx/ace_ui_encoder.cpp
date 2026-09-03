@@ -109,6 +109,12 @@
 // most of the pins you would otherwise reach for, and it is the same failure
 // mode as putting a pulled-up sensor line on GPIO12.
 //
+// The two chips have very different pin maps and the difference is not
+// cosmetic - the pins recommended for a classic ESP32 DO NOT EXIST on an S3,
+// and wiring to them gets the encoder silently dropped at start-up. Check the
+// Info page: an encoder skipped for that reason now says so.
+//
+// CLASSIC ESP32
 //   NEVER  GPIO12  held high at reset = 1.8 V flash. board hangs or corrupts
 //   NEVER  GPIO0   pressing SW at boot drops it low = bootloader mode
 //   AVOID  GPIO2, 15  boot-mode strapping, and 15 is the Gledopto PDM mic
@@ -116,13 +122,22 @@
 //   NOTE   GPIO34-39 input only and NO internal pull-ups. fine for the
 //          MCP23017 INT line (push-pull), not for a bare encoder
 //
-// Recommended on the 5-face cube:
+//   Recommended:  A -> GPIO25   B -> GPIO26   SW -> GPIO27
+//   Plain bidirectional pins, no boot role, no ADC2/WiFi conflict, and clear
+//   of the IMU (SDA 21 / SCL 13) and the panel's Wire1 lane (SDA 23 / SCL 22).
 //
-//   A  -> GPIO25      B -> GPIO26      SW -> GPIO27
+// ESP32-S3  (e.g. N16R8: 16 MB flash, 8 MB OCTAL PSRAM)
+//   NEVER  GPIO19-20   native USB
+//   NEVER  GPIO22-32   not bonded out, or SPI flash
+//   NEVER  GPIO33-37   consumed by octal PSRAM on an R8 part
+//   AVOID  GPIO0, 45, 46  strapping
 //
-// 25/26/27 are plain bidirectional pins with no boot role and no ADC2/WiFi
-// conflict. Those are clear of the IMU (SDA 21 / SCL 13) and of the panel's
-// own Wire1 lane (SDA 23 / SCL 22).
+//   That leaves 1-18, 21 and 38-48, and the high end is the roomiest.
+//   Recommended:  A -> GPIO40   B -> GPIO41   SW -> GPIO42
+//   Clear of the USB pins, of flash, of PSRAM, and of an IMU on 21/13.
+//
+// The 25/26/27 trio above is the single most likely reason an encoder that is
+// wired correctly reports nothing on an S3.
 //
 //   COM/GND -> GND. Common ground with the ESP32, not just the PSU.
 //   VCC     -> 3.3 V if the module has pull-ups. NOT 5 V - a 5 V pull-up puts
@@ -169,6 +184,19 @@ static bool auiAllocPin(int8_t p) {
   return PinManager::allocatePin((byte)p, false, PinOwner::UM_Unspecified);
 #endif
 }
+// Does this chip actually have this pin, and can it be an input?
+// Asked of WLED rather than compared against a constant, because the answer is
+// target-specific: an S3 rules out 19-20 (USB), 22-32 (flash / not bonded) and
+// 33-37 (octal PSRAM), none of which a number range would catch.
+static bool auiPinUsable(int p) {
+  if (p < 0 || p >= WLED_NUM_PINS) return false;
+#if AUI_LEGACY_PINMGR
+  return pinManager.isPinOk((byte)p, false);
+#else
+  return PinManager::isPinOk((byte)p, false);
+#endif
+}
+
 static void auiFreePin(int8_t p) {
   if (p < 0) return;
 #if AUI_LEGACY_PINMGR
@@ -275,7 +303,14 @@ class AceUiEncoderUsermod : public Usermod {
   } enc[ACE_UI_MAX_ENC];
 
   // --- runtime --------------------------------------------------------------
+  // Why an encoder is not running. Without this a dead encoder and an idle one
+  // look identical on the Info page - both just sit at zero - and there is no
+  // way to tell "your pin does not exist on this chip" from "you have not
+  // turned it yet".
+  enum { AUI_WHY_OK = 0, AUI_WHY_UNSET, AUI_WHY_NOPIN, AUI_WHY_INUSE };
+
   struct EncRt {
+    uint8_t  why = AUI_WHY_UNSET;
     // button
     bool     rawSw = true;                    // true = released (pull-up)
     uint32_t swChangeMs = 0;
@@ -360,9 +395,28 @@ class AceUiEncoderUsermod : public Usermod {
       if (!enc[i].en) continue;
 
       if (enc[i].src == AUI_SRC_MCP) { mcpWanted = true; live = i + 1; continue; }
-      if (enc[i].a < 0 || enc[i].b < 0) continue;
-      if (!auiAllocPin((int8_t)enc[i].a) || !auiAllocPin((int8_t)enc[i].b)) continue;
+      if (enc[i].a < 0 || enc[i].b < 0) { rt[i].why = AUI_WHY_UNSET; continue; }
+
+      // Rejecting a pin the chip does not have, BEFORE trying to claim it, so
+      // the reason can be reported as "this chip has no such pin" rather than
+      // the much vaguer "in use". The distinction matters on an S3, where the
+      // advice that was correct for a classic ESP32 names pins that simply are
+      // not there - 22 to 37 are flash, USB or octal PSRAM.
+      if (!auiPinUsable(enc[i].a) || !auiPinUsable(enc[i].b) ||
+          (enc[i].sw >= 0 && !auiPinUsable(enc[i].sw))) {
+        rt[i].why = AUI_WHY_NOPIN; continue;
+      }
+
+      // Claim both halves, and hand back the first if the second refuses. The
+      // old form short-circuited on ||, which left A allocated to an encoder
+      // that then bailed out - a pin leaked to nobody, for the rest of the boot.
+      if (!auiAllocPin((int8_t)enc[i].a)) { rt[i].why = AUI_WHY_INUSE; continue; }
+      if (!auiAllocPin((int8_t)enc[i].b)) {
+        auiFreePin((int8_t)enc[i].a);
+        rt[i].why = AUI_WHY_INUSE; continue;
+      }
       if (enc[i].sw >= 0) auiAllocPin((int8_t)enc[i].sw);
+      rt[i].why = AUI_WHY_OK;
 
       const uint8_t mode = enc[i].pu ? INPUT_PULLUP : INPUT;
       pinMode((uint8_t)enc[i].a, mode);
@@ -653,7 +707,18 @@ class AceUiEncoderUsermod : public Usermod {
                  (int)rt[i].lastDelta,
                  (unsigned long)rt[i].detents, (unsigned)auiIsr[i].bad);
       e.add(buf);
-      e.add(enc[i].src == AUI_SRC_MCP ? F(" mcp") : F(" gpio"));
+      // Say WHY when it is not running. An encoder that failed to attach used
+      // to print the same "0 det, 0 bad" line as one you simply had not turned
+      // yet, which is a miserable thing to debug against - especially on an S3,
+      // where following pin advice written for a classic ESP32 lands you on a
+      // pin the chip does not have.
+      if (enc[i].src == AUI_SRC_MCP)          e.add(F(" mcp"));
+      else switch (rt[i].why) {
+        case AUI_WHY_NOPIN: e.add(F(" NO SUCH PIN on this chip")); break;
+        case AUI_WHY_INUSE: e.add(F(" pin already in use"));       break;
+        case AUI_WHY_UNSET: e.add(F(" pins not set"));             break;
+        default:            e.add(F(" gpio"));                     break;
+      }
     }
     if (mcpWanted) {
       JsonArray m = user.createNestedArray(F("Expander"));
@@ -828,7 +893,7 @@ class AceUiEncoderUsermod : public Usermod {
         opt("Segment", AUI_P_SEG);
     }
 
-    info("e0a",  "encoder A (CLK). <b>25</b> is safe. never 12, 0, 6-11");
+    info("e0a",  "encoder A (CLK). ESP32: <b>25</b>. S3: <b>40</b> - on an S3 pins 22-37 do not exist. never 12, 0, 6-11");
     info("e0b",  "encoder B (DT). take it from the same group as A");
     info("e0sw", "push switch. &minus;1 if the encoder has none");
     info("e0ppd","if one detent moves two steps, this is wrong");
@@ -844,7 +909,7 @@ class AceUiEncoderUsermod : public Usermod {
                     "encoder. <b>0</b> = off");
     info("swDeb","button debounce, ms. raise if one press registers twice");
     info("mcpAddr","MCP23017 address, 32 = 0x20 with A0-A2 grounded");
-    info("mcpInt","INT line. <b>35</b> is ideal - input-only, useless otherwise");
+    info("mcpInt","INT line. ESP32: <b>35</b> (input-only, useless otherwise). S3: any free pin, 33-37 are taken by octal PSRAM");
   }
 
   uint16_t getId() override { return USERMOD_ID_UNSPECIFIED; }
