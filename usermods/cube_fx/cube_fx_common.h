@@ -654,6 +654,41 @@ inline uint16_t cfx_dropDt(uint16_t dtMs, uint16_t speedScale) {
 #define CFX_NET_ROW(Y)  const bool _outRow = cube && (((Y) / B) != 1)
 #define CFX_NET_SKIP(X) if (_outRow && _outCol[X]) continue
 
+// ---------------------------------------------------------------------------
+// Storage that skips the gaps too
+// ---------------------------------------------------------------------------
+// The macros above stop us COMPUTING the four unlit corner blocks, but every
+// effect still sized its per-pixel buffers to the whole 3B x 3B rectangle and
+// carried storage for pixels that are never drawn - 44% of it wasted. That is
+// invisible at one byte per pixel and expensive as soon as an effect keeps
+// several bytes per pixel, which is what made Soap the largest allocation in
+// the set and left it struggling to find contiguous space after a segment
+// reset.
+//
+// cfx_cidx() renumbers the LIT pixels into a dense range, so a buffer only has
+// to be cfx_litCount() entries long. It is pure arithmetic - no lookup table of
+// its own - because the net is a plus shape and each row band has a known width:
+//
+//   y <  B    NORTH band, x in [B,2B)   -> [0,    B^2)
+//   y < 2B    middle band, x in [0,3B)  -> [B^2,  4B^2)
+//   else      SOUTH band, x in [B,2B)   -> [4B^2, 5B^2)
+//
+// Five blocks of B^2 - one per lit face - against nine for the rectangle. On a
+// flat panel every pixel is lit, so this is the identity mapping and costs
+// nothing. Only ever pass coordinates that survived CFX_NET_SKIP: a gap corner
+// has no slot and would alias onto a real pixel's.
+static inline int cfx_cidx(int x, int y, int cols, int B, bool cube) {
+  if (!cube) return y * cols + x;
+  const int BB = B * B;
+  if (y <     B) return              y * B + (x - B);
+  if (y < 2 * B) return BB + (y -     B) * 3 * B + x;
+  return          4 * BB + (y - 2 * B) * B + (x - B);
+}
+
+static inline size_t cfx_litCount(int cols, int rows, int B, bool cube) {
+  return cube ? (size_t)5 * B * B : (size_t)cols * rows;
+}
+
 // Waveform selector for the edge ripple. 0 = off.
 static inline uint8_t cfx_wave(uint8_t shape, uint8_t t) {
   switch (shape) {
