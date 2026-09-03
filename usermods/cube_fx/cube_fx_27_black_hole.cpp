@@ -50,6 +50,32 @@
 // once around its circumference. That is what makes it read as one arc curving
 // around the void rather than as a drawn circle.
 //
+// ---------------------------------------------------------------------------
+// KEEPING IT LEGIBLE
+// ---------------------------------------------------------------------------
+// Everything here is injected at the rim and then rotated for its whole journey
+// inward, and every rotation is a two-tap interpolation. Nothing adds detail
+// after birth, so the disc is under a low-pass filter running hundreds of times
+// over material that can only lose information. Left alone it collapses into a
+// flat mid-tone band - measured, it sat between luma 16 and 63 with no black
+// outside the void and no highlights anywhere, at a mean of 35 against 43-61
+// for the effects worth standing next to.
+//
+// Four things hold it open, and each fixes a different failure:
+//
+//   Glow          feeds the rim at full level instead of a hardcoded 59%.
+//   arm profile   a plain sine with real range, 6 arms rather than 3 - three
+//                 arms over a 64-cell circumference are 21 cells wide, and no
+//                 amount of shearing makes a blob that broad read as a lane.
+//   bh_contrast   one smoothstep at readout, re-opening what the transit
+//                 averaged together. One pass, not Soap's two: this field is
+//                 dimmer, and down here a second pass is a gate, not a curve.
+//   normalise     the palette sets HUE and the arms set BRIGHTNESS, with arm
+//                 crests running toward white. Without that last part a hue
+//                 band sitting somewhere blue has no luminance to modulate -
+//                 blue tops out near luma 19 - and the disc switches itself off.
+//
+// ---------------------------------------------------------------------------
 //   bass    feeds the disc and speeds the infall
 //   beat    throws a flare of new material in at the rim
 //   volume  overall level, in a narrow band so it never washes out
@@ -64,7 +90,13 @@
   #define BH_GRAD 3                   // ring thickness, in eighths of a cell
 #endif
 #ifndef BH_ARMS
-  #define BH_ARMS 3                   // luminance arms fed in at the rim
+  // Luminance arms fed in at the rim. Six, not three: the circumference is 4*B
+  // angular cells (64 on a 16-px face), so three arms are twenty-one cells wide
+  // each and no amount of shearing turns a blob that broad into a lane you can
+  // see - the disc read as a few soft quadrant blobs however well the flow
+  // underneath was behaving. Halving the arm width is what makes the winding
+  // legible as winding.
+  #define BH_ARMS 6
 #endif
 
 struct BhState {
@@ -149,6 +181,31 @@ static void bh_buildMap(uint8_t *col, uint8_t *dep, uint8_t *rd, int cols, int r
       rd[i]  = dep[i];                         // off the lid the rulers agree
     }
   }
+}
+
+// Contrast restoration, the same trick Soap needed and for the same reason.
+//
+// Everything in the disc is injected at the rim and then rotated for its entire
+// journey inward, and every rotation is a two-tap interpolation in angle. That
+// is a low-pass filter running hundreds of times on material that never gets
+// any new detail added to it, so what arrives near the middle is the angular
+// AVERAGE of what set out. Measured on the lid, the disc had collapsed into a
+// band from luma 16 to 63 - no black anywhere except the void itself, no
+// highlights - and saturation sagged from ~124 to ~90 as neighbouring hues
+// averaged toward grey.
+//
+// A double smoothstep is the cheap inverse. It is steep through the middle and
+// flat at both ends, so mid values are pushed apart toward 0 and 255 while the
+// extremes stay put. Applied per channel it does two jobs at once: it re-opens
+// the dark lanes between the arms, and because the largest channel gets lifted
+// while the smallest gets crushed, it pulls saturation back up as well.
+// One pass, not two. Soap uses two, but Soap's field sits near full brightness
+// and can afford it; this disc lives around a third of full, and down there a
+// second pass is not a contrast curve, it is a gate - it took the lid from 24%
+// black to 71% and dropped the mean below where it started. One pass moves the
+// murk apart without eating it.
+static inline uint8_t bh_contrast(uint8_t v) {
+  return ease8InOutCubic(v);
 }
 
 // Bilinear read of the RGB disc. Angle wraps - it is a circle - radius clamps.
@@ -359,7 +416,15 @@ static FX_RET mode_black_hole() {
   // Two rings rather than one, so a visible amount of matter is entering rather
   // than a single cell's worth being stretched across the whole disc.
   {
-    const uint8_t punch = (uint8_t)(150 + (s->beatEnv >> 1));
+    // Glow sets how hot the material arrives. This used to be a flat 150, which
+    // meant the disc could never exceed 59% before the audio drive scaled it
+    // again - and since the arms then modulated DOWN from there, the whole field
+    // lived between luma 32 and 150 at birth and only narrowed from there. The
+    // brightest thing on the lid measured 83. Feed the rim at full level and let
+    // the arms carve the darks out instead.
+    const int pk = 120 + ((int)SEGMENT.intensity * 135) / 255;  // 120..255
+    const int pkb = pk + (s->beatEnv >> 1);
+    const uint8_t punch = (uint8_t)(pkb > 255 ? 255 : pkb);
     const uint8_t mixIn = (uint8_t)(190 + (s->beatEnv >> 2));   // ~75%..100%
     for (int k = 0; k < 2 && k < rad; k++) {
       const int rOut = rad - 1 - k;
@@ -375,13 +440,70 @@ static FX_RET mode_black_hole() {
         // pattern (they stay legible all the way in, winding as they go) while
         // the hue drifts slowly around the rim in broad sectors that neighbours
         // barely disagree about.
-        const uint8_t idx = (uint8_t)(((a * 256) / ang) + (s->hue >> 4)
+        // A NARROW hue band that drifts, not a full palette sweep around the
+        // rim. The rim used to span all 256 palette indices over the
+        // circumference, which meant the angular blur of the transit was
+        // averaging colours from opposite ends of the palette together - and
+        // the average of a whole palette is grey. Saturation measured 120
+        // against 166-207 for the effects worth comparing to. Ninety-six
+        // indices is still several distinct colours in view at once, but
+        // neighbours now differ by about one step instead of four, so blurring
+        // them lands on a real colour. The full palette is still seen; the
+        // drift carries the band through it over time rather than all at once.
+        const uint8_t idx = (uint8_t)(((a * 96) / ang) + (s->hue >> 4)
                                       + (uint8_t)(k * 10));
+        // A plain sine, deliberately. Easing this profile as well was tried and
+        // is the wrong place to do it: an eased sine sits near its extremes for
+        // most of the period, so the dark lanes come out as wide as the arms and
+        // the disc measured 62% black against a 28-43% reference. Carving the
+        // lanes is bh_contrast's job, and it is better placed to do it because
+        // it acts on the field AFTER the transit, where the blur it is
+        // correcting for has actually happened. Here we only need the arms to
+        // start with real range.
         const uint8_t arm = sin8_t((uint8_t)(((a * 256 * BH_ARMS) / ang)
                                              + (s->spin >> 4)));
-        const uint8_t amp = (uint8_t)(55 + ((int)arm * 200) / 255);   // 55..255
-        uint32_t c = mq_scale(SEGMENT.color_from_palette(idx, false, true, 0),
-                              scale8(punch, amp));
+        const uint8_t amp = (uint8_t)(20 + ((int)arm * 235) / 255);   // 20..255
+
+        // Normalise the palette entry to full level before the arms scale it,
+        // so the palette supplies HUE and the arms supply BRIGHTNESS - which is
+        // the division this effect has been built around all along, and the one
+        // place it was not being honoured.
+        //
+        // It matters more here than it would elsewhere because the hue band is
+        // narrow. A band 96 indices wide can sit entirely inside a dark stretch
+        // of a palette, and then the whole disc goes dark with it - over a
+        // minute the mean fell to 4 and 96% of the surface was black, the disc
+        // effectively switching itself off and back on as the drift carried the
+        // band through. The old full-circumference sweep never showed this
+        // because it always straddled the bright parts. Normalising decouples
+        // the two: the palette's dark entries still read as their own colour,
+        // they just arrive at the level the arm profile asked for.
+        uint32_t pc = SEGMENT.color_from_palette(idx, false, true, 0);
+        {
+          int pr = (int)((pc >> 16) & 0xFF), pg = (int)((pc >> 8) & 0xFF),
+              pb = (int)(pc & 0xFF);
+          int mx = pr > pg ? pr : pg; if (pb > mx) mx = pb;
+          if (mx > 8) {                       // pure black entries stay black
+            pr = (pr * 255) / mx; pg = (pg * 255) / mx; pb = (pb * 255) / mx;
+          }
+          // Arm crests run toward white, and this is what lets the arms exist
+          // at all when the hue band is sitting somewhere blue. Brightness is
+          // not linear in the channels: a fully saturated blue tops out around
+          // luma 19 while a yellow reaches 236, so scaling a blue up and down
+          // gives a luminance pattern with nowhere to go - the disc measured a
+          // spatial sigma of 20 in the blue phase against 45 in the yellow one,
+          // and simply looked switched off. Blending the crest toward white
+          // gives every hue the same luminance headroom, and it is what the
+          // thing being depicted does anyway: the hot parts of an accretion
+          // disc go white, they do not go to a brighter version of their own
+          // colour.
+          const int wht = ((int)arm * 92) / 255;          // up to ~36% at crest
+          pr += ((255 - pr) * wht) / 255;
+          pg += ((255 - pg) * wht) / 255;
+          pb += ((255 - pb) * wht) / 255;
+          pc = RGBW32(pr, pg, pb, 0);
+        }
+        uint32_t c = mq_scale(pc, scale8(punch, amp));
         const size_t o = ((size_t)rOut * ang + a) * 3;
         const uint8_t src[3] = { (uint8_t)((c >> 16) & 0xFF),
                                  (uint8_t)((c >>  8) & 0xFF),
@@ -415,7 +537,12 @@ static FX_RET mode_black_hole() {
       const int a = cube ? u : ((u * ang) >> 8);
       const size_t o = ((size_t)d * ang + (a % ang)) * 3;
 
-      uint32_t c = mq_scale(RGBW32(dye[o], dye[o + 1], dye[o + 2], 0), drive);
+      // Contrast is applied to the DISC only, and before the ring is added -
+      // the arc is already a deliberate highlight and putting it through the
+      // curve would only clip it.
+      uint32_t c = mq_scale(RGBW32(bh_contrast(dye[o]),
+                                   bh_contrast(dye[o + 1]),
+                                   bh_contrast(dye[o + 2]), 0), drive);
 
       // The arc. One cell wide, and brightest on one side of its circumference -
       // an even ring reads as a drawn circle, a beamed one reads as light
