@@ -95,6 +95,26 @@ class CubeFxBankUsermod : public Usermod {
     // whole point of the bank is that this is a decision rather than a surprise.
     const uint8_t missing = (uint8_t)(cfxBankCount() - cfxBankPlacedCount());
     s.add(missing ? F(" - reboot to apply changes") : F(""));
+
+    // How much room is actually left on THIS build, counted rather than guessed.
+    //
+    // Working it out from the source is unreliable: several built-ins sit behind
+    // #ifdefs that are off by default, so counting addEffect() calls in FX.cpp
+    // over-states how many slots the built-ins really occupy and understates the
+    // headroom. The device knows exactly. Free slots are the RSVD placeholders
+    // still sitting inside the initial table plus whatever is left below the
+    // 255-entry hard ceiling, which is precisely what addEffect() will use.
+    unsigned used = strip.getModeCount(), rsvd = 0;
+    for (unsigned i = 1; i < used; i++) {
+      const char *d = strip.getModeData(i);
+      if (d && pgm_read_byte(d) == 'R' && pgm_read_byte(d + 1) == 'S' &&
+          pgm_read_byte(d + 2) == 'V' && pgm_read_byte(d + 3) == 'D') rsvd++;
+    }
+    JsonArray f = user.createNestedArray(F("Cube FX slots free"));
+    char fb[52];
+    snprintf_P(fb, sizeof(fb), PSTR("%u  (%u modes, %u gaps + %u above)"),
+               (unsigned)(rsvd + (255 - used)), used, rsvd, (unsigned)(255 - used));
+    f.add(fb);
   }
 
   void appendConfigData(Print &s) override {
