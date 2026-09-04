@@ -19,6 +19,8 @@ Two things here are deliberate and easy to undo by accident:
     default. The simulator carries six palettes where WLED has seventy-odd, so
     a default like pal=11 lands on something unrelated.
 """
+import os
+import tempfile
 import time
 
 import numpy as np
@@ -484,15 +486,53 @@ def build(app):
     dpg.set_viewport_resize_callback(lambda s, d: app.relayout())
 
 
+# Where a capture is asked for, and where the result is written.
+#
+# A file rather than a socket or a hotkey because it needs no port, no focus and
+# no window manager: anything that can create a file can ask for a frame, and
+# the app answers on its next tick.
+SHOT_DIR = os.path.join(tempfile.gettempdir(), "cubefx")
+SHOT_REQ = os.path.join(SHOT_DIR, "capture.request")
+SHOT_PNG = os.path.join(SHOT_DIR, "capture.png")
+
+
+def service_capture():
+    """Write a PNG of THIS APP'S OWN window if one has been asked for.
+
+    dpg.output_frame_buffer hands back the frame Dear PyGui just rendered, so
+    what lands in the file is the viewport and nothing else - no other window,
+    no desktop, no wallpaper, and nothing at all when the app is not running.
+    That scoping is the whole reason it is done this way. The obvious
+    alternative, a screen or window grab through the Windows API, photographs
+    whatever happens to be in front of it: asked to check this app's theme it
+    once returned a locked machine's lock screen instead, which is nobody's
+    business and was never the thing being asked for. A frame buffer cannot
+    make that mistake, because the app has nothing else to give.
+
+    Must be called from inside the render loop - the buffer does not exist
+    outside it.
+    """
+    try:
+        if not os.path.exists(SHOT_REQ):
+            return
+        os.remove(SHOT_REQ)                 # first, so a failure cannot loop
+        dpg.output_frame_buffer(SHOT_PNG)
+    except Exception as e:                  # a capture must never kill the app
+        print(f"capture failed: {e}")
+
+
 def main():
     app = App()
     build(app)
     dpg.show_viewport()
+    os.makedirs(SHOT_DIR, exist_ok=True)
+    print(f"frame capture: create {SHOT_REQ} to get a PNG at {SHOT_PNG}")
     try:
         while dpg.is_dearpygui_running():
             app.step_sim()
             app.draw()
             dpg.render_dearpygui_frame()
+            service_capture()
     finally:
         app.stop_live()
         dpg.destroy_context()

@@ -71,3 +71,23 @@ lands somewhere unrelated — it maps to Mono here, rendering the effect in
 greyscale and reporting a saturation of zero. The browser page has always driven
 this from its own selector, defaulting to 1, and the native side matches that.
 Override with `--set pal=N`.
+
+## Frame capture
+
+The running app will write a PNG of its own window on request. Create the
+trigger file and it answers on its next tick:
+
+```
+%TEMP%\cubefx\capture.request   ->   %TEMP%\cubefx\capture.png
+```
+
+Any empty file will do; the app deletes the request and writes the PNG. This
+exists so the window can be looked at without a screen grab.
+
+It uses `dpg.output_frame_buffer`, which returns the frame Dear PyGui just
+rendered — the viewport and nothing else. No other window, no desktop, no
+wallpaper, and nothing at all when the app is not running. That scoping is the
+point of doing it this way rather than through a Windows screen or window grab,
+which photographs whatever happens to be in front of it: asked once to check
+this app's theme, a window grab returned a locked machine's lock screen. A frame
+buffer cannot make that mistake, because the app has nothing else to give.
