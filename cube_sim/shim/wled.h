@@ -345,17 +345,35 @@ class Segment {
   void fadeToBlackBy(uint8_t n) {
     for (int i = 0; i < _vw * _vh; i++) pixels[i] = color_fade(pixels[i], 255 - n);
   }
-  void blur(uint8_t n, bool = false) {                 // cheap separable box blur
+  // Separable blur, run FORWARDS AND BACKWARDS on each axis.
+  //
+  // A single pass per axis is a causal IIR filter: every pixel takes from the
+  // one before it and the result feeds the next, so the whole field creeps
+  // toward +x and +y a little on every frame. One frame it is invisible; over a
+  // few hundred it walks the picture into the corner and off the grid. Frizzles
+  // renders correctly for ten seconds and then decays to nothing, and any
+  // effect that leans on blur was drifting the same way, just less visibly.
+  // WLED calls blur2D(amount, amount, smear), which is symmetric; running the
+  // second pass in reverse cancels the bias.
+  void blur(uint8_t n, bool = false) {
     if (!n) return;
     const uint8_t keep = 255 - n;
-    for (int y = 0; y < _vh; y++)
+    for (int y = 0; y < _vh; y++) {
       for (int x = 1; x < _vw; x++)
         pixels[y*_vw+x] = color_add(color_fade(pixels[y*_vw+x], keep),
                                     color_fade(pixels[y*_vw+x-1], n), true);
-    for (int x = 0; x < _vw; x++)
+      for (int x = _vw - 2; x >= 0; x--)
+        pixels[y*_vw+x] = color_add(color_fade(pixels[y*_vw+x], keep),
+                                    color_fade(pixels[y*_vw+x+1], n), true);
+    }
+    for (int x = 0; x < _vw; x++) {
       for (int y = 1; y < _vh; y++)
         pixels[y*_vw+x] = color_add(color_fade(pixels[y*_vw+x], keep),
                                     color_fade(pixels[(y-1)*_vw+x], n), true);
+      for (int y = _vh - 2; y >= 0; y--)
+        pixels[y*_vw+x] = color_add(color_fade(pixels[y*_vw+x], keep),
+                                    color_fade(pixels[(y+1)*_vw+x], n), true);
+    }
   }
   void blur2D(uint8_t n, bool b = false) { blur(n, b); }
 
