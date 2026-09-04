@@ -157,7 +157,22 @@ class Segment {
   const CRGBPalette16 &currentPalette() const;
 
   uint8_t  speed = 128, intensity = 128;
-  uint8_t  custom1 = 128, custom2 = 128, custom3 = 16;
+  uint8_t  custom1 = 128, custom2 = 128;
+  // custom3 is FIVE BITS in the firmware - `uint8_t custom3 : 5` in FX.h, range
+  // 0..31, and WLED's own effects treat it that way (`map(custom3, 0, 31, ...)`,
+  // and a comment calling it the reduced resolution slider).
+  //
+  // This shim declared it as a full byte, and that single mismatch made the
+  // simulator lie about every effect that scales custom3 as if it were 0..255.
+  // Anything tuned here against a value above 31 was tuned against a setting
+  // the hardware cannot reach - json.cpp constrains the incoming value to
+  // 0..31 before it is stored, so a request for 210 arrives as 31.
+  //
+  // simParams() applies that same constraint, so the two agree. Matching the
+  // firmware means the simulator now fails the same way the cube does, which is
+  // the only way it is worth anything.
+  uint8_t  custom3 : 5;
+  Segment() : custom3(16) {}
   bool     check1 = false, check2 = false, check3 = false;
   uint8_t  palette = 11, soundSim = 0, mode = 0;
   uint32_t colors[3] = { 0xFFAA00u, 0u, 0u };

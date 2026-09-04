@@ -161,7 +161,10 @@ SIM_API void simSelect() {
 SIM_API void simParams(int sx, int ix, int c1, int c2, int c3,
                                     int o1, int o2, int o3, int pal) {
   gSeg.speed = (uint8_t)sx; gSeg.intensity = (uint8_t)ix;
-  gSeg.custom1 = (uint8_t)c1; gSeg.custom2 = (uint8_t)c2; gSeg.custom3 = (uint8_t)c3;
+  gSeg.custom1 = (uint8_t)c1; gSeg.custom2 = (uint8_t)c2;
+  // Constrained, not truncated - json.cpp:306 does constrain(c3, 0, 31) before
+  // storing, so a request for 210 reaches an effect as 31 rather than as 210&31.
+  gSeg.custom3 = (uint8_t)(c3 < 0 ? 0 : (c3 > 31 ? 31 : c3));
   gSeg.check1 = o1 != 0; gSeg.check2 = o2 != 0; gSeg.check3 = o3 != 0;
   gSeg.palette = (uint8_t)pal;
 }
