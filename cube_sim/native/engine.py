@@ -55,6 +55,7 @@ class Engine:
         L.simEffectMeta.restype = C.c_char_p;  L.simEffectMeta.argtypes = [C.c_int]
         L.simInit.argtypes = [C.c_int, C.c_int]
         L.simParams.argtypes = [C.c_int] * 9
+        L.simColors.argtypes = [C.c_uint32] * 3
         L.simFftPtr.restype = C.POINTER(C.c_uint8)
         L.simAudioSet.argtypes = [C.c_float, C.c_int]
         L.simFrame.argtypes = [C.c_int, C.c_int]
@@ -115,6 +116,10 @@ class Engine:
         f = self.fx
         self.lib.simParams(f["sx"], f["ix"], f["c1"], f["c2"], f["c3"],
                            f["o1"], f["o2"], f["o3"], self.pal)
+
+    def colors(self, c0, c1=0, c2=0):
+        """Segment colours. WLED's DEFAULT_COLOR is 0xFFA000."""
+        self.lib.simColors(int(c0) & 0xFFFFFF, int(c1) & 0xFFFFFF, int(c2) & 0xFFFFFF)
 
     def audio(self, vol, peak):
         self.lib.simAudioSet(C.c_float(vol), int(peak))

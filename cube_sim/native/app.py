@@ -29,8 +29,60 @@ from native.synth import Synth
 from native import render
 
 STEP = 23
-NET_SCALE = 8
-CUBE_PX = 360
+CUBE_MAX = 620          # cube render cost is quadratic in this, so it is capped
+                        # and the image is scaled up if the pane is larger
+VIEW_MIN = 180
+SIDE_W = 340            # control column
+
+
+def apply_theme():
+    """A dark theme close to the browser build's, so switching between the two
+    is not jarring. Default Dear PyGui is grey-blue and tightly packed; the
+    views want to sit on near-black or the LED colours read wrong against it."""
+    bg      = (17, 19, 24)
+    panel   = (24, 27, 34)
+    line    = (42, 47, 58)
+    text    = (215, 219, 227)
+    dim     = (139, 147, 163)
+    accent  = (90, 169, 230)
+    with dpg.theme() as th:
+        with dpg.theme_component(dpg.mvAll):
+            for t, c in ((dpg.mvThemeCol_WindowBg, bg),
+                         (dpg.mvThemeCol_ChildBg, panel),
+                         (dpg.mvThemeCol_PopupBg, panel),
+                         (dpg.mvThemeCol_Border, line),
+                         (dpg.mvThemeCol_Text, text),
+                         (dpg.mvThemeCol_TextDisabled, dim),
+                         (dpg.mvThemeCol_FrameBg, (32, 36, 45)),
+                         (dpg.mvThemeCol_FrameBgHovered, (44, 50, 62)),
+                         (dpg.mvThemeCol_FrameBgActive, (52, 60, 74)),
+                         (dpg.mvThemeCol_Button, (38, 43, 54)),
+                         (dpg.mvThemeCol_ButtonHovered, (52, 62, 78)),
+                         (dpg.mvThemeCol_ButtonActive, accent),
+                         (dpg.mvThemeCol_SliderGrab, accent),
+                         (dpg.mvThemeCol_SliderGrabActive, (130, 195, 245)),
+                         (dpg.mvThemeCol_CheckMark, accent),
+                         (dpg.mvThemeCol_Header, (40, 48, 60)),
+                         (dpg.mvThemeCol_HeaderHovered, (52, 62, 78)),
+                         (dpg.mvThemeCol_TitleBg, panel),
+                         (dpg.mvThemeCol_TitleBgActive, panel),
+                         (dpg.mvThemeCol_ScrollbarBg, panel),
+                         (dpg.mvThemeCol_ScrollbarGrab, line),
+                         (dpg.mvThemeCol_Separator, line),
+                         (dpg.mvThemeCol_PlotHistogram, accent)):
+                dpg.add_theme_color(t, c, category=dpg.mvThemeCat_Core)
+            for t, v in ((dpg.mvStyleVar_FrameRounding, 4),
+                         (dpg.mvStyleVar_ChildRounding, 6),
+                         (dpg.mvStyleVar_GrabRounding, 4),
+                         (dpg.mvStyleVar_WindowRounding, 6),
+                         (dpg.mvStyleVar_ScrollbarRounding, 6)):
+                dpg.add_theme_style(t, v, category=dpg.mvThemeCat_Core)
+            for t, a, b in ((dpg.mvStyleVar_WindowPadding, 10, 10),
+                            (dpg.mvStyleVar_FramePadding, 7, 4),
+                            (dpg.mvStyleVar_ItemSpacing, 8, 6),
+                            (dpg.mvStyleVar_CellPadding, 6, 3)):
+                dpg.add_theme_style(t, a, b, category=dpg.mvThemeCat_Core)
+    dpg.bind_theme(th)
 PALETTES = [("Rainbow", 1), ("Fire", 2), ("Ocean", 3), ("Party", 4),
             ("Mono", 5), ("Sunset", 6), ("Default (segment colour)", 0)]
 
@@ -119,12 +171,24 @@ class App:
 
     def on_faceB(self, s, val):
         self.eng.resize(int(val))
-        dpg.configure_item("net_img", width=self.eng.cols * NET_SCALE,
-                           height=self.eng.rows * NET_SCALE)
-        self.remake_net_texture()
+        self.relayout()
+
+    def on_color(self, sender, val):
+        r, g, b = (int(c * 255) if c <= 1.0 else int(c) for c in val[:3])
+        self.eng.colors((r << 16) | (g << 8) | b)
 
     def on_param(self, sender, val):
-        self.eng.fx[dpg.get_item_user_data(sender)] = int(val)
+        k = dpg.get_item_user_data(sender)
+        self.eng.fx[k] = int(val)
+        if dpg.does_item_exist(f"inp_{k}"):
+            dpg.set_value(f"inp_{k}", int(val))       # keep the typed box in step
+        self.eng.push()
+
+    def on_param_typed(self, sender, val):
+        k = dpg.get_item_user_data(sender)
+        self.eng.fx[k] = int(val)
+        if dpg.does_item_exist(f"sld_{k}"):
+            dpg.set_value(f"sld_{k}", int(val))
         self.eng.push()
 
     def on_check(self, sender, val):
@@ -145,10 +209,20 @@ class App:
             # to 0..31, so the slider must stop there. Letting it run to 255
             # offers settings the cube cannot hold - which is exactly how
             # fourteen effects came to be tuned against values they never got.
-            dpg.add_slider_int(label=lab, parent="params", width=150,
-                               min_value=0, max_value=31 if k == "c3" else 255,
-                               default_value=self.eng.fx[k], user_data=k,
-                               callback=self.on_param)
+            hi = 31 if k == "c3" else 255
+            with dpg.group(horizontal=True, parent="params"):
+                dpg.add_slider_int(tag=f"sld_{k}", width=150, min_value=0,
+                                   max_value=hi, default_value=self.eng.fx[k],
+                                   user_data=k, callback=self.on_param)
+                # A typed box beside every slider. Dear PyGui does support
+                # ctrl-click to type into a slider, but it is undiscoverable and
+                # awkward when you want an exact value to compare two runs.
+                dpg.add_input_int(tag=f"inp_{k}", width=62, step=0,
+                                  min_value=0, max_value=hi,
+                                  min_clamped=True, max_clamped=True,
+                                  default_value=self.eng.fx[k], user_data=k,
+                                  callback=self.on_param_typed)
+                dpg.add_text(lab, color=(139, 147, 163))
         for i, k in enumerate(("o1", "o2", "o3")):
             lab = (m["labels"][5 + i] if 5 + i < len(m["labels"]) else "").strip()
             if not lab:
@@ -157,24 +231,70 @@ class App:
                              default_value=bool(self.eng.fx[k]),
                              user_data=k, callback=self.on_check)
 
+    # --- layout --------------------------------------------------------------
+    def relayout(self):
+        """Size both views to whatever the window currently is.
+
+        The panes were fixed pixel sizes, so maximising the window left two
+        small pictures in the corner of a large expanse of panel. Both views are
+        square, so each gets the largest square that fits its half of the space.
+        """
+        vw = max(640, dpg.get_viewport_client_width())
+        vh = max(420, dpg.get_viewport_client_height())
+        pane_h = max(VIEW_MIN, vh - 108)
+        half = max(VIEW_MIN, (vw - SIDE_W - 46) // 2)
+        side = max(VIEW_MIN, min(half, pane_h))
+
+        # The net is upscaled by a WHOLE number so the LED grid stays hard;
+        # bilinear scaling of a 48-pixel image looks like a photograph of a cube
+        # rather than a cube.
+        self.net_scale = max(1, side // self.eng.cols)
+        self.cube_px = min(CUBE_MAX, side)
+        self.view_side = side
+
+        for tag in ("net_win", "cube_win"):
+            dpg.configure_item(tag, width=side + 22, height=pane_h + 34)
+        dpg.configure_item("side_win", height=pane_h + 34)
+        self.remake_net_texture()
+        self.remake_cube_texture()
+
     def remake_net_texture(self):
-        w = self.eng.cols * NET_SCALE
-        h = self.eng.rows * NET_SCALE
-        if dpg.does_item_exist("net_tex"):
+        w = self.eng.cols * self.net_scale
+        h = self.eng.rows * self.net_scale
+        if dpg.does_item_exist("net_img"):
             dpg.delete_item("net_img")
+        if dpg.does_item_exist("net_tex"):
             dpg.delete_item("net_tex")
         with dpg.texture_registry():
             dpg.add_raw_texture(w, h, np.zeros(w * h * 4, np.float32),
                                 format=dpg.mvFormat_Float_rgba, tag="net_tex")
         dpg.add_image("net_tex", tag="net_img", parent="net_win")
+        self._bufs.pop("net", None)
+
+    def remake_cube_texture(self):
+        p = self.cube_px
+        if dpg.does_item_exist("cube_img"):
+            dpg.delete_item("cube_img")
+        if dpg.does_item_exist("cube_tex"):
+            dpg.delete_item("cube_tex")
+        with dpg.texture_registry():
+            dpg.add_raw_texture(p, p, np.zeros(p * p * 4, np.float32),
+                                format=dpg.mvFormat_Float_rgba, tag="cube_tex")
+        # Drawn at view_side even when rendered smaller, so capping the render
+        # cost does not also shrink the picture.
+        dpg.add_image("cube_tex", tag="cube_img", parent="cube_win",
+                      width=self.view_side, height=self.view_side)
+        self._bufs.pop("cube", None)
 
     # --- interaction ---------------------------------------------------------
     def on_drag(self, sender, app_data):
         if not dpg.is_item_hovered("cube_img"):
             return
+        # Halved from 0.01. At the old rate a small hand movement spun the cube
+        # most of a turn, which made it hard to settle on a face.
         _, dx, dy = app_data
-        self.yaw = self._yaw0 + dx * 0.01
-        self.pitch = max(-1.45, min(1.45, self._pitch0 + dy * 0.01))
+        self.yaw = self._yaw0 + dx * 0.005
+        self.pitch = max(-1.45, min(1.45, self._pitch0 + dy * 0.005))
 
     def on_mouse_down(self, sender, app_data):
         self._yaw0, self._pitch0 = self.yaw, self.pitch
@@ -183,7 +303,7 @@ class App:
         if not dpg.is_item_hovered("cube_img"):
             return
         # Multiplicative, so a notch moves the same proportion at every range.
-        self.dist = max(1.9, min(14.0, self.dist * np.exp(-app_data * 0.12)))
+        self.dist = max(1.9, min(14.0, self.dist * np.exp(-app_data * 0.06)))
 
     def on_key(self, sender, app_data):
         if app_data == dpg.mvKey_F11:
@@ -210,10 +330,10 @@ class App:
     def draw(self):
         net = self.net_image()
         if self.layout in ("both", "net"):
-            big = net.repeat(NET_SCALE, 0).repeat(NET_SCALE, 1)
+            big = net.repeat(self.net_scale, 0).repeat(self.net_scale, 1)
             dpg.set_value("net_tex", self._rgba("net", big))
         if self.layout in ("both", "cube"):
-            img = render.render(net, self.eng.B, CUBE_PX,
+            img = render.render(net, self.eng.B, self.cube_px,
                                 self.yaw, self.pitch, self.dist)
             dpg.set_value("cube_tex", self._rgba("cube", img))
 
@@ -233,10 +353,6 @@ def build(app):
     dpg.create_context()
     dpg.create_viewport(title="Cube FX Simulator (native)", width=1180, height=780)
 
-    with dpg.texture_registry():
-        dpg.add_raw_texture(CUBE_PX, CUBE_PX, np.zeros(CUBE_PX * CUBE_PX * 4, np.float32),
-                            format=dpg.mvFormat_Float_rgba, tag="cube_tex")
-
     with dpg.handler_registry():
         dpg.add_mouse_drag_handler(button=dpg.mvMouseButton_Left, callback=app.on_drag)
         dpg.add_mouse_down_handler(button=dpg.mvMouseButton_Left, callback=app.on_mouse_down)
@@ -246,19 +362,25 @@ def build(app):
     with dpg.window(tag="root"):
         with dpg.group(horizontal=True):
             with dpg.child_window(tag="net_win", width=420, height=470):
-                dpg.add_text("Unfolded net")
-            with dpg.child_window(tag="cube_win", width=CUBE_PX + 20, height=470):
-                dpg.add_text("Cube - drag to rotate, wheel to zoom")
-                dpg.add_image("cube_tex", tag="cube_img")
-            with dpg.child_window(width=330, height=470):
+                dpg.add_text("Unfolded net", color=(139, 147, 163))
+            with dpg.child_window(tag="cube_win", width=420, height=470):
+                dpg.add_text("Cube - drag to rotate, wheel to zoom",
+                             color=(139, 147, 163))
+            with dpg.child_window(tag="side_win", width=SIDE_W - 10, height=470):
                 dpg.add_combo(app.eng.names, label="effect",
                               default_value=app.eng.names[0], width=200,
                               callback=app.on_effect)
                 dpg.add_combo([p[0] for p in PALETTES], label="palette",
                               default_value="Rainbow", width=200,
                               callback=app.on_palette)
-                dpg.add_combo(["4", "8", "16"], label="face B", default_value="16",
+                dpg.add_combo(["4", "8", "16", "32"], label="face B", default_value="16",
                               width=80, callback=app.on_faceB)
+                # Several effects paint with SEGCOLOR(0). WLED's DEFAULT_COLOR
+                # is amber, so without this those effects could only ever be
+                # seen in one colour here.
+                dpg.add_color_edit((255, 160, 0, 255), label="primary",
+                                   width=170, no_alpha=True,
+                                   callback=app.on_color)
                 with dpg.group(horizontal=True):
                     dpg.add_button(label="play/pause",
                                    callback=lambda: setattr(app, "playing", not app.playing))
@@ -300,10 +422,14 @@ def build(app):
         dpg.add_text("", tag="stat_txt")
         dpg.add_text("space = play/pause    F11 = fullscreen", color=(130, 140, 155))
 
-    app.remake_net_texture()
+    apply_theme()
     app.rebuild_params()
     dpg.set_primary_window("root", True)
     dpg.setup_dearpygui()
+    app.relayout()
+    # Both views follow the window from here on. Without this, maximising left
+    # two small pictures marooned in the corner of a large empty panel.
+    dpg.set_viewport_resize_callback(lambda s, d: app.relayout())
 
 
 def main():

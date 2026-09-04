@@ -204,7 +204,14 @@ static FX_RET mode_rubiks_cube() {
 
   const uint8_t drive = cfx_drive(vol, 1.2f, 150);
 
-  SEGMENT.fill(SEGCOLOR(0));
+  // The body is BLACK, not the segment's primary colour.
+  //
+  // Filling with SEGCOLOR(0) meant the plastic between the stickers took
+  // whatever primary the user had set - amber on a fresh install, since WLED's
+  // DEFAULT_COLOR is 0xFFA000 - so the puzzle arrived sitting in a glowing
+  // orange frame. Every other reference for this object has a black body, and
+  // the stickers are the only thing that should carry colour.
+  SEGMENT.fill(0);
   CFX_NET_PREP();
   size_t i = 0;
   for (int y = 0; y < rows; y++) {

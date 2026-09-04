@@ -175,7 +175,10 @@ class Segment {
   Segment() : custom3(16) {}
   bool     check1 = false, check2 = false, check3 = false;
   uint8_t  palette = 11, soundSim = 0, mode = 0;
-  uint32_t colors[3] = { 0xFFAA00u, 0u, 0u };
+  // WLED's own DEFAULT_COLOR (FX.h) is 0xFFA000, so a fresh install shows amber
+  // wherever an effect paints with SEGCOLOR(0). This was 0xFFAA00 - close
+  // enough to look right and wrong enough to be a different colour.
+  uint32_t colors[3] = { 0xFFA000u, 0u, 0u };
 
   uint32_t *pixels = nullptr;          // the frame the renderers read
   uint8_t  *data   = nullptr;          // effect scratch

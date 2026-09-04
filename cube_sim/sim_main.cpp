@@ -172,6 +172,13 @@ SIM_API void simParams(int sx, int ix, int c1, int c2, int c3,
 // The FFT bins live here and the page writes into them directly. Handing back a
 // pointer to a static beats malloc'ing one in JS: nothing to free, and no extra
 // export just to allocate 16 bytes.
+// The segment's three colours. Several effects paint with SEGCOLOR(0) - WLED's
+// DEFAULT_COLOR is amber, so without a way to set this the front end could only
+// ever show those effects in one colour.
+SIM_API void simColors(uint32_t c0, uint32_t c1, uint32_t c2) {
+  gSeg.colors[0] = c0; gSeg.colors[1] = c1; gSeg.colors[2] = c2;
+}
+
 SIM_API uint8_t *simFftPtr() { return gFft; }
 
 SIM_API void simAudioSet(float vol, int peak) {
