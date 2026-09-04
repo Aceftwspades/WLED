@@ -87,7 +87,12 @@
 #ifndef SF_HUEMUL
   #define SF_HUEMUL 2               // palette wraps per sweep of the nozzle ring
 #endif
-#define SF_AMBIENT 5                // background bleed, in 1/255ths per frame
+// Background bleed toward the noise palette, in 1/255ths per frame. Zero means
+// the sixteen nozzles are the ONLY source of colour in the effect - see the
+// note at the bottom of the transport loop. Kept as a constant rather than
+// deleted so the trade can be re-run: at zero the per-frame noise field and its
+// palette lookup are compiled out entirely, so it costs nothing to leave here.
+#define SF_AMBIENT 0
 
 struct SfState {
   uint8_t  mode;
@@ -105,9 +110,30 @@ struct SfState {
 struct SfNozzle {
   int16_t px, py, pz;               // nozzle centre
   int8_t  nx, ny, nz;               // outward face normal
+  int8_t  tx, ty, tz;               // jet axis, Q7 - the plume runs along this
   int16_t ax, ay, az;               // vortex A centre
   int16_t bx, by, bz;               // vortex B centre
 };
+
+// How far the pigment reaches ALONG the jet, in surface units, where a face is
+// 254 across.
+//
+// The injection region used to be a circle centred on the orifice, which is not
+// how a jet lays dye down: colour entered as a blob and only the flow carried
+// it anywhere, so the sixteen sources read as sixteen smudges rather than
+// sixteen jets. It is now a teardrop, stretched forward along the axis only.
+//
+// The length is deliberately NOT a multiple of the nozzle radius. Tying the two
+// together means the size slider shortens the plume as it narrows it, so
+// turning the nozzles down to where they stop merging also starves the field -
+// sigma fell from 51 to 35 across that sweep and the effect went back to
+// stirring itself pale. Held separate, the slider controls only how WIDE each
+// jet is against the 63 units between neighbours: narrow enough and you see
+// sixteen distinct plumes, wide enough and they merge into one film. That is
+// the axis worth having a knob on.
+#ifndef SF_PLUME
+  #define SF_PLUME 300
+#endif
 
 // Face-local frame: outward normal, an "along" axis and an "up" axis. For the
 // walls up is +Z, so a jet at centre angle climbs the wall; for the lid there is
@@ -210,6 +236,9 @@ static void sf_build(SfNozzle *nz, int layout, uint8_t angle, int sep) {
     const float sx = nv[1] * tz - nv[2] * ty;
     const float sy = nv[2] * tx - nv[0] * tz;
     const float sz = nv[0] * ty - nv[1] * tx;
+
+    N.tx = (int8_t)(tx * 127.0f); N.ty = (int8_t)(ty * 127.0f);
+    N.tz = (int8_t)(tz * 127.0f);
 
     N.ax = (int16_t)(N.px + sx * (float)sep);
     N.ay = (int16_t)(N.py + sy * (float)sep);
@@ -422,8 +451,19 @@ static FX_RET mode_spectral_fountain() {
   const int R  = cube ? Rbase : (Rbase / 3 + 8);
   const int R2 = R * R;
   const int sep = R / 2;                       // how far the pair straddles the jet
-  const int reach = R + sep;                   // bounding radius, for the early-out
+  const int reach = R + sep;                   // bounding radius for the vortices
   const int reach2 = reach * reach;
+  // The pigment reaches further than the vortices do, forward along the axis,
+  // so it needs its own looser bound or the plume gets clipped at the old one.
+  // On a flat panel the whole picture is 254 units wide, so the plume is scaled
+  // down with the radius for the same reason the radius itself is.
+  const int Lp = cube ? SF_PLUME : (SF_PLUME / 3);
+  const int plume = Lp + sep;
+  const int plume2 = plume * plume;
+  // Q8 ratio of plume length to lateral radius: a point Lp along the axis maps
+  // back onto the rim of the lateral circle, which is what makes the falloff
+  // reach exactly Lp forward whatever the radius is set to.
+  const int elongQ = (Lp * 256) / (R > 0 ? R : 1);
 
   const int32_t jet = ((int32_t)SEGMENT.intensity * 200) / 255 + 30;
 
@@ -466,6 +506,9 @@ static FX_RET mode_spectral_fountain() {
   }
 
   // --- ambient colour source ------------------------------------------------------
+  // Only worth maintaining if something reads it. With the bleed off it is
+  // still needed once, to open on a marbled field rather than on black.
+  if (SF_AMBIENT || init)
   for (int y = 0; y < rows; y++) {
     for (int x = 0; x < cols; x++) {
       if (cube && (x / B) != 1 && (y / B) != 1) continue;
@@ -532,9 +575,13 @@ static FX_RET mode_spectral_fountain() {
           if (gam[k] < 6) continue;                        // silent band
           const int ddx = P[0] - noz[k].px, ddy = P[1] - noz[k].py, ddz = P[2] - noz[k].pz;
           const int dc2 = ddx * ddx + ddy * ddy + ddz * ddz;
-          if (dc2 > reach2) continue;                      // nowhere near it
+          if (dc2 > plume2) continue;                      // nowhere near it
           if (noz[k].nx * nrx + noz[k].ny * nry + noz[k].nz * nrz < 0) continue; // far side
 
+          // The vortices stay compact even when the plume does not, so they
+          // keep their own tight bound. Widening this to cover the pigment
+          // would have every pixel evaluating every nozzle's pair.
+          if (dc2 <= reach2)
           for (int e = 0; e < 2; e++) {
             const int qx = e ? noz[k].bx : noz[k].ax;
             const int qy = e ? noz[k].by : noz[k].ay;
@@ -556,10 +603,17 @@ static FX_RET mode_spectral_fountain() {
             vz += (ccz * g) / R;
           }
 
-          // Colour is injected from the nozzle CENTRE, not the vortices - the
-          // pair is how it stirs, the centre is where the pigment leaves.
-          if (dc2 < R2) {
-            const int u1 = 256 - (dc2 * 256) / R2;
+          // Pigment leaves the orifice and runs DOWN THE PLUME. The distance
+          // used here is measured in a frame stretched along the jet axis, so
+          // the region reaches SF_ELONG times further forward than it does
+          // sideways or backwards - a teardrop pointing where the jet throws.
+          int along = (ddx * (int)noz[k].tx + ddy * (int)noz[k].ty
+                     + ddz * (int)noz[k].tz) / 127;
+          const int perp2 = dc2 - along * along;
+          if (along > 0) along = (along * 256) / elongQ;   // forward only
+          const int shaped = along * along + (perp2 > 0 ? perp2 : 0);
+          if (shaped < R2) {
+            const int u1 = 256 - (shaped * 256) / R2;
             const int cw = ((u1 * u1) >> 8) * (int)gam[k] >> 8;
             if (cw > 0) {
               if (refI < 0) refI = pidx[k];
@@ -696,10 +750,17 @@ static FX_RET mode_spectral_fountain() {
         out[1] = cfx_lerp8(out[1], (uint8_t)((c >>  8) & 0xFF), (uint8_t)mixIn);
         out[2] = cfx_lerp8(out[2], (uint8_t)( c        & 0xFF), (uint8_t)mixIn);
       }
-      const uint32_t fr = SEGMENT.color_from_palette((uint8_t)((uint8_t)(~nz3[i]) * 3), false, true, 0);
-      nxt[i * 3 + 0] = cfx_lerp8(out[0], (uint8_t)((fr >> 16) & 0xFF), SF_AMBIENT);
-      nxt[i * 3 + 1] = cfx_lerp8(out[1], (uint8_t)((fr >>  8) & 0xFF), SF_AMBIENT);
-      nxt[i * 3 + 2] = cfx_lerp8(out[2], (uint8_t)( fr        & 0xFF), SF_AMBIENT);
+      // With the bleed at zero the nozzles are the only pigment in the effect,
+      // and the palette lookup that fed it compiles out with everything else.
+      if (SF_AMBIENT) {
+        const uint32_t fr = SEGMENT.color_from_palette((uint8_t)((uint8_t)(~nz3[i]) * 3), false, true, 0);
+        out[0] = cfx_lerp8(out[0], (uint8_t)((fr >> 16) & 0xFF), SF_AMBIENT);
+        out[1] = cfx_lerp8(out[1], (uint8_t)((fr >>  8) & 0xFF), SF_AMBIENT);
+        out[2] = cfx_lerp8(out[2], (uint8_t)( fr        & 0xFF), SF_AMBIENT);
+      }
+      nxt[i * 3 + 0] = out[0];
+      nxt[i * 3 + 1] = out[1];
+      nxt[i * 3 + 2] = out[2];
     }
   }
   memcpy(pix, nxt, 3 * m);
