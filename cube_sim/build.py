@@ -72,10 +72,23 @@ def extract_noise():
 #
 # Adding another is one line - find a self-contained mode_* in FX.cpp and name
 # the first symbol above it that it depends on.
-STOCK = [
-    ("static void soapPixels(", "static const char _data_FX_MODE_2DSOAP",   "mode_2Dsoap"),
-    ("void mode_2Doctopus()",   "static const char _data_FX_MODE_2DOCTOPUS", "mode_2Doctopus"),
-]
+# Every 2-D effect in FX.cpp is pulled in, discovered rather than listed. The
+# previous hand-written list held two of thirty-seven, which made "compare ours
+# against WLED's" a much narrower claim than it sounded.
+#
+# Skipped, with the reason, because a simulator that silently omits things is
+# worse than one that says what it left out:
+STOCK_SKIP = {
+    # Needs the font manager, the RTC and sprintf. None of that says anything
+    # about how an effect looks on a cube.
+    "mode_2Dscrollingtext": "needs fonts, the clock and printf",
+    # Depends on a `Cell` struct declared at file scope in FX.cpp, well above
+    # the effect bodies. Each span here runs from one effect to the next, so
+    # anything declared before the first of them is out of reach. Pulling in
+    # arbitrary file-scope declarations is a much larger change than this is
+    # worth for one effect.
+    "mode_2Dgameoflife": "needs a file-scope type the per-effect spans cannot reach",
+}
 
 
 def extract_span(src, a, b, what):
@@ -88,6 +101,110 @@ def extract_span(src, a, b, what):
     return src[i:j]
 
 
+def balance_conditionals(text):
+    """Make a span's preprocessor directives self-contained.
+
+    The 2-D effects sit inside `#ifndef WLED_DISABLE_2D` blocks that open and
+    close around GROUPS of effects, so a span cut anywhere in the middle takes
+    the `#if` without its `#endif` or the other way round. Either way clang
+    reports an unterminated conditional and swallows every effect after it -
+    three of them vanished that way while still being registered.
+
+    Nothing here defines any of the WLED_DISABLE_* macros, so every one of these
+    blocks is active regardless. Dropping an orphaned `#endif` and closing an
+    unclosed `#if` therefore changes nothing about which code is compiled.
+    """
+    out, depth = [], 0
+    for line in text.splitlines(keepends=True):
+        st = line.lstrip()
+        if st.startswith("#if"):
+            depth += 1
+        elif st.startswith("#endif"):
+            if depth == 0:
+                continue                      # orphan: its opener is elsewhere
+            depth -= 1
+        elif st.startswith(("#else", "#elif")) and depth == 0:
+            continue
+        out.append(line)
+    return "".join(out) + ("\n#endif\n" * depth)
+
+
+def discover_stock(fxsrc):
+    """Find every 2-D effect in FX.cpp and lift it with its metadata string.
+
+    Each effect is taken as the span from its own definition to the one after
+    it, which sweeps up the file-static helpers that sit between them - the
+    little per-effect functions like soapPixels that the effect cannot compile
+    without and that nothing else references.
+    """
+    fn = re.compile(r"^\s*(?:static\s+)?(?:uint16_t|void)\s+(mode_2D\w+)\s*\([^)]*\)\s*\{",
+                    re.M)
+    hits = [(m.start(), m.group(1)) for m in fn.finditer(fxsrc)]
+    if not hits:
+        sys.exit("build: found no mode_2D* effects in FX.cpp - has the file moved?")
+
+    # Each span runs from where the PREVIOUS one ended, not from the function
+    # itself, so the declarations sitting between two effects come along with
+    # the effect that needs them - `typedef struct Julia` six lines above
+    # mode_2DJulia, `#define MAX_BEES 5` above the bees. Starting at the
+    # function left those behind and the effects would not compile.
+    # Metadata strings are collected SEPARATELY from bodies and emitted first.
+    #
+    # An earlier version carried each effect's metadata along inside its own
+    # span and tracked where the last one ended. That bookkeeping was wrong
+    # whenever a declaration sat in an unexpected place: three effects were
+    # registered while their bodies had been trimmed off, so the file referred
+    # to functions it did not contain. Collecting the two independently means a
+    # body cannot be lost by a mistake about where its metadata was.
+    #
+    # The string literal must be matched AS a literal. Stopping at the first
+    # semicolon truncates every one of them, since WLED's metadata format is
+    # full of semicolons - "Black Hole@Fade rate,...,Blur;;!;2".
+    LIT = r'\[\]\s*PROGMEM\s*=\s*"(?:[^"\\]|\\.)*"\s*;'
+    bodies, metas, reg, skipped = [], [], [], []
+    prev_end = hits[0][0]
+    for k, (pos, name) in enumerate(hits):
+        # Usually the symbol is the function name upper-cased, but not always:
+        # mode_2Dfloatingblobs registers _data_FX_MODE_2DBLOBS. Guess first,
+        # then fall back to whichever metadata declaration sits inside this
+        # effect's own span - which is the one that belongs to it.
+        sym = "_data_FX_MODE_" + name[len("mode_"):].upper()
+        mm = re.search(r'static const char ' + sym + LIT, fxsrc)
+        if not mm:
+            span_end = hits[k + 1][0] if k + 1 < len(hits) else len(fxsrc)
+            near = re.search(r'static const char (_data_FX_MODE_\w+)' + LIT,
+                             fxsrc[pos:span_end])
+            if near:
+                sym = near.group(1)
+                mm = re.search(r'static const char ' + sym + LIT, fxsrc)
+        # The LAST effect must stop at its own metadata, not run to the end of
+        # the file. Letting it run swept in every particle-system effect that
+        # follows the 2-D block, and the build then failed asking for the whole
+        # ParticleSystem2D library on behalf of an effect that never used it.
+        if k + 1 < len(hits):
+            end = hits[k + 1][0]
+        else:
+            end = mm.end() if (mm and mm.start() > pos) else len(fxsrc)
+        # From where the last effect finished, so declarations sitting between
+        # two effects come along with the one that needs them.
+        body = fxsrc[prev_end:end]
+        prev_end = end
+        if name in STOCK_SKIP:
+            skipped.append(name)
+            continue
+        if not mm:
+            skipped.append(name + f" (no {sym})")
+            continue
+        # Strip metadata out of the body; it is emitted once, up front.
+        bodies.append(balance_conditionals(
+            re.sub(r'static const char _data_FX_MODE_\w+' + LIT, "", body)))
+        metas.append(mm.group(0))
+        reg.append((name, sym))
+    for s in skipped:
+        print(f"  stock: skipping {s} - {STOCK_SKIP.get(s, 'could not be isolated')}")
+    return ["\n".join(metas) + "\n"] + bodies, reg
+
+
 def extract_stock():
     """Lift ColorFromPalette and the chosen stock effects out of the firmware."""
     colors = open(os.path.join(ROOT, "wled00", "colors.cpp"), encoding="utf-8",
@@ -97,19 +214,27 @@ def extract_stock():
 
     fxsrc = open(os.path.join(ROOT, "wled00", "FX.cpp"), encoding="utf-8",
                  errors="surrogateescape").read()
-    parts = [extract_span(fxsrc, a, b, name) for a, b, name in STOCK]
+    parts, reg = discover_stock(fxsrc)
 
+    # The roster is built here rather than in sim_main.cpp: the metadata strings
+    # are static to this translation unit, and keeping the list beside the
+    # extraction means it cannot fall out of step with what was extracted.
+    reglines = "\n".join(f"  cfxBankAdd(&{fn}, {meta});" for fn, meta in reg)
     out = ('// GENERATED by build.py - do not edit.\n'
            '// Stock WLED code, lifted verbatim so comparisons are against the real\n'
-           '// thing rather than against a paraphrase of it.\n'
-           '#include "../shim/wled.h"\n\n' + cfp + "\n" + "\n".join(parts) + "\n")
+           '// thing rather than against a paraphrase of it. Every 2-D effect in\n'
+           '// FX.cpp is taken, discovered rather than listed.\n'
+           '#include "../shim/wled.h"\n'
+           '#include "../../usermods/cube_fx/cube_fx_bank.h"\n\n'
+           + cfp + "\n" + "\n".join(parts) + "\n"
+           "void simRegisterStock() {\n" + reglines + "\n}\n")
     path = os.path.join(GEN, "wled_fx.cpp")
     prev = open(path, encoding="utf-8").read() if os.path.exists(path) else None
     if prev != out:
         open(path, "w", encoding="utf-8").write(out)
-        print(f"  extracted {len(STOCK)} stock effects + ColorFromPalette -> gen/wled_fx.cpp")
+        print(f"  extracted {len(reg)} stock 2-D effects + ColorFromPalette -> gen/wled_fx.cpp")
     else:
-        print("  stock effects unchanged")
+        print(f"  stock effects unchanged ({len(reg)})")
     return path
 
 
@@ -172,6 +297,18 @@ def build_native(srcs):
            # and Emscripten headers hand them over unconditionally. wled_math.cpp
            # uses them and quite reasonably does not ask.
            "-D_USE_MATH_DEFINES",
+           # Selects the LEGACY implementations of the effects WLED otherwise
+           # replaces with particle-system versions. The particle system is a
+           # whole subsystem this shim has no business hosting, and the legacy
+           # effects are self-contained - so the flag that keeps them is the
+           # flag this build wants.
+           "-DWLED_PS_DONT_REPLACE_2D_FX",
+           # The roster is sized for the DEVICE, where it caps how many
+           # effects can be compiled in. The simulator has no such
+           # constraint, and with every WLED 2-D effect pulled in as well
+           # the default 64 silently dropped the last ten - cfxBankAdd
+           # returns quietly when the roster is full.
+           "-DCFX_BANK_MAX_FX=128",
            "-Wno-vla-cxx-extension", "-Wno-unknown-attributes",
            "-Wno-deprecated-declarations"] + \
           [f'"{fs(s)}"' for s in srcs] + ["-o", f'"{out}"']
@@ -211,7 +348,8 @@ def main():
         print("build OK")
         return
 
-    cmd = ["emcc", "-std=gnu++17", "-O2", "-I", "shim"] + srcs + [
+    cmd = ["emcc", "-std=gnu++17", "-O2", "-I", "shim",
+           "-DWLED_PS_DONT_REPLACE_2D_FX", "-DCFX_BANK_MAX_FX=128"] + srcs + [
         "-o", "cubefx.js",
         # HEAPU8/HEAPU32 must be listed explicitly - current Emscripten does not
         # attach the heap views to the module by default, and reading pixels

@@ -106,17 +106,17 @@ const CRGBPalette16 &Segment::currentPalette() const {
 // same clock, parameters and audio. Comparing "ours" against "theirs" is then
 // just changing the dropdown, rather than an argument about whether the two
 // were even fed the same thing.
-void mode_2Dsoap();
-void mode_2Doctopus();
-static const char _sim_soap[]    PROGMEM = "WLED Soap@!,Smoothness,Density;;!;2";
-static const char _sim_octopus[] PROGMEM = "WLED Octopus@!,,Offset X,Offset Y,Legs;;!;2";
+// Defined in gen/wled_fx.cpp, which build.py writes: it adds every 2-D effect
+// it extracted, with that effect's OWN metadata string. The list lives beside
+// the extraction so the two cannot fall out of step, and so nothing has to be
+// maintained here when WLED gains or loses an effect.
+void simRegisterStock();
 
 static void registerStock() {
   static bool done = false;
   if (done) return;
   done = true;
-  cfxBankAdd(&mode_2Dsoap,    _sim_soap);
-  cfxBankAdd(&mode_2Doctopus, _sim_octopus);
+  simRegisterStock();
 }
 
 // --- the C surface the page calls -------------------------------------------

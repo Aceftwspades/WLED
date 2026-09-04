@@ -96,6 +96,34 @@ uint8_t  perlin8(uint16_t x, uint16_t y, uint16_t z);
 #define B(c) (uint8_t)(((c)    )&0xFF)
 #define W(c) (uint8_t)(((c)>>24)&0xFF)
 #define BLACK 0u
+#define SEGLEN Segment::vLength()
+// The named colours and the palette-wrap test the stock effects use. Both live
+// in FX.h / FX.cpp above the effect bodies, so the extraction never sees them.
+#define RED     (uint32_t)0xFF0000
+#define GREEN   (uint32_t)0x00FF00
+#define BLUE    (uint32_t)0x0000FF
+#define WHITE   (uint32_t)0xFFFFFF
+#define YELLOW  (uint32_t)0xFFFF00
+#define CYAN    (uint32_t)0x00FFFF
+#define MAGENTA (uint32_t)0xFF00FF
+#define PURPLE  (uint32_t)0x400080
+#define ORANGE  (uint32_t)0xFF3000
+#define PINK    (uint32_t)0xFF1493
+#define ULTRAWHITE (uint32_t)0xFFFFFFFF
+#define DARKSLATEGRAY (uint32_t)0x2F4F4F
+#define GRAY    (uint32_t)0x808080
+// paletteBlend 1 = wrap. The simulator has no blend setting, and every effect
+// that passes this wants the wrapping form.
+#define PALETTE_SOLID_WRAP true
+#define SPEED_FORMULA_L (5U + (50U * (255U - SEGMENT.speed)) / SEGLEN)
+// Commented out in FX.cpp's preamble yet still referenced by an audio
+// effect. 10 kHz sampling, matching the figure given there.
+#ifndef MAX_FREQUENCY
+  #define MAX_FREQUENCY  5120
+#endif
+#ifndef MAX_FREQ_LOG10
+  #define MAX_FREQ_LOG10 3.71f
+#endif
 
 static inline uint32_t color_fade(uint32_t c, uint8_t s, bool = false) {
   return RGBW32(scale8(R(c),s), scale8(G(c),s), scale8(B(c),s), scale8(W(c),s));
@@ -116,8 +144,10 @@ static inline uint32_t hw_random(uint32_t lim)              { return lim ? hw_ra
 static inline uint32_t hw_random(uint32_t lo, uint32_t hi)  { return lo + (hi > lo ? hw_random() % (hi - lo) : 0); }
 static inline uint16_t hw_random16()                        { return (uint16_t)(hw_random() >> 8); }
 static inline uint16_t hw_random16(uint16_t lim)            { return lim ? (uint16_t)(hw_random16() % lim) : 0; }
+static inline uint16_t hw_random16(uint16_t lo, uint16_t hi) { return hi > lo ? (uint16_t)(lo + hw_random16((uint16_t)(hi - lo))) : lo; }
 static inline uint8_t  hw_random8()                         { return (uint8_t)(hw_random() >> 16); }
 static inline uint8_t  hw_random8(uint8_t lim)              { return lim ? (uint8_t)(hw_random8() % lim) : 0; }
+static inline uint8_t  hw_random8(uint8_t lo, uint8_t hi)   { return hi > lo ? (uint8_t)(lo + hw_random8((uint8_t)(hi - lo))) : lo; }
 
 // --- audio -----------------------------------------------------------------
 // Same shape the audioreactive usermod publishes, so the effects' unpacking
@@ -129,6 +159,99 @@ struct UsermodManager {
   static bool getUMData(um_data_t **d, uint8_t) { *d = simAudio(); return true; }
 };
 static inline um_data_t *simulateSound(uint8_t) { return simAudio(); }
+// The stock audio-reactive 2-D effects fetch their data through this rather
+// than through UsermodManager, so they get the same buffer either way.
+static inline um_data_t *getAudioData() { return simAudio(); }
+
+// --- odds and ends the stock 2-D effects use --------------------------------
+// Small enough that reimplementing beats extracting, and none of them carry
+// behaviour an effect could be judged on.
+static inline uint32_t color_blend(uint32_t c1, uint32_t c2, uint8_t b) {
+  if (b == 0) return c1;
+  if (b == 255) return c2;
+  const uint8_t ib = 255 - b;
+  return RGBW32((R(c1) * ib + R(c2) * b) >> 8, (G(c1) * ib + G(c2) * b) >> 8,
+                (B(c1) * ib + B(c2) * b) >> 8, (W(c1) * ib + W(c2) * b) >> 8);
+}
+static inline uint32_t color_blend16(uint32_t a, uint32_t b, uint16_t x) {
+  return color_blend(a, b, (uint8_t)(x >> 8));
+}
+static inline float mapf(float x, float a, float b, float c, float d) {
+  return (b - a) == 0.0f ? c : c + (x - a) * (d - c) / (b - a);
+}
+static inline uint16_t sqrt32_bw(uint32_t v) { return (uint16_t)sqrtf((float)v); }
+static inline uint8_t  gamma8inv(uint8_t v)  { return v; }   // sim renders linear
+static inline uint8_t  inoise8(uint16_t x)                       { return perlin8(x); }
+static inline uint8_t  inoise8(uint16_t x, uint16_t y)           { return perlin8(x, y); }
+static inline uint8_t  inoise8(uint16_t x, uint16_t y, uint16_t z) { return perlin8(x, y, z); }
+// WLED aliases these to its own approximations rather than libm, and the
+// effects were tuned against that curve, so the shim points at the same ones.
+#define sin_t  sin_approx
+#define cos_t  cos_approx
+#define tan_t  tan_approx
+static inline float radians(float d) { return d * 0.01745329252f; }
+// Only the hue is used by the one effect that calls this, but saturation and
+// value are computed properly anyway - a wrong V here would read as a dead
+// pixel rather than as a wrong colour, which is harder to spot.
+static inline CHSV rgb2hsv(const CRGB &c) {
+  const uint8_t mx = c.r > c.g ? (c.r > c.b ? c.r : c.b) : (c.g > c.b ? c.g : c.b);
+  const uint8_t mn = c.r < c.g ? (c.r < c.b ? c.r : c.b) : (c.g < c.b ? c.g : c.b);
+  const int d = mx - mn;
+  uint8_t h = 0;
+  if (d) {
+    int hh;
+    if (mx == c.r)      hh = ((c.g - c.b) * 43) / d;
+    else if (mx == c.g) hh = 85 + ((c.b - c.r) * 43) / d;
+    else                hh = 171 + ((c.r - c.g) * 43) / d;
+    h = (uint8_t)(hh & 0xFF);
+  }
+  return CHSV(h, (uint8_t)(mx ? (d * 255) / mx : 0), mx);
+}
+static inline long  map(long x, long a, long b, long c, long d) {
+  return (b - a) == 0 ? c : (x - a) * (d - c) / (b - a) + c;
+}
+#ifndef constrain
+  #define constrain(v, lo, hi) ((v) < (lo) ? (lo) : ((v) > (hi) ? (hi) : (v)))
+#endif
+
+// The file-scope generator several stock effects draw from. WLED seeds it from
+// hardware entropy; here it is the same deterministic xorshift everything else
+// uses, so a run stays reproducible.
+class PRNG {
+ public:
+  explicit PRNG(uint32_t seed = 0x1234567u) : s(seed ? seed : 1u) {}
+  uint32_t next() { s ^= s << 13; s ^= s >> 17; s ^= s << 5; return s; }
+  uint8_t  random8()            { return (uint8_t)(next() >> 16); }
+  uint8_t  random8(uint8_t lim) { return lim ? (uint8_t)(random8() % lim) : 0; }
+  uint8_t  random8(uint8_t lo, uint8_t hi) {
+    return hi > lo ? (uint8_t)(lo + random8((uint8_t)(hi - lo))) : lo;
+  }
+  uint16_t random16()           { return (uint16_t)(next() >> 8); }
+  uint16_t random16(uint16_t l) { return l ? (uint16_t)(random16() % l) : 0; }
+  uint32_t getSeed() const      { return s; }
+  void     setSeed(uint32_t v)  { s = v ? v : 1u; }
+ private:
+  uint32_t s;
+};
+// FX.cpp declares this at file scope, above every effect, so no per-effect span
+// can reach it. One instance for the whole simulator, as there.
+inline PRNG prng(0x9E3779B9u);
+
+// Declared beside the 1-D ripple effects in FX.cpp, thousands of lines from the
+// 2-D effect that also uses it, so no per-effect span can pick it up. Copied
+// verbatim rather than approximated - the effect casts its scratch buffer to
+// this, so the layout has to match exactly.
+typedef struct Ripple {
+  uint8_t state;
+  uint8_t color;
+  uint16_t pos;
+} ripple;
+
+#ifndef bitRead
+  #define bitRead(v, b)  (((v) >> (b)) & 1)
+  #define bitSet(v, b)   ((v) |= (1UL << (b)))
+  #define bitClear(v, b) ((v) &= ~(1UL << (b)))
+#endif
 
 // --- palettes --------------------------------------------------------------
 // NOT the full WLED set - a representative handful, as 16-stop gradients. The
@@ -145,6 +268,7 @@ class Segment {
  public:
   static int _vw, _vh;
   static int vWidth()  { return _vw; }
+  static int vLength() { return _vw * _vh; }
   static int vHeight() { return _vh; }
   int virtualWidth()  const { return _vw; }
   int virtualHeight() const { return _vh; }
@@ -235,6 +359,114 @@ class Segment {
   }
   void blur2D(uint8_t n, bool b = false) { blur(n, b); }
 
+  // --- what the stock 2-D effects reach for --------------------------------
+  // Reimplementations, not extractions: these are Segment methods spread across
+  // FX_fcn.cpp and FX_2Dfcn.cpp and entangled with segment state this shim does
+  // not model (grouping, spacing, transitions, raw buffers). The ALGORITHMS are
+  // copied from those sources - fade_out's mapped rate, wu_pixel's weights and
+  // its don't-repaint check, fillCircle's span fill - so the effects behave as
+  // they do on the device. What is dropped is the segment machinery around
+  // them, which the simulator has never modelled and which none of these
+  // effects depend on.
+  int length() const { return _vw * _vh; }
+
+  // The 1-D accessors, in terms of the 2-D buffer. A handful of the 2-D effects
+  // still reach for them for whole-strip operations.
+  void setPixelColor(int i, uint32_t c) {
+    if (i >= 0 && i < _vw * _vh) pixels[i] = c;
+  }
+  uint32_t getPixelColor(int i) const {
+    return (i >= 0 && i < _vw * _vh) ? pixels[i] : 0u;
+  }
+  // CRGB's operator uint32_t is EXPLICIT, so passing one where a colour is
+  // wanted needs a real overload rather than a conversion.
+  void setPixelColor(int i, const CRGB &c) {
+    setPixelColor(i, RGBW32(c.r, c.g, c.b, 0));
+  }
+  void addPixelColor(int i, uint32_t c, bool = true) {
+    if (i < 0 || i >= _vw * _vh) return;
+    pixels[i] = color_add(pixels[i], c);
+  }
+
+  // Shift the whole field one step. dir is 0..7 clockwise from up.
+  void move(uint8_t dir, uint8_t delta, bool = true) {
+    if (!delta) return;
+    static const int DX[8] = { 0, 1, 1, 1, 0, -1, -1, -1 };
+    static const int DY[8] = { -1, -1, 0, 1, 1, 1, 0, -1 };
+    const int dx = DX[dir & 7] * delta, dy = DY[dir & 7] * delta;
+    const int n = _vw * _vh;
+    uint32_t *tmp = (uint32_t *)malloc(sizeof(uint32_t) * n);
+    if (!tmp) return;
+    memcpy(tmp, pixels, sizeof(uint32_t) * n);
+    for (int y = 0; y < _vh; y++)
+      for (int x = 0; x < _vw; x++) {
+        const int sx = x - dx, sy = y - dy;
+        pixels[y * _vw + x] = (sx >= 0 && sy >= 0 && sx < _vw && sy < _vh)
+                              ? tmp[sy * _vw + sx] : 0u;
+      }
+    free(tmp);
+  }
+
+  void fadePixelColorXY(int x, int y, uint8_t fade) {
+    setPixelColorXY(x, y, color_fade(getPixelColorXY(x, y), 255 - fade));
+  }
+
+  void fade_out(uint8_t rate) {
+    rate = (uint8_t)((256 - rate) >> 1);
+    const int mapped = 256 / (rate + 1);
+    for (int i = 0; i < _vw * _vh; i++) {
+      const uint32_t c = pixels[i];
+      if (c == colors[1]) continue;                 // already at target
+      uint32_t out = 0;
+      for (int sh = 0; sh < 32; sh += 8) {
+        const int c2 = (int)((colors[1] >> sh) & 0xFF);
+        const int c1 = (int)((c >> sh) & 0xFF);
+        int d = (c2 - c1) * mapped / 256;
+        if (d == 0) d = (c2 == c1) ? 0 : (c2 > c1 ? 1 : -1);
+        out |= (uint32_t)((c1 + d) & 0xFF) << sh;
+      }
+      pixels[i] = out;
+    }
+  }
+
+  uint32_t color_wheel(uint8_t pos) const {
+    if (palette) return color_from_palette(pos, false, true, 0);
+    uint8_t rgb[4];
+    hsv2rgb_rainbow((uint16_t)(pos << 8), 255, 255, rgb, false);
+    return RGBW32(rgb[0], rgb[1], rgb[2], 0);
+  }
+
+  void fillCircle(int cx, int cy, int radius, uint32_t col, bool = false) {
+    if (radius <= 0) return;
+    for (int y = -radius; y <= radius; y++)
+      for (int x = -radius; x <= radius; x++) {
+        if (x * x + y * y > radius * radius + radius) continue;
+        const int px = cx + x, py = cy + y;
+        if (px < 0 || py < 0 || px >= _vw || py >= _vh) continue;
+        setPixelColorXY(px, py, col);
+      }
+  }
+
+  // Wu antialiased point, from the version in FX_2Dfcn.cpp. The weights and the
+  // "do not repaint an unchanged pixel" test are the same; several effects lean
+  // on the softness this gives, and a nearest-pixel stand-in makes them look
+  // like a different effect entirely.
+  void wu_pixel(uint32_t x, uint32_t y, const CRGB &c) {
+    #define _WUW(a, b) ((uint8_t)(((a) * (b) + (a) + (b)) >> 8))
+    const unsigned xx = x & 0xff, yy = y & 0xff, ix = 255 - xx, iy = 255 - yy;
+    const uint8_t wu[4] = { _WUW(ix, iy), _WUW(xx, iy), _WUW(ix, yy), _WUW(xx, yy) };
+    for (int i = 0; i < 4; i++) {
+      const int wx = (int)(x >> 8) + (i & 1), wy = (int)(y >> 8) + ((i >> 1) & 1);
+      if (wx < 0 || wy < 0 || wx >= _vw || wy >= _vh) continue;
+      const uint32_t old = getPixelColorXY(wx, wy);
+      const uint32_t nw = RGBW32(qadd8(R(old), (uint8_t)((c.r * wu[i]) >> 8)),
+                                 qadd8(G(old), (uint8_t)((c.g * wu[i]) >> 8)),
+                                 qadd8(B(old), (uint8_t)((c.b * wu[i]) >> 8)), 0);
+      if (nw != old) setPixelColorXY(wx, wy, nw);
+    }
+    #undef _WUW
+  }
+
   uint32_t color_from_palette(uint16_t i, bool mapping, bool moving,
                               uint8_t mcol, uint8_t pbri = 255) const {
     if (palette == 0 && mcol < 3) return color_fade(colors[mcol], pbri);
@@ -257,6 +489,30 @@ class WS2812FX {
   uint8_t  addEffect(uint8_t, void (*)(), const char *) { return 0; }
 };
 extern WS2812FX strip;
+
+// --- beat generators --------------------------------------------------------
+// Copied from wled00/util.cpp rather than approximated: they are the clock the
+// stock effects move to, and the exact sawtooth matters. millis() is the
+// simulated clock, so a beat here lands where it lands on the device.
+static inline uint32_t millis();
+static inline uint16_t beat88(uint16_t bpm88, uint32_t tb = 0) {
+  return (uint16_t)(((millis() - tb) * bpm88 * 280) >> 16);
+}
+static inline uint16_t beat16(uint16_t bpm, uint32_t tb = 0) {
+  if (bpm < 256) bpm <<= 8;
+  return beat88(bpm, tb);
+}
+static inline uint8_t beat8(uint16_t bpm, uint32_t tb = 0) { return beat16(bpm, tb) >> 8; }
+static inline uint16_t beatsin16_t(uint16_t bpm, uint16_t lo = 0, uint16_t hi = 65535,
+                                   uint32_t tb = 0, uint16_t phase = 0) {
+  const uint16_t b = (uint16_t)(sin16_t((uint16_t)(beat16(bpm, tb) + phase)) + 32768);
+  return (uint16_t)(lo + scale16(b, (uint16_t)(hi - lo)));
+}
+static inline uint8_t beatsin8_t(uint16_t bpm, uint8_t lo = 0, uint8_t hi = 255,
+                                 uint32_t tb = 0, uint8_t phase = 0) {
+  const uint8_t b = (uint8_t)(sin8_t((uint8_t)(beat8(bpm, tb) + phase)));
+  return (uint8_t)(lo + scale8(b, (uint8_t)(hi - lo)));
+}
 
 // Deliberately the SIMULATED clock, not the wall clock. The page advances time
 // by an explicit dt each frame, so effects that lean on millis() (the IMU's
