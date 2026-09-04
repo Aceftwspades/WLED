@@ -59,6 +59,26 @@ def _camera(yaw, pitch, dist):
     return eye, np.stack([right, up, -fwd])
 
 
+_GRID = {}
+
+
+def _grid(size):
+    """Screen coordinates, built once per view size and sliced per face.
+
+    np.mgrid per face per frame was allocating two arrays the size of each
+    face's bounding box, three times a frame, and they are the same numbers
+    every time. float32 throughout as well - the projection needs nothing like
+    float64's precision at screen scale, and halving the memory traffic is worth
+    more here than the last eight digits.
+    """
+    g = _GRID.get(size)
+    if g is None:
+        yy, xx = np.mgrid[0:size, 0:size]
+        g = (xx.astype(np.float32) + 0.5, yy.astype(np.float32) + 0.5)
+        _GRID[size] = g
+    return g
+
+
 def render(net_rgb, B, size, yaw, pitch, dist, fov=38.0, bg=(0, 0, 0)):
     """Draw the cube from the unfolded net image.
 
@@ -103,20 +123,29 @@ def render(net_rgb, B, size, yaw, pitch, dist, fov=38.0, bg=(0, 0, 0)):
         except np.linalg.LinAlgError:            # degenerate, face edge-on
             continue
 
-        yy, xx = np.mgrid[y0:y1, x0:x1]
-        p = np.stack([xx.ravel() + 0.5, yy.ravel() + 0.5, np.ones(xx.size)])
-        q = H @ p
-        w = np.where(np.abs(q[2]) < 1e-12, 1e-12, q[2])
-        u = q[0] / w
-        v = q[1] / w
+        # Sliced from the cached grid, and kept two-dimensional the whole way.
+        # The previous version did out[y0:y1, x0:x1].reshape(-1, 3), which on a
+        # non-contiguous view is a silent COPY - so every face paid for a copy
+        # out, a scatter, and a copy back. Indexing the view with a 2-D boolean
+        # mask writes straight into the output.
+        gx, gy = _grid(size)
+        sx_ = gx[y0:y1, x0:x1]
+        sy_ = gy[y0:y1, x0:x1]
+        Hf = H.astype(np.float32)
+        u = Hf[0, 0] * sx_ + Hf[0, 1] * sy_ + Hf[0, 2]
+        v = Hf[1, 0] * sx_ + Hf[1, 1] * sy_ + Hf[1, 2]
+        w = Hf[2, 0] * sx_ + Hf[2, 1] * sy_ + Hf[2, 2]
+        np.copysign(np.maximum(np.abs(w), 1e-12), w, out=w)
+        u /= w
+        v /= w
         inside = (u >= 0) & (u < B) & (v >= 0) & (v < B)
         if not inside.any():
             continue
-        ui = np.clip(u[inside].astype(np.int32), 0, B - 1)
-        vi = np.clip(v[inside].astype(np.int32), 0, B - 1)
+        ui = u[inside].astype(np.int32)
+        vi = v[inside].astype(np.int32)
+        np.clip(ui, 0, B - 1, out=ui)
+        np.clip(vi, 0, B - 1, out=vi)
         block = net_rgb[fc["by"] * B:(fc["by"] + 1) * B,
                         fc["bx"] * B:(fc["bx"] + 1) * B]
-        tgt = out[y0:y1, x0:x1].reshape(-1, 3)
-        tgt[inside] = block[vi, ui]
-        out[y0:y1, x0:x1] = tgt.reshape(y1 - y0, x1 - x0, 3)
+        out[y0:y1, x0:x1][inside] = block[vi, ui]
     return out

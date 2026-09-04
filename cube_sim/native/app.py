@@ -46,16 +46,25 @@ class App:
         self.yaw, self.pitch, self.dist = -0.6, 0.75, 4.6
         self.beat_flash = 0
         self.layout = "both"
+        self._bufs = {}
         self.eng.select(0)
 
     # --- textures ------------------------------------------------------------
-    @staticmethod
-    def _rgba(img):
-        """uint8 (h,w,3) -> flat float32 RGBA, which is what DPG wants."""
+    def _rgba(self, key, img):
+        """uint8 (h,w,3) -> flat float32 RGBA, which is what DPG wants.
+
+        Into a buffer kept per view. Allocating a fresh (h,w,4) float32 array
+        every frame for both views cost 6 ms between them - a fifth of the frame
+        - and the alpha column never changes, so it is written once when the
+        buffer is made and left alone thereafter.
+        """
         h, w, _ = img.shape
-        out = np.ones((h, w, 4), np.float32)
-        out[..., :3] = img.astype(np.float32) / 255.0
-        return out.reshape(-1)
+        buf = self._bufs.get(key)
+        if buf is None or buf.shape[:2] != (h, w):
+            buf = np.ones((h, w, 4), np.float32)
+            self._bufs[key] = buf
+        np.multiply(img, np.float32(1.0 / 255.0), out=buf[..., :3], casting="unsafe")
+        return buf.reshape(-1)
 
     def net_image(self):
         rgb = self.eng.rgb().copy()
@@ -132,9 +141,12 @@ class App:
             lab = (m["labels"][i] if i < len(m["labels"]) else "").strip()
             if not lab or lab == "!":
                 lab = generic[k]
+            # custom3 is a five-bit field in the firmware and the API clamps it
+            # to 0..31, so the slider must stop there. Letting it run to 255
+            # offers settings the cube cannot hold - which is exactly how
+            # fourteen effects came to be tuned against values they never got.
             dpg.add_slider_int(label=lab, parent="params", width=150,
-                               min_value=0, max_value=31 if k == "c3" and
-                               m["defs"].get(k, 0) <= 31 and False else 255,
+                               min_value=0, max_value=31 if k == "c3" else 255,
                                default_value=self.eng.fx[k], user_data=k,
                                callback=self.on_param)
         for i, k in enumerate(("o1", "o2", "o3")):
@@ -199,11 +211,11 @@ class App:
         net = self.net_image()
         if self.layout in ("both", "net"):
             big = net.repeat(NET_SCALE, 0).repeat(NET_SCALE, 1)
-            dpg.set_value("net_tex", self._rgba(big))
+            dpg.set_value("net_tex", self._rgba("net", big))
         if self.layout in ("both", "cube"):
             img = render.render(net, self.eng.B, CUBE_PX,
                                 self.yaw, self.pitch, self.dist)
-            dpg.set_value("cube_tex", self._rgba(img))
+            dpg.set_value("cube_tex", self._rgba("cube", img))
 
         s = stats(net, self.eng.lit_mask(flat=bool(self.eng.fx.get("o3"))))
         dpg.set_value("stat_txt",
