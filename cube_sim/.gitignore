@@ -2,3 +2,9 @@
 cubefx.js
 cubefx.wasm
 gen/
+cubefx.dll
+obj_native/
+__pycache__/
+*.pyc
+cubefx.lib
+cubefx.exp

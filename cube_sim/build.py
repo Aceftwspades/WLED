@@ -113,7 +113,86 @@ def extract_stock():
     return path
 
 
+def find_vcvarsall():
+    """Locate MSVC. vswhere is the supported way and survives version bumps."""
+    pf = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    vswhere = os.path.join(pf, "Microsoft Visual Studio", "Installer", "vswhere.exe")
+    if os.path.exists(vswhere):
+        r = subprocess.run([vswhere, "-latest", "-products", "*",
+                            "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                            "-property", "installationPath"],
+                           capture_output=True, text=True)
+        root = (r.stdout or "").strip().splitlines()
+        if root:
+            p = os.path.join(root[0], "VC", "Auxiliary", "Build", "vcvarsall.bat")
+            if os.path.exists(p):
+                return p
+    for p in glob.glob(os.path.join(pf, "Microsoft Visual Studio", "*", "*",
+                                    "VC", "Auxiliary", "Build", "vcvarsall.bat")):
+        return p
+    return None
+
+
+def build_native(srcs):
+    """Compile the same sources into a DLL the native front end loads by ctypes.
+
+    Native is the more faithful of the two targets, not the less: the same C++
+    with one fewer translation layer under it. The extraction above is shared,
+    so neither target can drift from the firmware sources or from each other.
+
+    Built with the clang that ships inside emsdk, NOT with MSVC, and that choice
+    is load-bearing. CFX_NET_PREP declares `uint8_t _outCol[cols]` - a
+    variable-length array, a GCC/clang extension MSVC has never supported and
+    rejects outright in every effect that renders. The choice was to change
+    firmware to suit a host compiler, or to pick a host compiler that takes the
+    firmware as written; the second is obviously right for a tool whose whole
+    value is compiling the real sources unmodified. emsdk's clang already
+    defaults to x86_64-pc-windows-msvc, so it emits ordinary Windows binaries
+    and needs nothing installed that is not here already.
+
+    MSVC still supplies the headers and import libraries, so vcvarsall is
+    sourced for its INCLUDE/LIB - clang honours both when targeting the MSVC ABI.
+    """
+    vc = find_vcvarsall()
+    if not vc:
+        print("  native: SKIPPED - no MSVC found. clang needs its headers and "
+              "import libraries; install VS Build Tools with the C++ workload.")
+        return False
+    clang = os.environ.get("SIM_CLANG", os.path.join(
+        os.path.expanduser("~"), "emsdk", "upstream", "bin", "clang++.exe"))
+    if not os.path.exists(clang):
+        print(f"  native: SKIPPED - no clang++ at {clang} (set SIM_CLANG to override)")
+        return False
+
+    fs = lambda p: p.replace("\\", "/")
+    out = fs(os.path.join(HERE, "cubefx.dll"))
+    cmd = [f'"{fs(clang)}"', "-std=gnu++17", "-O2", "-shared",
+           "-I", f'"{fs(os.path.join(HERE, "shim"))}"',
+           # MSVC's headers keep M_PI and friends behind this, where the glibc
+           # and Emscripten headers hand them over unconditionally. wled_math.cpp
+           # uses them and quite reasonably does not ask.
+           "-D_USE_MATH_DEFINES",
+           "-Wno-vla-cxx-extension", "-Wno-unknown-attributes",
+           "-Wno-deprecated-declarations"] + \
+          [f'"{fs(s)}"' for s in srcs] + ["-o", f'"{out}"']
+    line = " ".join(cmd)
+    r = subprocess.run(f'"{vc}" x64 >nul && {line}', shell=True, cwd=HERE,
+                       capture_output=True, text=True)
+    txt = (r.stdout or "") + (r.stderr or "")
+    if r.returncode != 0:
+        errs = [l for l in txt.splitlines() if "error:" in l or " error " in l]
+        print("\n".join(errs[:25]) or txt[:3000])
+        print(f"  native: FAILED ({r.returncode})")
+        return False
+    print(f"  cubefx.dll: {os.path.getsize(out):,} bytes")
+    return True
+
+
 def main():
+    want = set(sys.argv[1:]) or {"--wasm", "--native"}
+    if "--wasm-only" in want:   want = {"--wasm"}
+    if "--native-only" in want: want = {"--native"}
+
     print("cube_sim build")
     noise = extract_noise()
     stock = extract_stock()
@@ -125,6 +204,12 @@ def main():
     srcs = ([os.path.join(HERE, "sim_main.cpp")] + fx + [noise, stock,
             os.path.join(ROOT, "wled00", "wled_math.cpp"),
             os.path.join(ROOT, "wled00", "src", "dependencies", "fastled_slim", "fastled_slim.cpp")])
+
+    if "--native" in want:
+        build_native(srcs)
+    if "--wasm" not in want:
+        print("build OK")
+        return
 
     cmd = ["emcc", "-std=gnu++17", "-O2", "-I", "shim"] + srcs + [
         "-o", "cubefx.js",

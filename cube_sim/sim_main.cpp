@@ -8,7 +8,24 @@
 // ===========================================================================
 #include "shim/wled.h"
 #include "../usermods/cube_fx/cube_fx_bank.h"
-#include <emscripten/emscripten.h>
+
+// The same C surface serves two front ends. It was written for a browser and
+// turned out to be exactly what a native host wants as well, because ctypes and
+// Emscripten's ccall need the same thing: plain C linkage, no structs by value,
+// and buffers handed back as pointers rather than copied.
+//
+//   WASM     browser page, via Emscripten
+//   DLL      native app, via ctypes
+//
+// SIM_API is whichever "do not discard this symbol" the toolchain needs.
+#ifdef __EMSCRIPTEN__
+  #include <emscripten/emscripten.h>
+  #define SIM_API EMSCRIPTEN_KEEPALIVE
+#elif defined(_WIN32)
+  #define SIM_API __declspec(dllexport)
+#else
+  #define SIM_API __attribute__((visibility("default")))
+#endif
 
 WS2812FX strip;
 Segment *_segPtr = nullptr;
@@ -105,9 +122,9 @@ static void registerStock() {
 // --- the C surface the page calls -------------------------------------------
 extern "C" {
 
-EMSCRIPTEN_KEEPALIVE int simEffectCount() { registerStock(); return (int)cfxBankCount(); }
+SIM_API int simEffectCount() { registerStock(); return (int)cfxBankCount(); }
 
-EMSCRIPTEN_KEEPALIVE const char *simEffectName(int i) {
+SIM_API const char *simEffectName(int i) {
   static char nm[48];
   if (i < 0 || i >= (int)cfxBankCount()) return "";
   cfxBankName(cfxBankRoster()[i].data, nm, sizeof(nm));
@@ -116,12 +133,12 @@ EMSCRIPTEN_KEEPALIVE const char *simEffectName(int i) {
 
 // The full metadata string, so the page can label sliders exactly as the web UI
 // does rather than guessing what "custom2" means for this effect.
-EMSCRIPTEN_KEEPALIVE const char *simEffectMeta(int i) {
+SIM_API const char *simEffectMeta(int i) {
   if (i < 0 || i >= (int)cfxBankCount()) return "";
   return cfxBankRoster()[i].data;
 }
 
-EMSCRIPTEN_KEEPALIVE void simInit(int w, int h) {
+SIM_API void simInit(int w, int h) {
   Segment::_vw = w; Segment::_vh = h;
   gSeg.pixels = gPixels;
   gSeg.data = nullptr; gSeg._dataLen = 0;
@@ -136,12 +153,12 @@ EMSCRIPTEN_KEEPALIVE void simInit(int w, int h) {
 // Selecting an effect must look like WLED selecting one: the scratch buffer is
 // released, so the incoming effect initialises from nothing rather than reading
 // the previous effect's leftovers as its own state.
-EMSCRIPTEN_KEEPALIVE void simSelect() {
+SIM_API void simSelect() {
   if (gSeg.data) { free(gSeg.data); gSeg.data = nullptr; }
   gSeg._dataLen = 0; gSeg.call = 0; gSeg.step = 0; gSeg.aux0 = 0; gSeg.aux1 = 0;
 }
 
-EMSCRIPTEN_KEEPALIVE void simParams(int sx, int ix, int c1, int c2, int c3,
+SIM_API void simParams(int sx, int ix, int c1, int c2, int c3,
                                     int o1, int o2, int o3, int pal) {
   gSeg.speed = (uint8_t)sx; gSeg.intensity = (uint8_t)ix;
   gSeg.custom1 = (uint8_t)c1; gSeg.custom2 = (uint8_t)c2; gSeg.custom3 = (uint8_t)c3;
@@ -152,22 +169,22 @@ EMSCRIPTEN_KEEPALIVE void simParams(int sx, int ix, int c1, int c2, int c3,
 // The FFT bins live here and the page writes into them directly. Handing back a
 // pointer to a static beats malloc'ing one in JS: nothing to free, and no extra
 // export just to allocate 16 bytes.
-EMSCRIPTEN_KEEPALIVE uint8_t *simFftPtr() { return gFft; }
+SIM_API uint8_t *simFftPtr() { return gFft; }
 
-EMSCRIPTEN_KEEPALIVE void simAudioSet(float vol, int peak) {
+SIM_API void simAudioSet(float vol, int peak) {
   gVolume = vol; gPeak = (uint8_t)peak;
 }
 
 // One frame. dtMs is passed in rather than read from a wall clock so the page
 // can step deterministically - which is the whole point of having this: you can
 // hold a frame still and look at it.
-EMSCRIPTEN_KEEPALIVE void simFrame(int idx, int dtMs) {
+SIM_API void simFrame(int idx, int dtMs) {
   if (idx < 0 || idx >= (int)cfxBankCount()) return;
   strip.now += (uint32_t)dtMs;
   cfxBankRoster()[idx].fn();
   gSeg.call++;
 }
 
-EMSCRIPTEN_KEEPALIVE uint32_t *simPixels() { return gPixels; }
+SIM_API uint32_t *simPixels() { return gPixels; }
 
 } // extern "C"
