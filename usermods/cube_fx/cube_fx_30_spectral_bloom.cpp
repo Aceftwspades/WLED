@@ -95,6 +95,17 @@
 // the ones dropped, because the scan runs low to high.
 #define SB_MAXDROP 16
 
+// How many recent drops are remembered for spacing, how long each is remembered
+// for, and how many positions are tried before a drop gives up and waits.
+//
+// The memory has to outlast the drop's own visible life or the rule does not
+// bite: forgetting a position while its drop is still on the cube lets the next
+// one land on top of it, which is exactly the case the spacing exists to stop.
+// 900 ms is comfortably past the fade at the default rate.
+#define SB_HIST     16
+#define SB_HISTMS   900
+#define SB_TRIES    12
+
 struct SbState {
   uint8_t  mode;
   uint32_t nx, ny, nz;              // potential-field clocks, Q8
@@ -104,39 +115,38 @@ struct SbState {
   uint8_t  env[16];                 // per-bin envelope, for onset detection
   uint8_t  bpk[16];                 // per-bin slow peak, for per-bin auto-range
   uint16_t hold[16];                // per-bin refractory, in ms remaining
+  int8_t   hx[SB_HIST], hy[SB_HIST], hz[SB_HIST];   // recent drop positions
+  uint16_t hms[SB_HIST];            // ms each of those is still remembered for
+  uint8_t  hhead;
   uint8_t  clk[2];
 };
 
-// Where a bin's drop lands.
+// A point on one of the five lit faces, in the same coordinates the drops are
+// painted in.
 //
-// The sixteen bins are read as a 4x4 grid: gx around the cube, gy up it. The
-// TOP ROW IS THE LID, which is the whole reason this mode exists - with
-// horizontal bands only the highest one ever reached the top face, so the lid
-// sat dark unless the music happened to be bright. Here the top four bins land
-// on it directly.
+// This replaced a 4x4 grid that gave every bin one fixed cell - gx around the
+// cube, gy up it, top row on the lid. The grid did put a drop on the lid, which
+// was the point of it, but it also welded each bin to a sixteenth of the
+// surface: red was thrown by a bin whose cell was on a wall, so red could never
+// appear on the lid however long you watched. Every bin now reaches every pixel
+// and the colour alone carries which bin threw it, which is a stronger cue
+// anyway - you can read it without knowing the mapping.
 //
-// Jitter comes in from the caller so successive drops from the same bin do not
-// stack on one pixel; without it sixteen fixed points get very obvious.
-static void sb_dropPos(int gx, int gy, uint8_t jx, uint8_t jy,
-                       int &X, int &Y, int &Z) {
-  if (gy >= 3) {                                   // LID
-    X = ((gx & 1) ? 62 : -62) + ((int)jx - 128) / 3;
-    Y = ((gx & 2) ? 62 : -62) + ((int)jy - 128) / 3;
-    Z = 127;
-    return;
+// The five faces are equal in area and chosen uniformly, so the light spreads
+// evenly over the surface by construction rather than by how the spectrum
+// happens to be shaped.
+static inline int sb_axis(uint8_t r) {             // 0..255 -> -127..127
+  return ((int)r * 254) / 255 - 127;
+}
+
+static void sb_surfacePoint(uint8_t face, int u, int v, int &X, int &Y, int &Z) {
+  switch (face) {
+    case 0:  X =  u;   Y = -127; Z = v;   break;
+    case 1:  X =  127; Y =  u;   Z = v;   break;
+    case 2:  X = -u;   Y =  127; Z = v;   break;
+    case 3:  X = -127; Y = -u;   Z = v;   break;
+    default: X =  u;   Y =  v;   Z = 127; break;   // LID
   }
-  const int along = (((int)jx - 128) * 3) / 2;     // -190..190, clamped by face
-  const int z = -108 + gy * 84;                    // -108, -24, 60
-  switch (gx & 3) {                                // which wall
-    case 0:  X = along;  Y = -127;   break;
-    case 1:  X = 127;    Y = along;  break;
-    case 2:  X = -along; Y = 127;    break;
-    default: X = -127;   Y = -along; break;
-  }
-  if (X >  127) X =  127; else if (X < -127) X = -127;
-  if (Y >  127) Y =  127; else if (Y < -127) Y = -127;
-  Z = z + ((int)jy - 128) / 5;
-  if (Z >  127) Z =  127; else if (Z < -127) Z = -127;
 }
 
 // A drop's colour, at a brightness that does not depend on which bin threw it.
@@ -148,10 +158,12 @@ static void sb_dropPos(int gx, int gy, uint8_t jx, uint8_t jy,
 // near 190, and with a bass-heavy spectrum those were the only drops firing.
 //
 // In BANDS mode that is survivable, because many bands overlap and the bright
-// ones carry the picture. A drop is alone: it has to be visible on its own, and
-// its POSITION already says which bin it came from, so brightness is free to be
-// equalised. Normalise the chroma to full, then lift toward white only as far
-// as it takes to reach a common luma.
+// ones carry the picture. A drop is alone: it has to be visible on its own. Its
+// HUE is the only thing saying which bin threw it now that position is free, so
+// brightness carries no information and is free to be equalised - and it has to
+// be, or half the palette is a bin you can never see fire. Normalise the chroma
+// to full, then lift toward white only as far as it takes to reach a common
+// luma.
 static uint32_t sb_dropColor(uint32_t c, int target) {
   int r = (int)((c >> 16) & 0xFF), g = (int)((c >> 8) & 0xFF), b = (int)(c & 0xFF);
   int mx = r > g ? r : g; if (b > mx) mx = b;
@@ -350,6 +362,17 @@ static FX_RET mode_spectral_bloom() {
     // thirty drop frames a second out of forty-three.
     const int thresh = onBeat ? 10 : 22;
 
+    // Minimum separation, as a fraction of the drop radius. Three quarters
+    // leaves the discs just touching at their dim outer edge, which reads as
+    // two drops meeting rather than as one merged shape. Larger and the surface
+    // runs out of room and the drop rate falls away; smaller and the clumping
+    // this exists to prevent comes back.
+    const int minD  = (dropR * 3) / 4;
+    const long minD2 = (long)minD * minD;
+    for (int h = 0; h < SB_HIST; h++) {
+      s->hms[h] = (dt >= s->hms[h]) ? 0 : (uint16_t)(s->hms[h] - dt);
+    }
+
     for (int k = 0; k < 16 && nDrop < SB_MAXDROP; k++) {
       const int raw = s->spec[k];
       const int rise = raw - (int)s->env[k];
@@ -368,8 +391,10 @@ static FX_RET mode_spectral_bloom() {
       // treble bins are the top row, which is the lid. Measured: the lid took
       // 3.7% of the light while each wall took 25%, on a surface where every
       // face is a fifth of the area. Per-bin ranging asks "is this bin loud FOR
-      // ITSELF", which is the question the grid is actually posing, and every
-      // cell becomes reachable regardless of where the music's energy sits.
+      // ITSELF", which is the question being posed, and every bin gets to throw
+      // a drop regardless of where the music's energy sits. That still matters
+      // now that position is free: it is what stops the bass bins doing all the
+      // throwing and the palette collapsing to its low end.
       s->bpk[k] = (uint8_t)(raw > (int)s->bpk[k]
                             ? raw
                             : fx_env(s->bpk[k], (uint8_t)raw, dt, 3000));
@@ -381,16 +406,57 @@ static FX_RET mode_spectral_bloom() {
       // large fraction of that band.
       const int nrise = rise > 0 ? (rise * 255) / bref : 0;
       if (!s->hold[k] && nrise > thresh && lv > 35) {
-        // A bin may land a drop about seven times a second on a beat and three
-        // otherwise. Faster than that is not a drop landing, it is a hose.
-        s->hold[k] = onBeat ? 140 : 300;
-        const uint8_t jx = hw_random8(), jy = hw_random8();
-        sb_dropPos(k & 3, k >> 2, jx, jy,
-                   dropX[nDrop], dropY[nDrop], dropZ[nDrop]);
-        dropIdx[nDrop] = (uint8_t)(16 + (k * 223) / 15);
-        int a = (lv * inject) >> 8;
-        dropAmp[nDrop] = (uint8_t)(a > 255 ? 255 : a);
-        nDrop++;
+        // Best of several candidates, keeping drops apart.
+        //
+        // Free placement on its own clumps: uniform random points are not
+        // evenly spaced, they arrive in clusters with bare patches between, and
+        // two drops landing on top of each other read as one shapeless blob
+        // rather than as two bins hitting. Throwing a handful of candidates and
+        // keeping whichever sits furthest from the recent ones is a cheap
+        // Mitchell best-candidate sampling, and it turns the same random stream
+        // into a well-spread one.
+        //
+        // The bar scales with the drop's own radius, so the Size slider carries
+        // the spacing with it rather than leaving big drops overlapping and
+        // small ones marooned.
+        int bx = 0, by = 0, bz = 0;
+        long best = -1;
+        for (int t = 0; t < SB_TRIES; t++) {
+          int cxx, cyy, czz;
+          sb_surfacePoint(hw_random8() % 5,
+                          sb_axis(hw_random8()), sb_axis(hw_random8()),
+                          cxx, cyy, czz);
+          long worst = 0x7FFFFFFFL;
+          for (int h = 0; h < SB_HIST; h++) {
+            if (!s->hms[h]) continue;
+            const long ddx = cxx - (int)s->hx[h];
+            const long ddy = cyy - (int)s->hy[h];
+            const long ddz = czz - (int)s->hz[h];
+            const long d2 = ddx * ddx + ddy * ddy + ddz * ddz;
+            if (d2 < worst) worst = d2;
+          }
+          if (worst > best) { best = worst; bx = cxx; by = cyy; bz = czz; }
+        }
+        if (best < minD2) {
+          // Nowhere with room. Wait a short while rather than the full
+          // refractory - the cube clears quickly, and this is what makes the
+          // drop rate self-limiting under a dense passage instead of piling
+          // everything into the same few pixels.
+          s->hold[k] = 60;
+        } else {
+          // A bin may land a drop about seven times a second on a beat and
+          // three otherwise. Faster is not a drop landing, it is a hose.
+          s->hold[k] = onBeat ? 140 : 300;
+          dropX[nDrop] = bx; dropY[nDrop] = by; dropZ[nDrop] = bz;
+          dropIdx[nDrop] = (uint8_t)(16 + (k * 223) / 15);
+          int a = (lv * inject) >> 8;
+          dropAmp[nDrop] = (uint8_t)(a > 255 ? 255 : a);
+          nDrop++;
+          const uint8_t h = s->hhead;
+          s->hx[h] = (int8_t)bx; s->hy[h] = (int8_t)by; s->hz[h] = (int8_t)bz;
+          s->hms[h] = SB_HISTMS;
+          s->hhead = (uint8_t)((h + 1) % SB_HIST);
+        }
       }
       // Envelope tracks the bin with a slow release, so a sustained tone stops
       // re-triggering while a transient over the top of it still does.
@@ -532,10 +598,12 @@ static FX_RET mode_spectral_bloom() {
       // audio delivers many more and the field never got back to black - it
       // measured a mean of 84 at the default fade, which is washed out. A third
       // puts the DEFAULT slider position in the middle of the usable range on
-      // real music: measured against live audio it runs a mean of 27 with a
-      // quarter of the surface dark at the 140 default, and 12 with three fifths
-      // dark at 90, so the control sweeps from a lingering wash down to a sparse
-      // scatter with the shipped setting sitting between them.
+      // real music. Measured against live audio the 140 default holds a quarter
+      // of the surface dark, 90 holds a half, and 190 barely returns to black at
+      // all - so the control sweeps from a lingering wash down to a sparse
+      // scatter with the shipped setting between them. The absolute brightness
+      // at each setting moves with the material and is not worth quoting; the
+      // fraction of the surface that gets back to black is the stable number.
       const int fd = SEGMENT.check1 ? (fade > 2 ? fade / 3 : 1) : fade;
       for (int c = 0; c < 3; c++) out[c] = (out[c] > fd) ? (uint8_t)(out[c] - fd) : 0;
 
