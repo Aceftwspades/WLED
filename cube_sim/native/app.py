@@ -447,6 +447,17 @@ def build(app):
                              lambda v, a=attr: setattr(app.syn, a, int(v)))
                 dpg.add_checkbox(label="auto beat", default_value=True,
                                  callback=lambda s, v: setattr(app.syn, "auto_beat", v))
+                # Gate a band and it goes silent between beats, jumping to its
+                # slider level on one. Only the bass ever had a transient
+                # otherwise, so mid and treble could not be judged on how an
+                # effect answers a hit.
+                dpg.add_text("gate to beat", color=(139, 147, 163))
+                with dpg.group(horizontal=True):
+                    for attr, lab in (("gate_bass", "bass"), ("gate_mid", "mid"),
+                                      ("gate_treb", "treble")):
+                        dpg.add_checkbox(label=lab, tag=f"chk_{attr}",
+                                         callback=lambda s, v, a=attr:
+                                             setattr(app.syn, a, bool(v)))
                 dpg.add_checkbox(label="silence (mute all bands)",
                                  callback=lambda s, v: setattr(app.syn, "muted", v))
                 dpg.add_color_button(tag="beat_led", default_value=(42, 47, 58, 255),
