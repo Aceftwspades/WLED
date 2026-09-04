@@ -102,7 +102,8 @@ struct SbState {
   uint8_t  peak;                    // slow-release spectrum peak, for auto-range
   uint8_t  spec[16];
   uint8_t  env[16];                 // per-bin envelope, for onset detection
-  uint8_t  hold[16];                // per-bin refractory, in frames
+  uint8_t  bpk[16];                 // per-bin slow peak, for per-bin auto-range
+  uint16_t hold[16];                // per-bin refractory, in ms remaining
   uint8_t  clk[2];
 };
 
@@ -343,16 +344,46 @@ static FX_RET mode_spectral_bloom() {
     // Permissive on purpose. At 26 the only things that cleared the bar were
     // kick transients on the bottom three bins, so drops landed at one height
     // and the lid - the reason this mode exists - never saw one.
-    const int thresh = onBeat ? 5 : 12;
+    // Tuned against real music, not the synthetic generator. A steady
+    // synthetic tone onsets almost never, so thresholds that looked right
+    // there fired on every frame of actual programme material - twenty to
+    // thirty drop frames a second out of forty-three.
+    const int thresh = onBeat ? 10 : 22;
 
     for (int k = 0; k < 16 && nDrop < SB_MAXDROP; k++) {
       const int raw = s->spec[k];
       const int rise = raw - (int)s->env[k];
-      if (s->hold[k]) { s->hold[k]--; }
-      int lv = (raw * 255) / pk;
+      // Refractory in MILLISECONDS, not frames. Counted in frames it was a
+      // different length of time on every machine that ran it: the same twelve
+      // frames is 280 ms at forty-three frames a second and 74 ms at a hundred
+      // and sixty, so the drop rate moved with the render rate and no two
+      // measurements were of the same effect.
+      s->hold[k] = (dt >= s->hold[k]) ? 0 : (uint16_t)(s->hold[k] - dt);
+
+      // Level relative to THIS BIN's own peak, not the spectrum's.
+      //
+      // Against the global peak the grid was unusable on real music. Music
+      // tilts down about six dB an octave, so the treble bins sit an order of
+      // magnitude below the bass ones and never cleared the gate - and the
+      // treble bins are the top row, which is the lid. Measured: the lid took
+      // 3.7% of the light while each wall took 25%, on a surface where every
+      // face is a fifth of the area. Per-bin ranging asks "is this bin loud FOR
+      // ITSELF", which is the question the grid is actually posing, and every
+      // cell becomes reachable regardless of where the music's energy sits.
+      s->bpk[k] = (uint8_t)(raw > (int)s->bpk[k]
+                            ? raw
+                            : fx_env(s->bpk[k], (uint8_t)raw, dt, 3000));
+      const int bref = s->bpk[k] < 24 ? 24 : s->bpk[k];   // floor: silence stays silent
+      int lv = (raw * 255) / bref;
       if (lv > 255) lv = 255;
-      if (!s->hold[k] && rise > thresh && lv > 35) {
-        s->hold[k] = onBeat ? 2 : 3;               // refractory, in frames
+      // The rise is measured in the same normalised units, for the same
+      // reason: a transient in a quiet band is a small number of levels and a
+      // large fraction of that band.
+      const int nrise = rise > 0 ? (rise * 255) / bref : 0;
+      if (!s->hold[k] && nrise > thresh && lv > 35) {
+        // A bin may land a drop about seven times a second on a beat and three
+        // otherwise. Faster than that is not a drop landing, it is a hose.
+        s->hold[k] = onBeat ? 140 : 300;
         const uint8_t jx = hw_random8(), jy = hw_random8();
         sb_dropPos(k & 3, k >> 2, jx, jy,
                    dropX[nDrop], dropY[nDrop], dropZ[nDrop]);
@@ -496,7 +527,16 @@ static FX_RET mode_spectral_bloom() {
       // all in between, so the same fade simply erases each drop before it has
       // been carried anywhere. At the shared rate the whole mode averaged a
       // brightness of one.
-      const int fd = SEGMENT.check1 ? (fade > 3 ? fade / 4 : 1) : fade;
+      // A third, not a quarter. A quarter was set when the only test signal was
+      // the gated synthetic generator, where drops are genuinely rare; real
+      // audio delivers many more and the field never got back to black - it
+      // measured a mean of 84 at the default fade, which is washed out. A third
+      // puts the DEFAULT slider position in the middle of the usable range on
+      // real music: measured against live audio it runs a mean of 27 with a
+      // quarter of the surface dark at the 140 default, and 12 with three fifths
+      // dark at 90, so the control sweeps from a lingering wash down to a sparse
+      // scatter with the shipped setting sitting between them.
+      const int fd = SEGMENT.check1 ? (fade > 2 ? fade / 3 : 1) : fade;
       for (int c = 0; c < 3; c++) out[c] = (out[c] > fd) ? (uint8_t)(out[c] - fd) : 0;
 
       // Height is cz on the cube and the row on a flat panel, so "frequency is

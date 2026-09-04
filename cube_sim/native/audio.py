@@ -49,6 +49,7 @@ class LiveAudio:
         self._prev_low = 0.0
         self._floor = 0.0
         self._primed = False
+        self._agc = 1.0
         self.level = 0.0
         self.stream = self.p.open(
             format=pyaudio.paFloat32, channels=self.channels, rate=self.rate,
@@ -100,15 +101,37 @@ class LiveAudio:
     def push(self, eng):
         """Fill the engine's FFT bins from the most recent audio, and detect onsets."""
         spec = np.abs(np.fft.rfft(self._buf * self._win))
-        arr = eng.fft
-        total = 0.0
+        raw = np.empty(self.BANDS, np.float32)
         for i in range(self.BANDS):
             a, b = self._edges[i], max(self._edges[i] + 1, self._edges[i + 1])
-            v = float(spec[a:b].mean()) * 40.0 * self.gain
-            v = max(0.0, min(255.0, v))
-            arr[i] = int(v)
-            total += v
-        self.level = total / self.BANDS
+            raw[i] = spec[a:b].mean()
+
+        # Automatic gain, because a fixed multiplier cannot serve real music.
+        #
+        # This was a flat x40, and at that ordinary programme material clipped
+        # 18% of all band samples flat against 255. A clipped band is a
+        # CONSTANT, so anything watching for onsets sees nothing at all in
+        # exactly the bands carrying the music. Dropping it to x10 fixed the
+        # passage it was measured on and then clipped 16% on the next one, four
+        # minutes later - the dynamic range between a quiet verse and a chorus
+        # is far wider than any one number can straddle.
+        #
+        # So: track the loudest band with a fast attack and a slow release, and
+        # normalise against it. The loudest band lands near 200, leaving real
+        # headroom for a transient, and quiet passages come up instead of
+        # disappearing. gain stays as a trim on top.
+        peak = float(raw.max())
+        if peak > self._agc:
+            self._agc = peak                                  # instant attack
+        else:
+            self._agc += (peak - self._agc) * 0.010           # ~2 s release
+        ref = max(self._agc, 0.35)                            # floor: silence stays silent
+        scaled = np.clip(raw * (200.0 / ref) * self.gain, 0.0, 255.0)
+
+        arr = eng.fft
+        for i in range(self.BANDS):
+            arr[i] = int(scaled[i])
+        self.level = float(scaled.mean())
 
         # Onset by spectral flux on the low bands - the transient shape
         # fx_lowBeat is looking for. The floor attacks fast and decays slowly,
