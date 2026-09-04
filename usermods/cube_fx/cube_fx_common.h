@@ -693,6 +693,29 @@ static inline size_t cfx_litCount(int cols, int rows, int B, bool cube) {
   return cube ? (size_t)5 * B * B : (size_t)cols * rows;
 }
 
+// custom3 is a FIVE-BIT slider. Widen it before using it as a full byte.
+//
+// FX.h declares `uint8_t custom3 : 5`, and json.cpp constrains anything coming
+// in over the API to 0..31 before storing it. WLED's own effects respect that -
+// map(SEGMENT.custom3, 0, 31, ...) and a comment calling it the reduced
+// resolution slider - but fourteen effects here scaled it as though it ran to
+// 255, with metadata defaults up to 210. On hardware every one of those
+// requests clamps to 31, so the control sat in the bottom eighth of its range
+// and the rest of the slider did nothing at all.
+//
+// It went unnoticed for a long time because the simulator's shim declared the
+// field as a full byte, so the simulator was the only place those effects ever
+// worked as designed. The shim now matches the firmware, and this is how an
+// effect asks for a 0..255 control from a 0..31 slider:
+//
+//     const int turb = cfx_c3full(SEGMENT.custom3);
+//
+// Effects that genuinely want the 0..31 value - a shape index, a small count, a
+// value centred on 16 - should keep reading SEGMENT.custom3 directly.
+static inline uint8_t cfx_c3full(uint8_t c3) {
+  return (uint8_t)(((int)c3 * 255) / 31);
+}
+
 // ---------------------------------------------------------------------------
 // Surface topology - reading colour back from an ARBITRARY point on the cube
 // ---------------------------------------------------------------------------

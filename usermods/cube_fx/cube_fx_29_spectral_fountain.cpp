@@ -447,7 +447,7 @@ static FX_RET mode_spectral_fountain() {
   // through most of the palette over a few pixels and came out as concentric
   // rings that the flow then sheared into hard arcs - the one artefact in this
   // effect that never looked like fluid.
-  const int Rbase = 40 + (((int)SEGMENT.custom3 * 170) >> 8);
+  const int Rbase = 40 + (((int)cfx_c3full(SEGMENT.custom3) * 170) >> 8);
   const int R  = cube ? Rbase : (Rbase / 3 + 8);
   const int R2 = R * R;
   const int sep = R / 2;                       // how far the pair straddles the jet
@@ -784,7 +784,7 @@ static FX_RET mode_spectral_fountain() {
 }
 
 static const char _data_FX_MODE_SPECTRAL_FOUNTAIN[] PROGMEM =
-  "Ace 3-D Spectral Fountain@Speed,Jet power,Density,Jet angle,Nozzle size,Distributed,Inward,Flat mode;;!;2f;sx=128,ix=150,c1=140,c2=128,c3=210,pal=11";
+  "Ace 3-D Spectral Fountain@Speed,Jet power,Density,Jet angle,Nozzle size,Distributed,Inward,Flat mode;;!;2f;sx=128,ix=150,c1=140,c2=128,c3=26,pal=11";
 
 
 // ---------------------------------------------------------------------------

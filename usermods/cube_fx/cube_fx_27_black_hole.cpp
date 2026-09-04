@@ -521,7 +521,7 @@ static FX_RET mode_black_hole() {
 
   // --- render ---------------------------------------------------------------------
   const uint8_t drive = cfx_drive(vol, 0.35f, 110);
-  const int ringAmt = SEGMENT.custom3;
+  const int ringAmt = cfx_c3full(SEGMENT.custom3);
 
   CFX_NET_PREP();
   size_t idx = 0;
@@ -560,7 +560,7 @@ static FX_RET mode_black_hole() {
 }
 
 static const char _data_FX_MODE_BLACK_HOLE[] PROGMEM =
-  "Ace 3-D Black Hole@Orbit,Glow,Horizon,Infall,Ring,Bass pull,Beat flare,Flat mode;;!;2f;sx=120,ix=180,c1=110,c2=130,c3=190,o1=1,o2=1,pal=35";
+  "Ace 3-D Black Hole@Orbit,Glow,Horizon,Infall,Ring,Bass pull,Beat flare,Flat mode;;!;2f;sx=120,ix=180,c1=110,c2=130,c3=23,o1=1,o2=1,pal=35";
 
 
 // ---------------------------------------------------------------------------

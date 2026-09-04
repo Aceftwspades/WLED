@@ -108,7 +108,7 @@ static FX_RET mode_cube_speaker() {
   const int     pushRange = 8 + (SEGMENT.custom1 >> 2);                // how far the cone can travel
   const int     coneR     = 10 + (env * pushRange) / 255;              // cone's current push position
   const int     coneW     = 20 + (SEGMENT.intensity >> 3);             // cone body thickness
-  const uint8_t hueSpr    = SEGMENT.custom3;                           // per-face colour identity
+  const uint8_t hueSpr    = cfx_c3full(SEGMENT.custom3);                           // per-face colour identity
 
   // resolve live rings once per frame
   int     rad[SPK_SRC], life[SPK_SRC];
@@ -169,7 +169,7 @@ static FX_RET mode_cube_speaker() {
 }
 
 static const char _data_FX_MODE_CUBE_SPEAKER[] PROGMEM =
-  "Ace 3-D Cube Speaker@Speed,Thickness,Punch,Persistence,Face hues,Spawn on beat,Ring texture,Flat mode;;!;2f;sx=100,ix=110,c1=140,c2=140,c3=40,o1=1,o2=1";
+  "Ace 3-D Cube Speaker@Speed,Thickness,Punch,Persistence,Face hues,Spawn on beat,Ring texture,Flat mode;;!;2f;sx=100,ix=110,c1=140,c2=140,c3=5,o1=1,o2=1";
 
 
 

@@ -241,7 +241,7 @@ static FX_RET mode_dna_helix() {
     st[DNA_ST_LFO]     = (uint8_t)(lp & 0xFF);
     st[DNA_ST_LFO + 1] = (uint8_t)(lp >> 8);
     const int m = (int)sin8_t((uint8_t)(lp >> 8)) - 128;         // -128..127
-    swing = ((int)SEGMENT.custom3 * m) >> 8;                     // -127..127
+    swing = ((int)cfx_c3full(SEGMENT.custom3) * m) >> 8;                     // -127..127
   }
 
   // --- audio -----------------------------------------------------------------
@@ -464,7 +464,7 @@ static FX_RET mode_dna_helix() {
 }
 
 static const char _data_FX_MODE_DNA_HELIX[] PROGMEM =
-  "Ace 3-D DNA Helix@Speed,Helix width,Frequency,LFO rate,LFO depth,Base pairs,Pairs on beat,Flat mode;;!;2f;sx=140,ix=160,c1=128,c2=40,c3=130,o1=1,o2=0";
+  "Ace 3-D DNA Helix@Speed,Helix width,Frequency,LFO rate,LFO depth,Base pairs,Pairs on beat,Flat mode;;!;2f;sx=140,ix=160,c1=128,c2=40,c3=16,o1=1,o2=0";
 
 
 

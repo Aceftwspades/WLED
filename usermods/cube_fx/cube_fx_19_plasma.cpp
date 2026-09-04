@@ -259,7 +259,7 @@ static FX_RET mode_ace_plasma() {
   // --- layer amplitudes ------------------------------------------------------
   // dep = 0: three equal fixed layers. dep = 255: a band that isn't playing
   // takes its layer away entirely.
-  const int dep  = SEGMENT.custom3;
+  const int dep  = cfx_c3full(SEGMENT.custom3);
   const int keep = 255 - dep;
   const int ampA = keep + (((int)st[PL_ST_BASS] * dep) >> 8);
   const int ampB = keep + (((int)st[PL_ST_MID]  * dep) >> 8);
@@ -385,7 +385,7 @@ static FX_RET mode_ace_plasma() {
 }
 
 static const char _data_FX_MODE_ACE_PLASMA[] PROGMEM =
-  "Ace 3-D Plasma@Flow,Glow,Scale,Warp,Audio depth,Beat ripples,Tone colour,Flat mode;;!;2f;sx=110,ix=150,c1=90,c2=130,c3=170,o1=1,o2=1";
+  "Ace 3-D Plasma@Flow,Glow,Scale,Warp,Audio depth,Beat ripples,Tone colour,Flat mode;;!;2f;sx=110,ix=150,c1=90,c2=130,c3=21,o1=1,o2=1";
 
 
 

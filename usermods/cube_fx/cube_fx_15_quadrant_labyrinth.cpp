@@ -324,7 +324,7 @@ static FX_RET mode_quadrant_labyrinth() {
   // relative to maxD is what makes the control mean the same thing on a
   // 16-pixel face and on a unified 48-pixel net; the old raw multiplier made
   // low settings look like no colour variation at all on a shallow maze.
-  const uint32_t cyc64     = 16u + ((uint32_t)SEGMENT.custom3 * 240u) / 255u;   // 1/64 cycles
+  const uint32_t cyc64     = 16u + ((uint32_t)cfx_c3full(SEGMENT.custom3) * 240u) / 255u;   // 1/64 cycles
   const uint32_t spreadMul = (cyc64 * 4u * 256u) / (uint32_t)maxDsafe;
 
   // --- launch a pulse -------------------------------------------------------
@@ -428,7 +428,7 @@ static FX_RET mode_quadrant_labyrinth() {
 }
 
 static const char _data_FX_MODE_QUADRANT_LABYRINTH[] PROGMEM =
-  "Ace 3-D Quadrant Labyrinth@Speed,Thickness,Trail,Glow,Spread,Reshuffle on beat,Stagger faces,Unify net;;!;2f;sx=150,ix=110,c1=175,c2=70,c3=140,o1=1,o2=1";
+  "Ace 3-D Quadrant Labyrinth@Speed,Thickness,Trail,Glow,Spread,Reshuffle on beat,Stagger faces,Unify net;;!;2f;sx=150,ix=110,c1=175,c2=70,c3=17,o1=1,o2=1";
 
 
 

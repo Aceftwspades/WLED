@@ -229,7 +229,7 @@ static FX_RET mode_cube_fire() {
 
   // --- sparks -----------------------------------------------------------------
   const int sparkRate = SEGMENT.custom2;                       // pops
-  const uint8_t hueSpread = SEGMENT.custom3;
+  const uint8_t hueSpread = cfx_c3full(SEGMENT.custom3);
   s->hue = (uint16_t)(s->hue + fx_step(3, dt));
 
   int spawn = 0;
@@ -314,7 +314,7 @@ static FX_RET mode_cube_fire() {
 }
 
 static const char _data_FX_MODE_CUBE_FIRE[] PROGMEM =
-  "Ace 3-D Cube Fire@Rise,Glow,Flame height,Sparks,Colour spread,Bass flare,Motion lean,Flat mode;;!;2f;sx=140,ix=150,c1=110,c2=140,c3=40,o1=1,o2=0,pal=35";
+  "Ace 3-D Cube Fire@Rise,Glow,Flame height,Sparks,Colour spread,Bass flare,Motion lean,Flat mode;;!;2f;sx=140,ix=150,c1=110,c2=140,c3=5,o1=1,o2=0,pal=35";
 
 
 // ---------------------------------------------------------------------------

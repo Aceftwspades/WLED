@@ -460,7 +460,7 @@ static FX_RET mode_matrix_rain() {
 
   // --- levels ------------------------------------------------------------------
   const uint8_t drive  = cfx_drive(vol, 1.3f, 40 + (SEGMENT.intensity >> 1));
-  const int      flickMs = 220 - (((int)SEGMENT.custom3 * 180) >> 8);  // 220 .. 40 ms
+  const int      flickMs = 220 - (((int)cfx_c3full(SEGMENT.custom3) * 180) >> 8);  // 220 .. 40 ms
   // 32-bit on purpose: the staggered mutation below divides (tick + phase),
   // and letting an 8-bit tick wrap would jolt every glyph at once each wrap.
   const uint32_t tick    = strip.now / (uint32_t)flickMs;
@@ -559,7 +559,7 @@ static FX_RET mode_matrix_rain() {
 }
 
 static const char _data_FX_MODE_MATRIX_RAIN[] PROGMEM =
-  "Ace 3-D Matrix Rain@Fall speed,Glow,Density,Trail,Glyph rate,Spawn on beat,Spectrum ring,Flat mode;;!;2f;sx=130,ix=150,c1=120,c2=140,c3=120,o1=1,o2=1";
+  "Ace 3-D Matrix Rain@Fall speed,Glow,Density,Trail,Glyph rate,Spawn on beat,Spectrum ring,Flat mode;;!;2f;sx=130,ix=150,c1=120,c2=140,c3=15,o1=1,o2=1";
 
 
 

@@ -259,7 +259,7 @@ static FX_RET mode_whirlpool() {
   w0 = (w0 * (int32_t)dt) / 23;
 
   const int32_t v0 = (((int32_t)SEGMENT.custom2 * 300) / 255 + 20) * (int32_t)dt / 23;
-  const int turb = SEGMENT.custom3;
+  const int turb = cfx_c3full(SEGMENT.custom3);
 
   // --- advect the dye -----------------------------------------------------------
   // Backward trace: for each cell, ask where its contents were one step ago and
@@ -328,7 +328,7 @@ static FX_RET mode_whirlpool() {
 }
 
 static const char _data_FX_MODE_WHIRLPOOL[] PROGMEM =
-  "Ace 3-D Whirlpool@Spin,Arms,Eye size,Outflow,Turbulence,Beat pulses,Bass spin,Flat mode;;!;2f;sx=120,ix=90,c1=80,c2=120,c3=40,o1=1,o2=1";
+  "Ace 3-D Whirlpool@Spin,Arms,Eye size,Outflow,Turbulence,Beat pulses,Bass spin,Flat mode;;!;2f;sx=120,ix=90,c1=80,c2=120,c3=5,o1=1,o2=1";
 
 
 

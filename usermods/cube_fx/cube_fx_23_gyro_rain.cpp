@@ -175,7 +175,7 @@ static FX_RET mode_gyro_rain() {
   if (dens > 245) dens = 245;
 
   const int len    = 24 + (int)SEGMENT.custom2;          // streak length
-  const int splash = 6 + ((int)SEGMENT.custom3 >> 2);    // afterglow on the roof
+  const int splash = 6 + ((int)cfx_c3full(SEGMENT.custom3) >> 2);    // afterglow on the roof
   const bool onBeat = SEGMENT.check2 && tempo.confidence > 70;
   const uint8_t drive = cfx_drive(vol, 1.0f, 110 + (SEGMENT.intensity >> 1));
 
@@ -220,7 +220,7 @@ static FX_RET mode_gyro_rain() {
 
       // wet sheen on whatever is facing the sky
       int lum = bright;
-      lum += (up * (int)SEGMENT.custom3) >> 11;
+      lum += (up * (int)cfx_c3full(SEGMENT.custom3)) >> 11;
       if (lum > 255) lum = 255;
 
       const int pi = 40 + ((bright * 180) >> 8);
@@ -240,7 +240,7 @@ static FX_RET mode_gyro_rain() {
 }
 
 static const char _data_FX_MODE_GYRO_RAIN[] PROGMEM =
-  "Ace Gyro Rain@Fall speed,Glow,Density,Streak,Splash,Bass downpour,Beat drops,Flat mode;;!;2f;sx=140,ix=128,c1=120,c2=90,c3=110,o1=1,o2=1";
+  "Ace Gyro Rain@Fall speed,Glow,Density,Streak,Splash,Bass downpour,Beat drops,Flat mode;;!;2f;sx=140,ix=128,c1=120,c2=90,c3=13,o1=1,o2=1";
 
 
 

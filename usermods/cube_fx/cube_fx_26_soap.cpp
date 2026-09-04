@@ -258,7 +258,7 @@ static FX_RET mode_soap() {
   // it fought the effect for headroom. Pushing pigment in instead is something
   // you can actually see: bass keeps fresh colour arriving, beats throw a
   // slug of it across the whole net at once.
-  int refresh = 8 + (((int)SEGMENT.custom3 * 72) >> 8);        // 3%..31% per frame
+  int refresh = 8 + (((int)cfx_c3full(SEGMENT.custom3) * 72) >> 8);        // 3%..31% per frame
   if (SEGMENT.check1) refresh += (int)s->bassEnv >> 3;         // Bass drive
   refresh += (int)s->splash >> 2;                              // Beat splash
   if (refresh > 120) refresh = 120;
@@ -435,7 +435,7 @@ static FX_RET mode_soap() {
 }
 
 static const char _data_FX_MODE_SOAP[] PROGMEM =
-  "Ace 3-D Soap@!,Smoothness,Density,Scale,Splash,Bass drive,Beat splash,Flat mode;;!;2f;sx=128,ix=200,c1=140,c2=90,c3=120,o1=1,o2=1,pal=11";
+  "Ace 3-D Soap@!,Smoothness,Density,Scale,Splash,Bass drive,Beat splash,Flat mode;;!;2f;sx=128,ix=200,c1=140,c2=90,c3=15,o1=1,o2=1,pal=11";
 
 
 // ---------------------------------------------------------------------------

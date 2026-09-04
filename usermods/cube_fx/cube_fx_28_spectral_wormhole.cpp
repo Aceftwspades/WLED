@@ -362,7 +362,7 @@ static FX_RET mode_spectral_wormhole() {
   // the default a loud band crosses the wall in about half a second.
   const int32_t pushG = ((int32_t)SEGMENT.intensity * 260) / 255 + 60;
   const int32_t curlG = (int32_t)SEGMENT.custom1;
-  const int     sc    = 2 + ((int)SEGMENT.custom3 * 12) / 255;
+  const int     sc    = 2 + ((int)cfx_c3full(SEGMENT.custom3) * 12) / 255;
   // Fade is carried in 1/256ths of a count per frame. The entire useful range
   // of this control lies between one and four counts a frame - above four the
   // water is gone before it clears the wall, below one it never leaves - and a
@@ -611,7 +611,7 @@ static FX_RET mode_spectral_wormhole() {
 }
 
 static const char _data_FX_MODE_SPECTRAL_WORMHOLE[] PROGMEM =
-  "Ace 3-D Spectral Wormhole@Swirl speed,Push,Curl,Trail,Scale,Mirrored,Beat flare,Flat mode;;!;2f;sx=130,ix=150,c1=140,c2=225,c3=120,o1=1,o2=1,pal=11";
+  "Ace 3-D Spectral Wormhole@Swirl speed,Push,Curl,Trail,Scale,Mirrored,Beat flare,Flat mode;;!;2f;sx=130,ix=150,c1=140,c2=225,c3=15,o1=1,o2=1,pal=11";
 
 
 // ---------------------------------------------------------------------------

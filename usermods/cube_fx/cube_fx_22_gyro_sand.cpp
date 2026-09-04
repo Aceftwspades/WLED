@@ -223,7 +223,7 @@ static FX_RET mode_gyro_sand() {
 
   // --- fall, roll, settle --------------------------------------------------
   const int accel  = 1 + ((int)SEGMENT.speed * 6) / 255;    // hourglass pour rate
-  const int bounce = (int)SEGMENT.custom3 >> 3;             // 0..31, wall restitution
+  const int bounce = (int)cfx_c3full(SEGMENT.custom3) >> 3;             // 0..31, wall restitution
   const int active = 32 + ((int)SEGMENT.custom1 * (NP - 32)) / 255;
 
   // How much one settled grain raises its column, chosen so the pile levels off
@@ -349,7 +349,7 @@ static FX_RET mode_gyro_sand() {
 }
 
 static const char _data_FX_MODE_GYRO_SAND[] PROGMEM =
-  "Ace Gyro Sand@Pour rate,Glow,Fill,Burst size,Bounce,Beat bursts,Spectral push,Flat mode;;!;2f;sx=120,ix=150,c1=200,c2=120,c3=110,o1=1,o2=1";
+  "Ace Gyro Sand@Pour rate,Glow,Fill,Burst size,Bounce,Beat bursts,Spectral push,Flat mode;;!;2f;sx=120,ix=150,c1=200,c2=120,c3=13,o1=1,o2=1";
 
 
 

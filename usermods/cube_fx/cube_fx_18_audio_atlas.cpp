@@ -234,7 +234,7 @@ static FX_RET mode_audio_atlas() {
   const int glow   = SEGMENT.intensity;
   const int c1     = SEGMENT.custom1;
   const int impact = SEGMENT.custom2;
-  const int spark  = SEGMENT.custom3;
+  const int spark  = cfx_c3full(SEGMENT.custom3);
 
   // --- event envelopes ------------------------------------------------------
   uint8_t knock = tm.hit;
@@ -473,7 +473,7 @@ static FX_RET mode_audio_atlas() {
 }
 
 static const char _data_FX_MODE_AUDIO_ATLAS[] PROGMEM =
-  "Ace Gyro Audio Atlas@Speed,Glow,Band width,Impact,Sparkle,World lock,Bar beacon,Flat mode;;!;2f;sx=140,ix=150,c1=110,c2=160,c3=130,o1=1,o2=1";
+  "Ace Gyro Audio Atlas@Speed,Glow,Band width,Impact,Sparkle,World lock,Bar beacon,Flat mode;;!;2f;sx=140,ix=150,c1=110,c2=160,c3=16,o1=1,o2=1";
 
 
 
