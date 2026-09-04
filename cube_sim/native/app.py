@@ -144,7 +144,8 @@ class App:
     def start_live(self):
         try:
             from native.audio import LiveAudio
-            self.live = LiveAudio(gain=dpg.get_value("live_gain"))
+            # pair() names its widgets sld_/inp_, so read the box.
+            self.live = LiveAudio(gain=float(dpg.get_value("inp_live_gain")))
             dpg.set_value("live_msg", f"capturing: {self.live.name}")
             dpg.configure_item("live_btn", label="stop live audio")
         except Exception as e:
@@ -179,23 +180,50 @@ class App:
         r, g, b = (int(c * 255) if c <= 1.0 else int(c) for c in val[:3])
         self.eng.colors((r << 16) | (g << 8) | b)
 
-    def on_param(self, sender, val):
-        k = dpg.get_item_user_data(sender)
-        self.eng.fx[k] = int(val)
-        if dpg.does_item_exist(f"inp_{k}"):
-            dpg.set_value(f"inp_{k}", int(val))       # keep the typed box in step
-        self.eng.push()
-
-    def on_param_typed(self, sender, val):
-        k = dpg.get_item_user_data(sender)
-        self.eng.fx[k] = int(val)
-        if dpg.does_item_exist(f"sld_{k}"):
-            dpg.set_value(f"sld_{k}", int(val))
+    def _set_param(self, k, v):
+        self.eng.fx[k] = int(v)
         self.eng.push()
 
     def on_check(self, sender, val):
         self.eng.fx[dpg.get_item_user_data(sender)] = 1 if val else 0
         self.eng.push()
+
+    # --- the one slider shape used everywhere ---------------------------------
+    def pair(self, parent, key, label, value, lo, hi, setter, is_float=False):
+        """A slider carrying no number, and the typed box that shows it.
+
+        The slider used to print its own value as well, so the same number
+        appeared twice a few pixels apart and disagreed with itself for a frame
+        whenever one was dragged. The box is the readout; the slider is the
+        handle. format="" is what stops Dear PyGui drawing the value on the
+        track.
+        """
+        st, it = f"sld_{key}", f"inp_{key}"
+
+        def from_slider(s, v):
+            dpg.set_value(it, v)
+            setter(v)
+
+        def from_box(s, v):
+            v = max(lo, min(hi, v))
+            dpg.set_value(st, v)
+            setter(v)
+
+        with dpg.group(horizontal=True, parent=parent):
+            if is_float:
+                dpg.add_slider_float(tag=st, width=142, min_value=lo, max_value=hi,
+                                     default_value=value, format="", callback=from_slider)
+                dpg.add_input_float(tag=it, width=68, step=0, format="%.1f",
+                                    min_value=lo, max_value=hi, min_clamped=True,
+                                    max_clamped=True, default_value=value,
+                                    callback=from_box)
+            else:
+                dpg.add_slider_int(tag=st, width=142, min_value=lo, max_value=hi,
+                                   default_value=value, format="", callback=from_slider)
+                dpg.add_input_int(tag=it, width=68, step=0, min_value=lo, max_value=hi,
+                                  min_clamped=True, max_clamped=True,
+                                  default_value=value, callback=from_box)
+            dpg.add_text(label, color=(139, 147, 163))
 
     def rebuild_params(self):
         """Sliders are labelled from the effect's own metadata, as the web UI is."""
@@ -212,19 +240,8 @@ class App:
             # offers settings the cube cannot hold - which is exactly how
             # fourteen effects came to be tuned against values they never got.
             hi = 31 if k == "c3" else 255
-            with dpg.group(horizontal=True, parent="params"):
-                dpg.add_slider_int(tag=f"sld_{k}", width=150, min_value=0,
-                                   max_value=hi, default_value=self.eng.fx[k],
-                                   user_data=k, callback=self.on_param)
-                # A typed box beside every slider. Dear PyGui does support
-                # ctrl-click to type into a slider, but it is undiscoverable and
-                # awkward when you want an exact value to compare two runs.
-                dpg.add_input_int(tag=f"inp_{k}", width=62, step=0,
-                                  min_value=0, max_value=hi,
-                                  min_clamped=True, max_clamped=True,
-                                  default_value=self.eng.fx[k], user_data=k,
-                                  callback=self.on_param_typed)
-                dpg.add_text(lab, color=(139, 147, 163))
+            self.pair("params", k, lab, self.eng.fx[k], 0, hi,
+                      lambda v, k=k: self._set_param(k, v))
         for i, k in enumerate(("o1", "o2", "o3")):
             lab = (m["labels"][5 + i] if 5 + i < len(m["labels"]) else "").strip()
             if not lab:
@@ -419,17 +436,15 @@ def build(app):
                 dpg.add_group(tag="params")
                 dpg.add_separator()
                 dpg.add_text("Audio")
-                dpg.add_slider_int(label="volume", default_value=90, max_value=255,
-                                   width=140, callback=lambda s, v: setattr(app.syn, "vol", v))
-                dpg.add_slider_int(label="bass", default_value=45, max_value=255,
-                                   width=140, callback=lambda s, v: setattr(app.syn, "bass", v))
-                dpg.add_slider_int(label="mid", default_value=50, max_value=255,
-                                   width=140, callback=lambda s, v: setattr(app.syn, "mid", v))
-                dpg.add_slider_int(label="treble", default_value=35, max_value=255,
-                                   width=140, callback=lambda s, v: setattr(app.syn, "treb", v))
-                dpg.add_slider_int(label="bpm", default_value=120, min_value=30,
-                                   max_value=200, width=140,
-                                   callback=lambda s, v: setattr(app.syn, "bpm", v))
+                dpg.add_group(tag="audio_rows")
+                for key, lab, val, lo, hi, attr in (
+                        ("vol",  "volume", 90,  0,  255, "vol"),
+                        ("bass", "bass",   45,  0,  255, "bass"),
+                        ("mid",  "mid",    50,  0,  255, "mid"),
+                        ("treb", "treble", 35,  0,  255, "treb"),
+                        ("bpm",  "bpm",    120, 30, 200, "bpm")):
+                    app.pair("audio_rows", key, lab, val, lo, hi,
+                             lambda v, a=attr: setattr(app.syn, a, int(v)))
                 dpg.add_checkbox(label="auto beat", default_value=True,
                                  callback=lambda s, v: setattr(app.syn, "auto_beat", v))
                 dpg.add_checkbox(label="silence (mute all bands)",
@@ -439,10 +454,10 @@ def build(app):
                 dpg.add_separator()
                 dpg.add_button(label="use live audio", tag="live_btn",
                                callback=lambda: app.toggle_live())
-                dpg.add_slider_float(label="live gain", tag="live_gain", width=140,
-                                     default_value=3.0, min_value=0.2, max_value=12.0,
-                                     callback=lambda s, v: setattr(app.live, "gain", v)
-                                     if app.live else None)
+                dpg.add_group(tag="gain_row")
+                app.pair("gain_row", "live_gain", "live gain", 3.0, 0.2, 12.0,
+                         lambda v: setattr(app.live, "gain", float(v)) if app.live else None,
+                         is_float=True)
                 dpg.add_progress_bar(tag="lvl_bar", default_value=0.0, width=280)
                 dpg.add_text("", tag="live_msg", wrap=300)
         dpg.add_text("", tag="stat_txt")
