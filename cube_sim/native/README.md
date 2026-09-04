@@ -91,3 +91,27 @@ point of doing it this way rather than through a Windows screen or window grab,
 which photographs whatever happens to be in front of it: asked once to check
 this app's theme, a window grab returned a locked machine's lock screen. A frame
 buffer cannot make that mistake, because the app has nothing else to give.
+
+## View modes
+
+| key | does |
+|---|---|
+| `Q` | unfolded net fills the frame |
+| `E` | cube fills the frame |
+| `W` | both, side by side |
+| `H` | show/hide the control column |
+| `F11` | fullscreen the window itself |
+| `space` | play/pause |
+
+Pressing the key for the layout already showing hides the UI, so one key gets
+from a working layout to a clean picture of it. `H` brings the controls back
+without leaving the layout, which is the point — adjusting a slider while
+looking at a fullscreen view is the case these exist for.
+
+The cube render is **capped at 620 px** whatever the pane size, and the image is
+scaled up to fill. The renderer is quadratic and is already the most expensive
+thing the app does: 28 ms a frame at 620, 64 ms at 900. Rendering a fullscreen
+cube at its true size would take the app from 35 fps to 15, so fullscreen makes
+the picture bigger rather than sharper. The net has no such cap — it is scaled
+by a whole number so the LED grid stays hard, and it costs 16 ms a frame at
+1296 px, which is affordable.

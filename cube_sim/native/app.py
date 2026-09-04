@@ -99,8 +99,10 @@ class App:
         self.last = time.perf_counter()
         self.yaw, self.pitch, self.dist = -0.6, 0.75, 4.6
         self.beat_flash = 0
-        self.layout = "both"
+        self.layout = "both"        # both | net | cube
+        self.ui = True              # control column and pane captions
         self._bufs = {}
+        self._inputs = set()
         self._dragging = False
         self._yaw0, self._pitch0 = self.yaw, self.pitch
         self.eng.select(0)
@@ -201,6 +203,7 @@ class App:
         track.
         """
         st, it = f"sld_{key}", f"inp_{key}"
+        self._inputs.add(it)
 
         def from_slider(s, v):
             dpg.set_value(it, v)
@@ -262,22 +265,50 @@ class App:
         """
         vw = max(640, dpg.get_viewport_client_width())
         vh = max(420, dpg.get_viewport_client_height())
-        pane_h = max(VIEW_MIN, vh - 108)
-        half = max(VIEW_MIN, (vw - SIDE_W - 46) // 2)
-        side = max(VIEW_MIN, min(half, pane_h))
+
+        # What is on screen decides what there is room for. With the control
+        # column hidden its 340 px come back, with one view hidden the other
+        # gets the whole width, and the pane captions stop reserving a line.
+        nview = 2 if self.layout == "both" else 1
+        sidew = SIDE_W if self.ui else 0
+        pane_h = max(VIEW_MIN, vh - (108 if self.ui else 40))
+        avail = vw - sidew - (22 * nview + 24)
+        per = max(VIEW_MIN, avail // nview)
+        side = max(VIEW_MIN, min(per, pane_h))
+
+        dpg.configure_item("net_win",  show=self.layout in ("both", "net"))
+        dpg.configure_item("cube_win", show=self.layout in ("both", "cube"))
+        dpg.configure_item("side_win", show=self.ui)
+        # The captions, the readout and the key hints are UI too - a clean
+        # picture means nothing left over the top of it.
+        for tag in ("net_cap", "cube_cap", "stat_txt", "hint1", "hint2"):
+            dpg.configure_item(tag, show=self.ui)
 
         # The net is upscaled by a WHOLE number so the LED grid stays hard;
         # bilinear scaling of a 48-pixel image looks like a photograph of a cube
         # rather than a cube.
         self.net_scale = max(1, side // self.eng.cols)
+        # The cube render is capped whatever the pane size, and the image is
+        # scaled up to fill. Measured, the renderer costs 28 ms a frame at 620
+        # and 64 ms at 900 - it is quadratic in the size, and it is already the
+        # single most expensive thing the app does. Rendering a fullscreen cube
+        # at its true size would take the whole app from 35 fps to 15, so
+        # fullscreen makes the picture BIGGER, not sharper. Raising this is not
+        # a free win; measure before touching it.
         self.cube_px = min(CUBE_MAX, side)
         self.view_side = side
 
         for tag in ("net_win", "cube_win"):
             dpg.configure_item(tag, width=side + 22, height=pane_h + 34)
         dpg.configure_item("side_win", height=pane_h + 34)
-        self.remake_net_texture()
-        self.remake_cube_texture()
+        # Only the visible views get textures. A hidden one would otherwise
+        # allocate at full pane size and never be written to - 7.7 MB of
+        # float32 for a net nobody is looking at. Switching back runs this
+        # again, so the texture is there by the time anything draws into it.
+        if self.layout in ("both", "net"):
+            self.remake_net_texture()
+        if self.layout in ("both", "cube"):
+            self.remake_cube_texture()
 
     def remake_net_texture(self):
         w = self.eng.cols * self.net_scale
@@ -348,10 +379,39 @@ class App:
         self.dist = max(1.9, min(14.0, self.dist * np.exp(-app_data * 0.06)))
 
     def on_key(self, sender, app_data):
+        # Presentation keys sit under the left hand so the right stays on the
+        # mouse for rotating the cube: Q and E either side of W, which is the
+        # pair together.
+        # Not while a value is being typed. The handler is global, so without
+        # this, typing into a box would also be driving the layout.
+        if any(dpg.does_item_exist(t) and dpg.is_item_active(t) for t in self._inputs):
+            return
         if app_data == dpg.mvKey_F11:
             dpg.toggle_viewport_fullscreen()
         elif app_data == dpg.mvKey_Spacebar:
             self.playing = not self.playing
+        elif app_data == dpg.mvKey_Q:
+            self.set_layout("net")
+        elif app_data == dpg.mvKey_E:
+            self.set_layout("cube")
+        elif app_data == dpg.mvKey_W:
+            self.set_layout("both")
+        elif app_data == dpg.mvKey_H:
+            self.ui = not self.ui
+            self.relayout()
+
+    def set_layout(self, which):
+        """Switch which view fills the frame.
+
+        Pressing the key for the layout already showing hides the UI instead of
+        doing nothing, so one key gets from the working layout to a clean
+        picture of it. H still toggles the UI from anywhere, including back.
+        """
+        if which == self.layout and self.ui:
+            self.ui = False
+        else:
+            self.layout = which
+        self.relayout()
 
     # --- the loop ------------------------------------------------------------
     def step_sim(self):
@@ -407,10 +467,10 @@ def build(app):
     with dpg.window(tag="root"):
         with dpg.group(horizontal=True):
             with dpg.child_window(tag="net_win", width=420, height=470):
-                dpg.add_text("Unfolded net", color=(139, 147, 163))
+                dpg.add_text("Unfolded net", tag="net_cap", color=(139, 147, 163))
             with dpg.child_window(tag="cube_win", width=420, height=470):
                 dpg.add_text("Cube - drag to rotate, wheel to zoom",
-                             color=(139, 147, 163))
+                             tag="cube_cap", color=(139, 147, 163))
             with dpg.child_window(tag="side_win", width=SIDE_W - 10, height=470):
                 dpg.add_combo(app.eng.names, label="effect",
                               default_value=app.eng.names[0], width=200,
@@ -474,7 +534,10 @@ def build(app):
                 dpg.add_progress_bar(tag="lvl_bar", default_value=0.0, width=280)
                 dpg.add_text("", tag="live_msg", wrap=300)
         dpg.add_text("", tag="stat_txt")
-        dpg.add_text("space = play/pause    F11 = fullscreen", color=(130, 140, 155))
+        dpg.add_text("Q net    E cube    W both    H hide UI", tag="hint1",
+                     color=(130, 140, 155))
+        dpg.add_text("space = play/pause    F11 = fullscreen window", tag="hint2",
+                     color=(130, 140, 155))
 
     apply_theme()
     app.rebuild_params()
