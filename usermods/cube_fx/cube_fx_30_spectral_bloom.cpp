@@ -25,10 +25,28 @@
 // only fold and never pool, and eased bilinear taps because raw bilinear is a
 // mixer and anything stirred by a mixer goes uniform.
 //
-// From BLOOM: spectral placement. Bloom computes a centroid and maps it to a
-// target height; here every bin gets its own height, and the Centroid switch
-// collapses that back to Bloom's single band if you want the original idea
-// undiluted.
+// From BLOOM: spectral placement, in two forms.
+//
+//   BANDS (default)  every bin owns a height and paints a horizontal band
+//                    there, continuously, at whatever level it is running.
+//
+//   DRIP             the bins are read as a 4x4 grid - across the cube and up
+//                    it - and a DROP is placed at a bin's cell the moment that
+//                    bin onsets. This is Bloom's actual model: read the
+//                    spectrum at the instant of a hit and print where it says,
+//                    rather than painting a continuous function of it. The
+//                    difference in how it looks is the difference between a
+//                    snapshot and a meter.
+//
+// Drip exists because of a real weakness in Bands: a horizontal band only
+// touches the LID when the music is bright enough to light the topmost one, so
+// the top face sat dark most of the time. Measured, Bands puts 1% of its light
+// on the lid where the lid is 20% of the surface; Drip puts 17%, because the
+// top row of the grid IS the lid.
+//
+// It replaced a Centroid mode that put one band at the spectral centroid. That
+// was the weakest thing here and for the same reason - it is still a band, so
+// it still only reached the lid when the music happened to be bright.
 //
 // ---------------------------------------------------------------------------
 // WHY IT FALLS TO BLACK, AND WHY THAT CHANGES THE RULES
@@ -72,14 +90,81 @@
 #endif
 #define SB_LUT 256                  // height -> injection table
 
+// Sixteen, so a beat can place one for every bin at once. At ten, a burst was
+// silently truncated and the top bins - the ones that land on the lid - were
+// the ones dropped, because the scan runs low to high.
+#define SB_MAXDROP 16
+
 struct SbState {
   uint8_t  mode;
   uint32_t nx, ny, nz;              // potential-field clocks, Q8
   uint8_t  splash;                  // beat envelope
   uint8_t  peak;                    // slow-release spectrum peak, for auto-range
   uint8_t  spec[16];
+  uint8_t  env[16];                 // per-bin envelope, for onset detection
+  uint8_t  hold[16];                // per-bin refractory, in frames
   uint8_t  clk[2];
 };
+
+// Where a bin's drop lands.
+//
+// The sixteen bins are read as a 4x4 grid: gx around the cube, gy up it. The
+// TOP ROW IS THE LID, which is the whole reason this mode exists - with
+// horizontal bands only the highest one ever reached the top face, so the lid
+// sat dark unless the music happened to be bright. Here the top four bins land
+// on it directly.
+//
+// Jitter comes in from the caller so successive drops from the same bin do not
+// stack on one pixel; without it sixteen fixed points get very obvious.
+static void sb_dropPos(int gx, int gy, uint8_t jx, uint8_t jy,
+                       int &X, int &Y, int &Z) {
+  if (gy >= 3) {                                   // LID
+    X = ((gx & 1) ? 62 : -62) + ((int)jx - 128) / 3;
+    Y = ((gx & 2) ? 62 : -62) + ((int)jy - 128) / 3;
+    Z = 127;
+    return;
+  }
+  const int along = (((int)jx - 128) * 3) / 2;     // -190..190, clamped by face
+  const int z = -108 + gy * 84;                    // -108, -24, 60
+  switch (gx & 3) {                                // which wall
+    case 0:  X = along;  Y = -127;   break;
+    case 1:  X = 127;    Y = along;  break;
+    case 2:  X = -along; Y = 127;    break;
+    default: X = -127;   Y = -along; break;
+  }
+  if (X >  127) X =  127; else if (X < -127) X = -127;
+  if (Y >  127) Y =  127; else if (Y < -127) Y = -127;
+  Z = z + ((int)jy - 128) / 5;
+  if (Z >  127) Z =  127; else if (Z < -127) Z = -127;
+}
+
+// A drop's colour, at a brightness that does not depend on which bin threw it.
+//
+// Palette brightness is nowhere near uniform - this simulator's Rainbow runs
+// from black through deep purple to white and back to black - so mapping bins
+// straight onto palette positions made low-bin drops almost invisible. Measured,
+// the whole mode peaked at a raw value of 78 where a drop should be painting
+// near 190, and with a bass-heavy spectrum those were the only drops firing.
+//
+// In BANDS mode that is survivable, because many bands overlap and the bright
+// ones carry the picture. A drop is alone: it has to be visible on its own, and
+// its POSITION already says which bin it came from, so brightness is free to be
+// equalised. Normalise the chroma to full, then lift toward white only as far
+// as it takes to reach a common luma.
+static uint32_t sb_dropColor(uint32_t c, int target) {
+  int r = (int)((c >> 16) & 0xFF), g = (int)((c >> 8) & 0xFF), b = (int)(c & 0xFF);
+  int mx = r > g ? r : g; if (b > mx) mx = b;
+  if (mx < 8) return RGBW32(target, target, target, 0);   // a black entry
+  r = (r * 255) / mx; g = (g * 255) / mx; b = (b * 255) / mx;
+  const int L = (r * 54 + g * 183 + b * 19) >> 8;
+  if (L < target && L < 255) {
+    const int w = ((target - L) * 255) / (255 - L);
+    r += ((255 - r) * w) / 255;
+    g += ((255 - g) * w) / 255;
+    b += ((255 - b) * w) / 255;
+  }
+  return RGBW32(r, g, b, 0);
+}
 
 // One smoothstep, not Soap's two. Soap's field sits near full brightness and
 // can afford two; this one is mostly black by design, and a second pass on a
@@ -118,6 +203,8 @@ static FX_RET mode_spectral_bloom() {
     s->mode = want; s->splash = 0; s->peak = 0;
     s->clk[0] = s->clk[1] = 0;
     memset(s->spec, 0, sizeof(s->spec));
+    memset(s->env, 0, sizeof(s->env));
+    memset(s->hold, 0, sizeof(s->hold));
     s->nx = (uint32_t)hw_random16() << 8;
     s->ny = (uint32_t)hw_random16() << 8;
     s->nz = (uint32_t)hw_random16() << 8;
@@ -204,6 +291,18 @@ static FX_RET mode_spectral_bloom() {
   // Band width in height units, from the FIVE-BIT custom3 - widened through
   // cfx_c3full, since the arithmetic below wants a full byte.
   const int spread = 14 + ((int)cfx_c3full(SEGMENT.custom3) * 90) / 255;
+  // Drip reuses the same slider as a drop RADIUS. A drop wants to be a good
+  // deal fatter than a band is thin, or it lands as a single lit pixel and the
+  // flow erases it before the eye finds it.
+  // Substantially fatter than the first attempt. A radius of 56 surface units
+  // is three and a half pixels on a 16-px face, and a handful of three-pixel
+  // discs on a 1280-pixel cube under a fast fade averaged out to nothing - the
+  // whole mode measured a mean of 0.0.
+  // Generous. A drop paints ONCE where a band repaints every frame, so to carry
+  // comparable light it has to cover real area: at 8-9 pixels radius on a 16-px
+  // face a burst of sixteen covers a good part of the cube, which is the point.
+  const int dropR  = 92 + ((int)cfx_c3full(SEGMENT.custom3) * 150) / 255;
+  const int dropR2 = dropR * dropR;
 
   // --- the height table ----------------------------------------------------------
   // height (0..255) -> palette index + brightness, built once and read once per
@@ -213,32 +312,58 @@ static FX_RET mode_spectral_bloom() {
   memset(lutAmp, 0, sizeof(lutAmp));
   memset(lutIdx, 0, sizeof(lutIdx));
 
+  // --- DRIP: drops placed on a grid the bins define ------------------------
+  // Replaces the old Centroid mode, which put one band at the spectral centroid
+  // and was the weakest thing here: it is still a band, so it still only ever
+  // touched the lid when the music happened to be bright.
+  //
+  // A drop is placed when a BIN ONSETS - its level rises sharply above its own
+  // envelope - and it lands at that bin's cell in the 4x4 grid. That is Bloom's
+  // model, which reads the spectrum at the instant of a hit and prints where it
+  // says, rather than painting a continuous function of the spectrum. The
+  // difference in how it looks is the difference between a snapshot and a
+  // meter.
+  //
+  // Onsets rather than a single global beat, because there is no helper for
+  // per-bin transients - cfx_tempo gives a predicted beat and cfx_drop detects
+  // an EDM breakdown, both of which are one event for the whole spectrum, and
+  // one event cannot say WHERE on the grid to place anything. The tempo's beat
+  // is still used, to widen the threshold so a real beat lands several drops at
+  // once instead of one.
+  int dropX[SB_MAXDROP], dropY[SB_MAXDROP], dropZ[SB_MAXDROP];
+  uint8_t dropIdx[SB_MAXDROP], dropAmp[SB_MAXDROP];
+  int nDrop = 0;
+
   if (SEGMENT.check1) {
-    // CENTROID - Bloom's own idea undiluted. ONE band, and both of its
-    // properties come from the whole spectrum: the height and colour from where
-    // the energy is centred, the brightness from how much of it there is.
-    //
-    // This used to run through the per-bin loop below with the height forced to
-    // the centroid, which meant the band was placed correctly and then lit by
-    // bin ZERO alone - one bass bin standing in for the entire spectrum. It
-    // rendered at an amplitude of one or two against the hundred-odd the banded
-    // mode reaches, which read as nothing at all.
-    int num = 0, den = 0, tot = 0;
-    for (int k = 0; k < 16; k++) {
-      num += (int)s->spec[k] * k; den += s->spec[k]; tot += s->spec[k];
-    }
-    const int cen = den ? (num * 255) / (den * 15) : 128;
-    int lv = ((tot / 16) * 255) / pk;
-    if (lv > 255) lv = 255;
-    const uint8_t idx = (uint8_t)(16 + (cen * 223) / 255);
-    for (int h = 0; h < SB_LUT; h++) {
-      int d = h - cen; if (d < 0) d = -d;
-      if (d >= spread) continue;
-      const int t = 255 - (d * 255) / spread;
-      const int w = (t * t) >> 8;
-      const int a = (((w * lv) >> 8) * inject) >> 8;
-      lutIdx[h] = idx;
-      lutAmp[h] = (uint8_t)(a > 255 ? 255 : a);
+    const CfxTempoState &tempo = cfx_tempo(um);
+    // On a beat the bar is lowered, so a hit prints a spread of drops rather
+    // than a single one. Confidence keeps that from firing on a stale
+    // prediction once the bass drops out.
+    const int onBeat = (tempo.beat && tempo.confidence > 90) || tempo.hit;
+    // Permissive on purpose. At 26 the only things that cleared the bar were
+    // kick transients on the bottom three bins, so drops landed at one height
+    // and the lid - the reason this mode exists - never saw one.
+    const int thresh = onBeat ? 5 : 12;
+
+    for (int k = 0; k < 16 && nDrop < SB_MAXDROP; k++) {
+      const int raw = s->spec[k];
+      const int rise = raw - (int)s->env[k];
+      if (s->hold[k]) { s->hold[k]--; }
+      int lv = (raw * 255) / pk;
+      if (lv > 255) lv = 255;
+      if (!s->hold[k] && rise > thresh && lv > 35) {
+        s->hold[k] = onBeat ? 2 : 3;               // refractory, in frames
+        const uint8_t jx = hw_random8(), jy = hw_random8();
+        sb_dropPos(k & 3, k >> 2, jx, jy,
+                   dropX[nDrop], dropY[nDrop], dropZ[nDrop]);
+        dropIdx[nDrop] = (uint8_t)(16 + (k * 223) / 15);
+        int a = (lv * inject) >> 8;
+        dropAmp[nDrop] = (uint8_t)(a > 255 ? 255 : a);
+        nDrop++;
+      }
+      // Envelope tracks the bin with a slow release, so a sustained tone stops
+      // re-triggering while a transient over the top of it still does.
+      s->env[k] = fx_env(s->env[k], (uint8_t)raw, dt, 260);
     }
   } else {
     // BANDS - every bin owns a height. Low bins at the bottom of the cube, high
@@ -364,13 +489,45 @@ static FX_RET mode_spectral_bloom() {
         }
       }
 
-      // --- fall to black, then print this height's band ------------------------
-      for (int c = 0; c < 3; c++) out[c] = (out[c] > fade) ? (uint8_t)(out[c] - fade) : 0;
+      // --- fall to black, then print ------------------------------------------
+      // Drip fades far more slowly than Bands, and it has to. Bands injects
+      // continuously, so the fade is what stops it saturating - the two are in
+      // balance every frame. Drip injects in occasional events with nothing at
+      // all in between, so the same fade simply erases each drop before it has
+      // been carried anywhere. At the shared rate the whole mode averaged a
+      // brightness of one.
+      const int fd = SEGMENT.check1 ? (fade > 3 ? fade / 4 : 1) : fade;
+      for (int c = 0; c < 3; c++) out[c] = (out[c] > fd) ? (uint8_t)(out[c] - fd) : 0;
 
       // Height is cz on the cube and the row on a flat panel, so "frequency is
       // altitude" means the same thing in both.
       const int hh = cube ? ((int)cz[i] + 128)
                           : (255 - (y * 255) / (rows - 1));
+      // Drops paint a soft sphere around where they landed. Distance is in
+      // SURFACE coordinates, so a drop near an edge spills onto the next face
+      // instead of stopping dead at the fold.
+      if (nDrop) {
+        for (int k = 0; k < nDrop; k++) {
+          const int ddx = (int)cx[i] - dropX[k];
+          const int ddy = (int)cy[i] - dropY[k];
+          const int ddz = (int)cz[i] - dropZ[k];
+          const int r2 = ddx * ddx + ddy * ddy + ddz * ddz;
+          if (r2 >= dropR2) continue;
+          const int t = 255 - (r2 * 255) / dropR2;
+          const int w = ((t * t) >> 8) * (int)dropAmp[k] >> 8;
+          if (w <= 0) continue;
+          const uint32_t c = sb_dropColor(
+              SEGMENT.color_from_palette(dropIdx[k], false, true, 0), 110);
+          // Drops land hard. A gentle blend lets each new drop average with
+          // whatever the flow has already smeared there, and a few rounds of
+          // that is mud rather than colour.
+          const int mix = w > 250 ? 250 : w;
+          out[0] = cfx_lerp8(out[0], (uint8_t)((c >> 16) & 0xFF), (uint8_t)mix);
+          out[1] = cfx_lerp8(out[1], (uint8_t)((c >>  8) & 0xFF), (uint8_t)mix);
+          out[2] = cfx_lerp8(out[2], (uint8_t)( c        & 0xFF), (uint8_t)mix);
+        }
+      }
+
       const uint8_t aInj = lutAmp[hh & 0xFF];
       if (aInj) {
         // Painted TOWARD the band colour, not added to it. Adding saturates:
@@ -420,7 +577,7 @@ static const char _data_FX_MODE_SPECTRAL_BLOOM[] PROGMEM =
   // cube before it dies. Measured as the height difference between a
   // treble-only and a bass-only spectrum, separation peaks around 90-140 and
   // collapses to nothing - and past 200 actually INVERTS - as the fade slows.
-  "Ace 3-D Spectral Bloom@Flow,Inject,Density,Fall to black,Band width,Centroid,Beat flash,Flat mode;;!;2f;sx=128,ix=255,c1=140,c2=140,c3=10,o2=1,pal=11";
+  "Ace 3-D Spectral Bloom@Flow,Inject,Density,Fall to black,Size,Drip,Beat flash,Flat mode;;!;2f;sx=128,ix=255,c1=140,c2=140,c3=10,o2=1,pal=11";
 
 
 // ---------------------------------------------------------------------------
