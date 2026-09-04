@@ -99,6 +99,8 @@ class App:
         self.beat_flash = 0
         self.layout = "both"
         self._bufs = {}
+        self._dragging = False
+        self._yaw0, self._pitch0 = self.yaw, self.pitch
         self.eng.select(0)
 
     # --- textures ------------------------------------------------------------
@@ -287,17 +289,38 @@ class App:
         self._bufs.pop("cube", None)
 
     # --- interaction ---------------------------------------------------------
-    def on_drag(self, sender, app_data):
-        if not dpg.is_item_hovered("cube_img"):
-            return
-        # Halved from 0.01. At the old rate a small hand movement spun the cube
-        # most of a turn, which made it hard to settle on a face.
-        _, dx, dy = app_data
-        self.yaw = self._yaw0 + dx * 0.005
-        self.pitch = max(-1.45, min(1.45, self._pitch0 + dy * 0.005))
+    # --- grab and turn --------------------------------------------------------
+    # The angle at the start of a drag is captured ONCE, on the press, and every
+    # later position is that angle plus the total drag delta. That is what makes
+    # it feel like holding the object: let go of the mouse without moving and
+    # the cube does not drift.
+    #
+    # It used to capture on mvMouseDownHandler, which fires every frame the
+    # button is held rather than once when it goes down. So the "starting" angle
+    # was re-taken continuously and the drag delta was added to it again each
+    # frame - the cube span at a rate proportional to how far the pointer had
+    # moved from where the drag began. A spin control, not a grab, exactly as it
+    # felt.
+    def on_mouse_click(self, sender, app_data):
+        if dpg.is_item_hovered("cube_img"):
+            self._dragging = True
+            self._yaw0, self._pitch0 = self.yaw, self.pitch
 
-    def on_mouse_down(self, sender, app_data):
-        self._yaw0, self._pitch0 = self.yaw, self.pitch
+    def on_mouse_release(self, sender, app_data):
+        self._dragging = False
+
+    def on_drag(self, sender, app_data):
+        # Keyed to whether the drag STARTED on the cube, not to what is under
+        # the pointer now, so running off the edge mid-turn does not drop it.
+        if not self._dragging:
+            return
+        _, dx, dy = app_data
+        # Scaled to the view, so dragging the full width is half a turn whatever
+        # size the window is. A fixed radians-per-pixel means the same hand
+        # movement does something different after you resize.
+        k = 3.14159265 / max(120, self.view_side)
+        self.yaw = self._yaw0 + dx * k
+        self.pitch = max(-1.45, min(1.45, self._pitch0 + dy * k))
 
     def on_wheel(self, sender, app_data):
         if not dpg.is_item_hovered("cube_img"):
@@ -355,7 +378,10 @@ def build(app):
 
     with dpg.handler_registry():
         dpg.add_mouse_drag_handler(button=dpg.mvMouseButton_Left, callback=app.on_drag)
-        dpg.add_mouse_down_handler(button=dpg.mvMouseButton_Left, callback=app.on_mouse_down)
+        # click = once on press; down = every frame while held. The
+        # difference is the whole bug this replaced.
+        dpg.add_mouse_click_handler(button=dpg.mvMouseButton_Left, callback=app.on_mouse_click)
+        dpg.add_mouse_release_handler(button=dpg.mvMouseButton_Left, callback=app.on_mouse_release)
         dpg.add_mouse_wheel_handler(callback=app.on_wheel)
         dpg.add_key_press_handler(callback=app.on_key)
 
