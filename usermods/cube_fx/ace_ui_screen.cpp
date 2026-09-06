@@ -153,7 +153,30 @@
   #define AUI_LEGACY_PINMGR 0
 #endif
 
-enum : uint8_t { AUI_BUS_WIRE = 0, AUI_BUS_WIRE1 = 1, AUI_BUS_SPI = 2 };
+// The panel test modes live outside usermods/ and are not compiled unless
+// asked for: build with -D AUI_SCREEN_DEBUG=1. See tools/screen_debug/.
+// Everything they touch collapses to nothing when they are off.
+#ifndef AUI_SCREEN_DEBUG
+  #define AUI_SCREEN_DEBUG 0
+#endif
+#if AUI_SCREEN_DEBUG
+  #include "../../tools/screen_debug/ace_ui_screen_debug.h"
+#else
+  #define AUI_DBG_FIELDS
+  #define AUI_DBG_LOOP(now)      do { } while (0)
+  #define AUI_DBG_FULL_FLUSH()   do { } while (0)
+  #define AUI_DBG_DRAW(W)        false
+  #define AUI_DBG_REDRAW(now)
+  #define AUI_DBG_SAVE(top)
+  #define AUI_DBG_LOAD(top)
+  #define AUI_DBG_UI(info)
+#endif
+
+enum : uint8_t { AUI_BUS_WIRE = 0, AUI_BUS_WIRE1 = 1, AUI_BUS_SPI = 2,
+                 AUI_BUS_SWSPI = 3 };
+// Both SPI flavours share every property that matters here: no ACK, so no way
+// to detect a panel, and a single-shot init that has to be retried blind.
+static inline bool auiIsSpi(int b) { return b == AUI_BUS_SPI || b == AUI_BUS_SWSPI; }
 enum : uint8_t { AUI_VU_OFF = 0, AUI_VU_ON = 1, AUI_VU_AUTO = 2 };
 
 // How the dedicated VU screen draws its sixteen bands. Blocks is not just a
@@ -169,6 +192,29 @@ enum : uint8_t { AUI_VUS_BARS = 0, AUI_VUS_MIRROR = 1, AUI_VUS_BLOCKS = 2 };
 #define AUI_VCOMH_LOW   0x00
 #define AUI_VCOMH_MID   0x20
 #define AUI_VCOMH_HIGH  0x30
+
+// ---------------------------------------------------------------------------
+// Counting what we actually drive
+// ---------------------------------------------------------------------------
+// Every theory about this panel has come down to the same unanswerable
+// question: is the software toggling DC and CS, or not? Reading an output pin
+// back does not answer it, and a meter cannot see a line that is right most of
+// the time. u8g2 routes every pin change through one callback, so sitting in
+// front of it and counting is exact, costs an increment, and settles the
+// question for good.
+//
+// If these numbers climb with the frame rate, this code is doing its job and
+// anything still wrong is on the far side of the connector. If DC sits at zero
+// while data is being sent, it is not.
+static volatile uint32_t auiDcN = 0, auiCsN = 0, auiRstN = 0;
+
+extern "C" uint8_t aui_gpio_count(u8x8_t *u8x8, uint8_t msg,
+                                  uint8_t arg_int, void *arg_ptr) {
+  if      (msg == U8X8_MSG_GPIO_DC)    auiDcN++;
+  else if (msg == U8X8_MSG_GPIO_CS)    auiCsN++;
+  else if (msg == U8X8_MSG_GPIO_RESET) auiRstN++;
+  return u8x8_gpio_and_delay_arduino(u8x8, msg, arg_int, arg_ptr);
+}
 
 static bool auiAllocPin(int8_t p) {
   if (p < 0) return true;
@@ -243,10 +289,15 @@ static uint8_t aui_byte_wire1(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *
 // base, so one pointer covers every combination. Constructed in setup() rather
 // than statically because the pins are runtime config.
 static U8G2 *auiMake(uint8_t panel, uint8_t bus, const u8g2_cb_t *rot,
-                     int8_t sda, int8_t scl, int8_t cs, int8_t dc, int8_t rst) {
+                     int8_t sda, int8_t scl, int8_t cs, int8_t dc, int8_t rst,
+                     int8_t sck, int8_t mosi) {
   #define AUI_PANEL(N, T)                                                        \
     case N:                                                                      \
       switch (bus) {                                                             \
+        case AUI_BUS_SWSPI:                                      \
+          return new U8G2_##T##_F_4W_SW_SPI(rot, (uint8_t)sck, (uint8_t)mosi,    \
+                                            (uint8_t)cs, (uint8_t)dc,            \
+                                            rst < 0 ? U8X8_PIN_NONE : (uint8_t)rst); \
         case AUI_BUS_SPI:                                                        \
           return new U8G2_##T##_F_4W_HW_SPI(rot, (uint8_t)cs, (uint8_t)dc,       \
                                             rst < 0 ? U8X8_PIN_NONE : (uint8_t)rst); \
@@ -254,9 +305,40 @@ static U8G2 *auiMake(uint8_t panel, uint8_t bus, const u8g2_cb_t *rot,
           return new U8G2_##T##_F_HW_I2C(rot, U8X8_PIN_NONE,                     \
                                          (uint8_t)scl, (uint8_t)sda);            \
       }
+  // WINSTAR, not NONAME, for the SH1106 - and this is not a preference.
+  //
+  // u8g2's sh1106_128x64_NONAME driver sends u8x8_d_ssd1306_128x64_noname_init_seq
+  // - the SSD1306 sequence, verbatim. Its own comment on the line that matters
+  // says so:
+  //
+  //     U8X8_CA(0x08d, 0x014),  charge pump setting (p62): 0x014 enable,
+  //                             SSD1306 only, should be removed for SH1106
+  //
+  // 0x8D is an SSD1306 command. An SH1106 does not have it, and uses 0xAD 0x8B
+  // for its DC-DC converter instead. So selecting "SH1106" left the panel's
+  // boost supply switched OFF: every command arrived, every byte of pixel data
+  // landed in GDDRAM exactly where it was aimed, and there was no high voltage
+  // to light any of it. A blank screen that is working perfectly.
+  //
+  // That is also why choosing between panel 0 and panel 1 never changed
+  // anything - both were sending the same init. They differ only in the
+  // two-column offset.
+  //
+  // The WINSTAR variant carries a real SH1106 sequence, including:
+  //
+  //     U8X8_CA(0xad, 0x8b)   DC-DC ON, built-in converter
+  //     U8X8_C(0x32)          pump voltage 8.0 V
+  //
+  // and shares the same display_info, so geometry and column offset are
+  // unchanged. It only fixes the power-up.
+  //
+  // The symptom this cost: the panel would light only after being fed garbage
+  // by a deliberately mis-wired boot, because random bytes eventually stumbled
+  // onto 0xAD 0x8B and switched the converter on by accident. Every reset put
+  // it back, which looked exactly like a reset that was not working.
   switch (panel) {
     AUI_PANEL(0, SSD1306_128X64_NONAME)
-    AUI_PANEL(1, SH1106_128X64_NONAME)
+    AUI_PANEL(1, SH1106_128X64_WINSTAR)
     AUI_PANEL(2, SSD1309_128X64_NONAME0)
     AUI_PANEL(3, SSD1306_128X32_UNIVISION)
   }
@@ -277,7 +359,14 @@ class AceUiScreenUsermod : public Usermod {
   int  briDim   = 35;         // % contrast once it has been left alone
   int  dimSec   = 10;         // idle seconds before dimming
   int  sleepSec = 30;         // idle seconds before blanking. 0 = never
-  bool deepDim  = true;       // step Vcomh with contrast. see the header note
+  // OFF by default. On some glass, Vcomh 0x00 is not a dim panel - it is a
+  // BLANK one, indistinguishable from dead hardware, and it comes on ten
+  // seconds after boot when the dim timer fires. That cost an entire debugging
+  // session on this cube: the panel was initialising correctly, drawing
+  // correctly and sending correctly, and switching itself invisible while we
+  // measured everything else. The gamma on its own gives most of the range;
+  // turn this back on only after checking the panel survives it.
+  bool deepDim  = false;      // step Vcomh with contrast. see the header note
   int  vuMode   = AUI_VU_AUTO;   // governs the BAND on Now Playing only
   int  vuStyle  = AUI_VUS_BARS;  // the dedicated VU screen's look
   int  vuHz     = 30;            // meter refresh rate, both band and screen
@@ -289,8 +378,54 @@ class AceUiScreenUsermod : public Usermod {
   int  maxPages = 3;
   bool scroll   = true;
   int  spiCs = -1, spiDc = -1, spiRst = -1;
+  // Software SPI's OWN clock and data pins. The whole point of that mode is
+  // that nothing outside this file decides them: HW SPI takes SCLK and MOSI
+  // from WLED's global bus in LED Preferences, which is configured elsewhere,
+  // begun elsewhere, and shared with anything else that wants it.
+  int  swSck = -1, swMosi = -1;
+  // Seconds between full repaints. See the note on resync() for why a
+  // diff-based panel needs one at all. 0 disables it.
+  int  resyncSec = 20;
+  // Seconds between FULL re-inits - reset pulse, init sequence, clear. 0 means
+  // only the four attempts made in the first eight seconds after boot.
+  //
+  // This exists because turning the panel on and being able to write to it are
+  // observably two different events on this hardware, and the gap between them
+  // is not bounded by anything we can see. A panel that missed its init is dark
+  // forever, and on a bus with no ACK there is no way to notice. Re-initialising
+  // one that is already working costs a reset pulse and a repaint.
+  int  reinitSec = 0;
+  // --- how the panel is brought up, all of it optional ---------------------
+  //
+  // Every step here earned its place on real hardware, and every one of them
+  // can be wrong for the next panel, so none of them is hardcoded.
+  //
+  // initTries is EXTRA attempts after the one at setup(), and it defaults to
+  // none. Each attempt begins by pulling RES low, so a retry visibly blanks a
+  // panel that was already working - which is what "lights up immediately,
+  // then goes dark" was. Raise it only for a panel that does not come up on
+  // the first attempt, and expect the flicker while it settles.
+  int  initTries = 0;
+  bool hardRst   = true;   // long reset with CS parked, before u8g2 speaks
+  bool nopFlush  = true;   // 16x 0xE3 to land on a command boundary
+  bool ownInit   = true;   // send our own register set after u8g2's begin()
   int  w1Sda = 23, w1Scl = 22;      // Wire1's OWN pins, not the shared pair
   int  w1Hz  = 400000;
+  // SPI clock. This used to be pinned at 400 kHz because the branch that sets
+  // it was written for the SHARED I2C bus, where 400 kHz is the MPU6050's
+  // ceiling, and SPI fell into the same else. Nothing about SPI wanted it.
+  //
+  // The cost was real: one 128-byte page measured 2805 us on this panel, and a
+  // full 1024-byte refresh 20.5 ms - half a frame at 43 fps. That is why the
+  // byte budget had to be so mean and why the VU screen starved. At 4 MHz a
+  // page is about 130 us and a full refresh 1 ms, which changes what the whole
+  // design can afford.
+  //
+  // SPI is push-pull, not open-drain, so it tolerates jumper wire far better
+  // than I2C does; 4 MHz over short leads is unremarkable and these panels are
+  // specified well above it. Lower it if a long or untidy loom starts dropping
+  // bytes - corruption here looks like torn or shifted rows, not a dead panel.
+  int  spiHz = 4000000;
 
   // --- runtime --------------------------------------------------------------
   U8G2    *g = nullptr;
@@ -298,6 +433,17 @@ class AceUiScreenUsermod : public Usermod {
   uint8_t  tw = 0, th = 0;      // tiles across, tile rows down
   uint16_t rowBytes = 0;
   uint32_t dirtyMask = 0;       // bit per tile row
+  // Why a flush did not happen, which is the one question the stats could not
+  // answer. "0 pages/s" is produced identically by "nothing was drawn" and by
+  // "something was drawn and the bus was never free", and those have opposite
+  // fixes. These two counters separate them.
+  AUI_DBG_FIELDS
+
+  uint32_t blockedN = 0;        // wanted to flush, strip was mid-transmission
+  uint32_t drawnN   = 0;        // diff() found at least one changed row
+  uint32_t flushEver = 0;       // flushes since boot. flushN is a per-second
+                                // counter and resets, so it cannot answer
+                                // "has this panel EVER been sent anything"
   int8_t   hotRow = -1, vuRow = -1;
   int      hdrPx = 16;          // resolved header height for this panel
 
@@ -321,6 +467,11 @@ class AceUiScreenUsermod : public Usermod {
   int      shownPct    = -1;      // what the Info page reports
 
   bool     blanked = false, ready = false, initDone = false;
+  uint8_t  spiInits = 0;        // extra init attempts made on SPI
+  uint32_t lastInitMs = 0;
+  uint32_t lastResyncMs = 0;
+  int      failPin = -1;        // the pin that could not be claimed
+  bool     needPins = false;    // bus selected but its pins are unset
   bool     dimmed  = false;
   bool     pinFail = false, clash = false;
   bool     spiNoBus = false;   // SPI selected but WLED's SCLK/MOSI are unset
@@ -616,6 +767,17 @@ class AceUiScreenUsermod : public Usermod {
         else if (vuCap[i]) vuCap[i]--;                 // then 1 px per frame
       } else vuCap[i] = 0;
 
+      // Every style draws a FLOOR when its bar is at zero. MIRROR always had
+      // its idle centre line; BARS and BLOCKS drew nothing at all, and on a
+      // silent input that made the whole screen genuinely empty.
+      //
+      // That is worse than it sounds, because the flush is a diff against a
+      // shadow buffer that starts zeroed. An all-black frame is byte-identical
+      // to the shadow, so it is never marked dirty and never transmitted - the
+      // panel is not merely blank, it is never spoken to at all. Booting
+      // straight onto the VU screen in a quiet room therefore looked exactly
+      // like dead hardware, and cost a long evening of wiring checks. A meter
+      // at rest has to look like a meter at rest.
       switch (vuStyle) {
         case AUI_VUS_MIRROR: {
           const int lim = hgt / 2;
@@ -639,6 +801,7 @@ class AceUiScreenUsermod : public Usermod {
           const int lit = nSeg ? (vuBar[i] * nSeg) / 255 : 0;
           for (int k = 0; k < lit; k++)
             g->drawBox(x, top + hgt - (k + 1) * 4, bw - 1, 3);
+          if (!lit) g->drawHLine(x, top + hgt - 1, bw - 1);   // idle floor
           if (vuPeak && nSeg) {
             const int ck = (vuCap[i] * nSeg) / (hgt ? hgt : 1);
             if (ck > lit && ck <= nSeg)
@@ -649,6 +812,7 @@ class AceUiScreenUsermod : public Usermod {
 
         default:                                       // AUI_VUS_BARS
           if (h) g->drawBox(x, top + hgt - h, bw - 1, h);
+          else   g->drawHLine(x, top + hgt - 1, bw - 1);      // idle floor
           if (vuPeak && vuCap[i] > 0)
             g->drawHLine(x, top + hgt - (int)vuCap[i], bw - 1);
           break;
@@ -663,6 +827,7 @@ class AceUiScreenUsermod : public Usermod {
   // --- the flush ------------------------------------------------------------
   void diff() {
     uint8_t *buf = g->getBufferPtr();
+    AUI_DBG_FULL_FLUSH();
     for (uint8_t r = 0; r < th; r++) {
       if (memcmp(buf + r * rowBytes, shadow + r * rowBytes, rowBytes) != 0)
         dirtyMask |= (1UL << r);
@@ -716,6 +881,7 @@ class AceUiScreenUsermod : public Usermod {
     int budget = (int)st.budgetBytes;
     if (budget < (int)rowBytes) budget = (int)rowBytes;
     uint8_t *buf = g->getBufferPtr();
+
 
     while (budget >= (int)rowBytes) {
       const int8_t r = nextRow();
@@ -835,15 +1001,115 @@ class AceUiScreenUsermod : public Usermod {
   // claims pins and builds the object once, bringUp() is retried from loop()
   // until something actually ACKs at the address.
   bool probe() {
-    if (busSel == AUI_BUS_SPI) return true;
+    if (auiIsSpi(busSel)) return true;
     TwoWire &w = (busSel == AUI_BUS_WIRE1) ? Wire1 : Wire;
     w.beginTransmission((uint8_t)addr);
     return w.endTransmission() == 0;
   }
 
+  // Put the control lines in a defined state and hold a long reset, before
+  // u8g2 says a single word to the panel.
+  //
+  // This is what the wire-swapping ritual was doing by hand. Between power-up
+  // and SPI.begin() the clock and data pins are floating INPUTS - nothing is
+  // driving them, and the panel is watching. Noise on the clock is enough to
+  // shift stray bits into the command interpreter, and a controller left
+  // halfway through a multi-byte command consumes the first byte of our init
+  // as that command's argument. Everything after it is then off by one: the
+  // panel is dark, or lit with nonsense, and RE-RUNNING THE INIT CANNOT HELP,
+  // because every retry is eaten exactly the same way. That is why four retries
+  // changed nothing. Only a reset clears the interpreter.
+  //
+  // So: deassert CS first, so the panel stops listening at all. Park DC in the
+  // command state. Then hold reset low for 20 ms and give it 120 ms to come
+  // back - u8g2's own reset is about 1 ms either side, which is inside the
+  // datasheet and leaves nothing spare for a rail still sagging under 1280
+  // LEDs at boot.
+  void hardReset() {
+    if (spiCs  >= 0) { pinMode(spiCs,  OUTPUT); digitalWrite(spiCs,  HIGH); }
+    if (spiDc  >= 0) { pinMode(spiDc,  OUTPUT); digitalWrite(spiDc,  LOW);  }
+    if (spiRst >= 0) {
+      pinMode(spiRst, OUTPUT);
+      digitalWrite(spiRst, HIGH); delay(5);
+      digitalWrite(spiRst, LOW);  delay(20);
+      digitalWrite(spiRst, HIGH); delay(120);
+    }
+  }
+
+  // Put the command interpreter back on a byte boundary.
+  //
+  // 0xE3 is NOP and takes no argument. If the controller is waiting for the
+  // argument of a command it only half received - from noise on a floating
+  // clock line before SPI.begin(), or from an init sequence that was itself
+  // misaligned - the first NOP is consumed as that missing argument and every
+  // one after it lands as a real command. Sixteen is far more than the longest
+  // command needs.
+  //
+  // This is the piece that was missing, and it explains why nothing else
+  // worked. A sequence that starts one byte out ENDS one byte out, so the next
+  // attempt is swallowed exactly the same way: the misalignment sustains
+  // itself, and retrying the init can never break it. Four retries did nothing.
+  // A proper 20 ms hard reset did nothing. What did work was booting with the
+  // data line miswired, which floods the panel with bytes until one of them
+  // happens to land on a boundary - the whole ritual was a slow, manual version
+  // of this function.
+  void flushCmd() {
+    u8x8_t *u = g->getU8x8();
+    u8x8_cad_StartTransfer(u);
+    for (int i = 0; i < 16; i++) u8x8_cad_SendCmd(u, 0x0E3);   // NOP
+    u8x8_cad_EndTransfer(u);
+  }
+
+  // A complete init, sent by hand, after the interpreter is known aligned.
+  //
+  // u8g2's sequence is correct - the problem is that it is sent BEFORE we can
+  // be sure the controller is on a byte boundary, and one swallowed byte
+  // shifts every argument after it. That is not hypothetical: a panel showing
+  // a two-pixel stripe and nothing else is a multiplex ratio that got the
+  // wrong argument. 0xA8 says "scan N rows"; give it a stray byte and 62 of
+  // the 64 rows stop being scanned, while display-on and contrast still work
+  // perfectly. Which is exactly what the glass was showing.
+  //
+  // So the order is: reset, let u8g2 set up its own state, flush to a boundary
+  // with NOPs, then set every register that matters ourselves. Both
+  // controllers' power commands go out because each ignores the other's.
+  void sendFullInit() {
+    static const uint8_t seq[] = {
+      0x0AE,                 // display off
+      0x0D5, 0x080,          // clock divide / oscillator
+      0x0A8, 0x03F,          // MULTIPLEX RATIO = 64. the one that was wrong
+      0x0D3, 0x000,          // display offset 0
+      0x040,                 // start line 0
+      0x08D, 0x014,          // charge pump on   - SSD1306
+      0x0AD, 0x08B,          // DC-DC on         - SH1106
+      0x032,                 // pump voltage 8.0 V - SH1106
+      0x020, 0x002,          // page addressing mode
+      0x0A1,                 // segment remap
+      0x0C8,                 // COM scan direction, reversed
+      0x0DA, 0x012,          // COM pin config
+      0x081, 0x0CF,          // contrast
+      0x0D9, 0x0F1,          // pre-charge
+      0x0DB, 0x040,          // VCOMH deselect
+      0x0A4,                 // resume from RAM, not all-on
+      0x0A6,                 // normal, not inverted
+      0x0AF                  // display on
+    };
+    u8x8_t *u = g->getU8x8();
+    u8x8_cad_StartTransfer(u);
+    for (unsigned i = 0; i < sizeof(seq); i++) u8x8_cad_SendCmd(u, seq[i]);
+    u8x8_cad_EndTransfer(u);
+  }
+
   bool bringUp() {
     if (!g || !probe()) return false;
+    if (auiIsSpi(busSel) && hardRst) hardReset();
     g->begin();
+    if (auiIsSpi(busSel)) {
+      // The first begin() may have been eaten. Realign, then set the registers
+      // ourselves rather than trusting a second sequence to land.
+      if (nopFlush) flushCmd();
+      if (ownInit)  sendFullInit();
+    }
     forceContrast(briFull);        // begin() reset the panel; the cache is void
     g->setFontMode(1);
     g->clearBuffer();
@@ -866,7 +1132,26 @@ class AceUiScreenUsermod : public Usermod {
   void setup() override {
     if (!enabled) return;
 
-    if (busSel == AUI_BUS_SPI) {
+    if (busSel == AUI_BUS_SWSPI) {
+      // Everything here is ours, including the clock and the data line, so
+      // there is no global bus to be misconfigured, re-begun, or shared. Bit
+      // banging costs nothing we were using: HW SPI is pinned to 400 kHz below
+      // anyway, and one 128-byte page at that rate measured 2.8 ms.
+      if (spiCs < 0 || spiDc < 0 || swSck < 0 || swMosi < 0) { needPins = true; return; }
+      // One at a time, so the Info page can name the pin that lost. "Something
+      // is already using a pin" is not a debuggable statement; "GPIO 12 is
+      // taken" is, and the overwhelmingly likely thief is WLED's own global
+      // SPI bus, which claims SCLK and MOSI at boot under PinOwner::HW_SPI. If
+      // this mode is given the same numbers that are still sitting in LED
+      // Preferences, it cannot have them - and the whole point of this mode is
+      // that those settings should be empty.
+      const int want[5] = { swSck, swMosi, spiCs, spiDc, spiRst };
+      for (int i = 0; i < 5; i++) {
+        if (!auiAllocPin((int8_t)want[i])) {
+          failPin = want[i]; pinFail = true; return;
+        }
+      }
+    } else if (busSel == AUI_BUS_SPI) {
       if (spiCs < 0 || spiDc < 0) return;
 
       // SCLK and MOSI are NOT ours - they belong to WLED's global SPI bus, set
@@ -908,14 +1193,20 @@ class AceUiScreenUsermod : public Usermod {
     const u8g2_cb_t *rot = rot180 ? U8G2_R2 : U8G2_R0;
     g = auiMake((uint8_t)panel, (uint8_t)busSel, rot,
                 (int8_t)i2c_sda, (int8_t)i2c_scl,
-                (int8_t)spiCs, (int8_t)spiDc, (int8_t)spiRst);
+                (int8_t)spiCs, (int8_t)spiDc, (int8_t)spiRst,
+                (int8_t)swSck, (int8_t)swMosi);
     if (!g) return;
 
+    // In front of u8g2's callback, not instead of it - it forwards everything.
+    g->getU8x8()->gpio_and_delay_cb = aui_gpio_count;
     g->setI2CAddress((uint8_t)(addr << 1));
     if (busSel == AUI_BUS_WIRE1) {
       g->getU8x8()->byte_cb = aui_byte_wire1;  // our lane, our clock, our ACK
-    } else {
+    } else if (busSel == AUI_BUS_SPI) {
+      g->setBusClock((uint32_t)(spiHz < 100000 ? 100000 : spiHz));
+    } else if (busSel != AUI_BUS_SWSPI) {
       // 400 kHz is the MPU6050's ceiling, so it is the shared bus's ceiling.
+      // Software SPI has no peripheral to clock at all.
       g->setBusClock(400000);
     }
 
@@ -945,6 +1236,72 @@ class AceUiScreenUsermod : public Usermod {
       return;
     }
 
+    // --- SPI gets more than one shot at the init ------------------------------
+    // probe() returns true for SPI without asking the panel anything, so
+    // `ready` is set the instant setup() runs and the retry above can never
+    // fire. That made the boot-time init a single shot fired into the dark: if
+    // the panel was not listening yet the display stayed dark FOREVER, with no
+    // way back short of power-cycling the whole board.
+    //
+    // And it very often is not listening yet. The charge pump needs its rail
+    // stable, setup() runs within a few hundred ms of power-up, and this board
+    // brings up 1280 LEDs on the same supply - the rail sags exactly when the
+    // panel is trying to start. The symptom is a dead screen that comes to life
+    // if you disturb the wiring, which reads as a wiring fault and is not one.
+    //
+    // Re-running the init on a panel that is already working is harmless: it
+    // re-sends the init sequence, clears, and forces a full redraw. Four tries
+    // over eight seconds costs nothing and covers a slow rail.
+    // Retry fast first, then back off: 250 ms, 500 ms, 1 s, 2 s, 4 s.
+    //
+    // A flat two seconds meant the panel could take eight to come up, because
+    // the attempt that works is usually the second one - the first fires a few
+    // hundred ms after power-on, while the rail is still settling under
+    // whatever else is booting. Doubling from a quarter of a second gets the
+    // common case onto the glass almost immediately and still reaches out to
+    // nearly eight seconds for a supply that is genuinely slow, at the same
+    // total cost.
+    if (auiIsSpi(busSel) && spiInits < (uint8_t)initTries &&
+        now - lastInitMs >= (250UL << spiInits)) {
+      lastInitMs = now;
+      spiInits++;
+      bringUp();
+      lastResyncMs = 0;          // repaint everything on the next pass
+    }
+    // Keep going forever if asked. Set reinitSec to 5 and a panel that comes
+    // alive on its own says the init simply needed retrying; a panel that still
+    // needs the wiring disturbed says the reset line is not reaching it, and
+    // the next place to look is that wire rather than this code.
+    else if (auiIsSpi(busSel) && reinitSec > 0 &&
+             now - lastInitMs >= (uint32_t)reinitSec * 1000u) {
+      lastInitMs = now;
+      bringUp();
+      lastResyncMs = 0;
+    }
+
+    // --- full repaint, on a timer ----------------------------------------------
+    // Only CHANGED rows are ever sent, which is the whole reason this panel
+    // does not cost the cube frames. The hidden assumption is that the panel's
+    // RAM matches our shadow copy - and on a bus with no way to read anything
+    // back, that is an article of faith rather than a fact.
+    //
+    // It is wrong whenever the boot-time clear does not land. The panel keeps
+    // its power-on garbage, the shadow insists those rows are blank, and every
+    // row we draw as empty is therefore "unchanged" and never transmitted. The
+    // result is a working menu with junk wedged permanently into the gaps
+    // around it, which is what this looked like on real hardware.
+    //
+    // Marking every row dirty on a slow timer heals that. It costs one extra
+    // full panel every resyncSec - 1024 bytes, spread over two or three passes
+    // by the existing byte budget - and it means no divergence, from any cause,
+    // can outlive one interval.
+    if (resyncSec > 0 && now - lastResyncMs >= (uint32_t)resyncSec * 1000u) {
+      lastResyncMs = now;
+      dirtyMask = (th >= 32) ? 0xFFFFFFFFu : ((1UL << th) - 1UL);
+    }
+
+    AUI_DBG_LOOP(now);
+
     // --- wake / dim / sleep ladder -------------------------------------------
     // The dedicated VU screen opts out of the whole ladder. The timers key off
     // the last KNOB event, and on a screen whose entire job is to react to
@@ -956,9 +1313,18 @@ class AceUiScreenUsermod : public Usermod {
     vuWholeBody = (b.view.kind == AUI_V_VU);
     const bool holdAwake = vuWholeBody && vuAwake;
 
+    // Idle timers only mean something once there is something to be idle FROM.
+    //
+    // lastInputMs is set by encoder events and by nothing else, so a zero here
+    // means no knob has ever been turned - either none is fitted, or it is not
+    // working yet. Either way, dimming and sleeping on that basis blanks the
+    // panel thirty seconds after boot and nothing can ever wake it, because the
+    // only thing that could is the input that does not exist. A display that
+    // switches itself off permanently is worse than one that never dims.
+    const bool everTouched = (b.lastInputMs != 0);
     const uint32_t idle = now - b.lastInputMs;
-    const bool wantSleep = !holdAwake && (sleepSec > 0) && (idle > (uint32_t)sleepSec * 1000u);
-    const bool wantDim   = !holdAwake && (dimSec   > 0) && (idle > (uint32_t)dimSec   * 1000u);
+    const bool wantSleep = everTouched && !holdAwake && (sleepSec > 0) && (idle > (uint32_t)sleepSec * 1000u);
+    const bool wantDim   = everTouched && !holdAwake && (dimSec   > 0) && (idle > (uint32_t)dimSec   * 1000u);
 
     if (wantSleep != blanked) {
       blanked = wantSleep;
@@ -1019,6 +1385,7 @@ class AceUiScreenUsermod : public Usermod {
     const bool wantBand = (vuMode != AUI_VU_OFF) && (b.view.kind == AUI_V_NOWPLAY)
                           && b.stats.budgetBytes >= rowBytes;
     const uint32_t vuMs = (uint32_t)(1000 / (vuHz < 5 ? 5 : (vuHz > 60 ? 60 : vuHz)));
+    AUI_DBG_REDRAW(now);
     if ((wantBand || vuWholeBody) && now - lastVuMs >= vuMs) {
       lastVuMs = now;
       redraw = true;
@@ -1030,6 +1397,7 @@ class AceUiScreenUsermod : public Usermod {
       const int W = g->getDisplayWidth();
       hotRow = -1;
       g->clearBuffer();
+      if (!AUI_DBG_DRAW(W)) {
       drawHeader(b.view, W);
       switch (b.view.kind) {
         case AUI_V_NOWPLAY: drawNowPlaying(b.view, W, H); break;
@@ -1042,13 +1410,18 @@ class AceUiScreenUsermod : public Usermod {
       }
       if (wantBand) drawVu(W);
       if (b.view.holdPct) drawHold(b.view, W, H);
+      }
       diff();
+      if (dirtyMask) drawnN++;
     }
 
     // Never contend with a strip update in progress. One frame of latency on
     // the panel is invisible; a 3 ms I2C stall in the middle of pushing five
     // data lines is not.
-    if (dirtyMask && !strip.isUpdating()) flush();
+    if (dirtyMask) {
+      if (strip.isUpdating()) blockedN++;
+      else                  { flush(); flushEver++; }
+    }
 
     if (now - lastSecMs >= 1000) {
       lastSecMs = now;
@@ -1066,20 +1439,43 @@ class AceUiScreenUsermod : public Usermod {
     if (user.isNull()) user = root.createNestedObject("u");
     const AceUiStats &st = aceUi().stats;
 
+    char pinBuf[96];
     JsonArray s = user.createNestedArray(FPSTR(_name));
     if (!enabled)      s.add(F("disabled"));
     else if (clash)    s.add(F("Wire1 pins clash with the shared bus"));
     // pinFail can now come from either lane, so it cannot name Wire1 any more.
     else if (spiNoBus) s.add(F("set SCLK/MOSI in LED Preferences first"));
-    else if (pinFail)  s.add(busSel == AUI_BUS_SPI ? F("CS/DC/RST already in use")
-                                                   : F("Wire1 pins already in use"));
-    else if (!ready && busSel != AUI_BUS_SPI)
+    else if (needPins) s.add(F("set the panel's own SCK/SDA pins"));
+    else if (pinFail) {
+      if (failPin >= 0 && (failPin == spi_sclk || failPin == spi_mosi)) {
+        snprintf_P(pinBuf, sizeof(pinBuf),
+                   PSTR("GPIO %d belongs to WLED's SPI - clear the SPI GPIOs "
+                        "in LED Preferences"), failPin);
+        s.add(pinBuf);
+      } else if (failPin >= 0) {
+        snprintf_P(pinBuf, sizeof(pinBuf), PSTR("GPIO %d is already in use"), failPin);
+        s.add(pinBuf);
+      } else {
+        s.add(auiIsSpi(busSel) ? F("panel pins already in use")
+                               : F("Wire1 pins already in use"));
+      }
+    }
+    else if (!ready && !auiIsSpi(busSel))
                        s.add(F("no ACK - check VCC, pin order, address"));
-    else if (!ready)   s.add(F("no panel - check wiring and the global SPI pins"));
+    else if (!ready)   s.add(F("panel object not built - bad panel type, or out of memory"));
     else if (blanked)  s.add(F("asleep"));
+    // "ok" is a claim this bus cannot support. probe() returns true for SPI
+    // without asking the panel anything, because 4-wire SPI has no MISO and no
+    // ACK - there is no signal coming back to test. So `ready` on SPI means
+    // only "the pins were claimed and the object was built", and saying "ok"
+    // to that sent a real debugging session chasing wiring for an hour on the
+    // strength of a status line that could not have said anything else.
+    else if (auiIsSpi(busSel))
+                       s.add(F("wired up - SPI cannot confirm a panel is listening"));
     else               s.add(F("ok"));
     s.add(busSel == AUI_BUS_WIRE1 ? F(" on Wire1") :
-          busSel == AUI_BUS_SPI   ? F(" on SPI")   : F(" shared"));
+          busSel == AUI_BUS_SWSPI ? F(" on its own SPI") :
+          busSel == AUI_BUS_SPI   ? F(" on WLED's SPI") : F(" shared"));
     if (!ready) return;
 
     char buf[48];
@@ -1091,6 +1487,34 @@ class AceUiScreenUsermod : public Usermod {
     // The resolved contrast, spelled out. "It doesn't seem to be working" is
     // not a debuggable statement; "75% resolved to 143, Vcomh 0x30" is, and it
     // costs one line to turn one into the other.
+    JsonArray d = user.createNestedArray(F("Panel draw"));
+    snprintf_P(buf, sizeof(buf), PSTR("%lu drawn, %lu sent, %lu deferred"),
+               (unsigned long)drawnN, (unsigned long)flushEver,
+               (unsigned long)blockedN);
+    d.add(buf);
+    // What matters is whether anything was EVER sent, not whether a flush was
+    // ever deferred. Deferring is normal - the strip and the panel share the
+    // loop and the guard exists precisely so the strip wins - and an earlier
+    // version of this line called any deferral at all "strip never yields the
+    // bus", which reads as a diagnosis when it is describing routine
+    // contention. Only a zero SENT count means the panel is unreachable.
+    JsonArray gp = user.createNestedArray(F("Panel pins"));
+    snprintf_P(buf, sizeof(buf), PSTR("DC %lu, CS %lu, RST %lu"),
+               (unsigned long)auiDcN, (unsigned long)auiCsN,
+               (unsigned long)auiRstN);
+    gp.add(buf);
+    gp.add(auiDcN == 0 ? F(" - DC is never driven. software fault")
+                       : F(" - driven. anything wrong is past the connector"));
+
+    if (auiIsSpi(busSel)) {
+      JsonArray ri = user.createNestedArray(F("Panel init"));
+      snprintf_P(buf, sizeof(buf), PSTR("%u retries"), (unsigned)spiInits);
+      ri.add(buf); ri.add(F(" - SPI cannot detect the panel, so it re-inits"));
+    }
+    d.add(drawnN == 0     ? F(" - nothing is being rendered")
+        : flushEver == 0  ? F(" - drawn but never sent, strip never yields")
+                          : F(" - pixels are reaching the panel"));
+
     JsonArray c = user.createNestedArray(F("Panel contrast"));
     if (curVcomh >= 0)
       snprintf_P(buf, sizeof(buf), PSTR("%d%% -> %d, Vcomh 0x%02X"),
@@ -1142,9 +1566,19 @@ class AceUiScreenUsermod : public Usermod {
     top["spiCs"]    = spiCs;
     top["spiDc"]    = spiDc;
     top["spiRst"]   = spiRst;
+    top["swSck"]    = swSck;
+    top["swMosi"]   = swMosi;
+    top["initTries"] = initTries;
+    top["hardRst"]   = hardRst;
+    top["nopFlush"]  = nopFlush;
+    top["ownInit"]   = ownInit;
+    top["reinitSec"] = reinitSec;
+    top["resyncSec"] = resyncSec;
+    AUI_DBG_SAVE(top);
     top["w1Sda"]    = w1Sda;
     top["w1Scl"]    = w1Scl;
     top["w1Hz"]     = w1Hz;
+    top["spiHz"]    = spiHz;
   }
 
   bool readFromConfig(JsonObject &root) override {
@@ -1174,9 +1608,22 @@ class AceUiScreenUsermod : public Usermod {
     ok &= getJsonValue(top["spiCs"],    spiCs,    -1);
     ok &= getJsonValue(top["spiDc"],    spiDc,    -1);
     ok &= getJsonValue(top["spiRst"],   spiRst,   -1);
+    ok &= getJsonValue(top["swSck"],    swSck,    -1);
+    ok &= getJsonValue(top["swMosi"],   swMosi,   -1);
+    ok &= getJsonValue(top["initTries"], initTries, 0);
+    ok &= getJsonValue(top["hardRst"],  hardRst,  true);
+    ok &= getJsonValue(top["nopFlush"], nopFlush, true);
+    ok &= getJsonValue(top["ownInit"],  ownInit,  true);
+    ok &= getJsonValue(top["reinitSec"], reinitSec, 0);
+    ok &= getJsonValue(top["resyncSec"], resyncSec, 20);
+    // Re-arm the boot burst on every save, so hitting Save is a manual "init
+    // the panel again" with no reboot involved.
+    spiInits = 0; lastInitMs = 0;
+    AUI_DBG_LOAD(top);
     ok &= getJsonValue(top["w1Sda"],    w1Sda,    23);
     ok &= getJsonValue(top["w1Scl"],    w1Scl,    22);
     ok &= getJsonValue(top["w1Hz"],     w1Hz,     400000);
+    ok &= getJsonValue(top["spiHz"],    spiHz,    4000000);
 
     // Dimming after the panel has already blanked is unreachable, and the two
     // being equal makes the dim step invisible rather than broken - clamp so
@@ -1245,11 +1692,12 @@ class AceUiScreenUsermod : public Usermod {
       s.print(F("addOption(dd,'")); jsq(label); s.print(F("',")); s.print(v); s.print(F(");"));
     };
 
-    dd("panel"); opt("SSD1306 128x64", 0); opt("SH1106 128x64", 1);
+    dd("panel"); opt("SSD1306 128x64", 0); opt("SH1106 128x64 (DC-DC)", 1);
                  opt("SSD1309 128x64", 2); opt("SSD1306 128x32", 3);
     dd("bus");   opt("Its own I2C bus - Wire1",   AUI_BUS_WIRE1);
                  opt("Shared I2C (with the IMU)", AUI_BUS_WIRE);
-                 opt("Hardware SPI",              AUI_BUS_SPI);
+                 opt("Hardware SPI - WLED's bus", AUI_BUS_SPI);
+                 opt("Own SPI - our pins, software", AUI_BUS_SWSPI);
     dd("split"); opt("Two colour - 16px yellow header", 16);
                  opt("Mono - 8px header",                8);
                  opt("Mono - no header",                 0);
@@ -1290,8 +1738,18 @@ class AceUiScreenUsermod : public Usermod {
     info("maxPages", "ceiling on bytes per frame, in 128-byte pages");
     info("scroll",   "scroll effect names that do not fit. costs one page");
     info("spiCs",    "<i>SPI only</i>");
+    info("initTries", "EXTRA init attempts after boot. each one resets, so each blinks");
+    info("hardRst",  "long reset with CS parked before u8g2 speaks");
+    info("nopFlush", "16 NOPs to land on a command boundary before the registers");
+    info("ownInit",  "send our own register set. off = trust u8g2's alone");
+    info("reinitSec", "sec between full re-inits. 0 = only at boot. try 5 if dark");
+    info("resyncSec", "sec between full repaints. clears junk the diff cannot see");
+    info("swSck",    "<i>Own SPI only</i>. the panel's SCK. ours, not WLED's");
+    info("swMosi",   "<i>Own SPI only</i>. the panel's SDA");
+    AUI_DBG_UI(info);
     info("w1Sda",    "<b>23</b>. the panel&#39;s own SDA - must NOT be the shared pin");
     info("w1Scl",    "<b>22</b>. the panel&#39;s own SCL");
+    info("spiHz",    "SPI clock. 4 MHz is easy on short leads. lower if rows tear");
     info("w1Hz",     "raise once Info shows zero NAKs and a stable panel");
   }
 
