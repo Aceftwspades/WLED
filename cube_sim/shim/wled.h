@@ -306,7 +306,19 @@ class Segment {
 
   uint32_t *pixels = nullptr;          // the frame the renderers read
   uint8_t  *data   = nullptr;          // effect scratch
-  uint16_t  _dataLen = 0;
+  // size_t, and NOT uint16_t. WLED declares this `unsigned` and compares
+  // `_dataLen >= len` with no cast; narrowing it here silently wrapped every
+  // allocation over 64 KB.
+  //
+  // It took a segfault to find, because it only bites when a SMALLER
+  // allocation precedes a larger one that truncates below it. Spectral Bloom on
+  // a 96x96 net wants 58 KB as a cube and 83 KB flat, because flat mode lights
+  // all nine face-blocks where the cube lights five. 83074 truncates to 17538,
+  // which is less than the 58 KB already held, so the reuse test passed and the
+  // effect wrote 24 KB past its buffer. Allocating the flat size FIRST hides it
+  // completely - calloc gets the real size - which is why a fuzz that set flat
+  // mode before selecting the effect found nothing.
+  size_t    _dataLen = 0;
   uint32_t  call = 0, step = 0;
   uint16_t  aux0 = 0, aux1 = 0;
 
@@ -316,11 +328,11 @@ class Segment {
   // and do NOT reset `call` when the requirement shrinks. Effects are written
   // around this, so getting it "cleaner" here would hide real bugs.
   bool allocateData(size_t len) {
-    if (data && _dataLen >= (uint16_t)len) return true;
+    if (data && _dataLen >= len) return true;
     if (data) free(data);
     data = (uint8_t *)calloc(len, 1);
     if (!data) { _dataLen = 0; return false; }
-    _dataLen = (uint16_t)len;
+    _dataLen = len;
     return true;
   }
 
