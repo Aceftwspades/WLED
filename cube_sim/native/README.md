@@ -72,6 +72,29 @@ greyscale and reporting a saturation of zero. The browser page has always driven
 this from its own selector, defaulting to 1, and the native side matches that.
 Override with `--set pal=N`.
 
+## Recording a GIF
+
+**record 15 s GIF** in the control column captures the next fifteen seconds and
+writes them beside the frame captures, named after the effect:
+
+```
+%TEMP%\cubefx\Ace_3_D_Maelstrom_1788732215.gif
+```
+
+Frames come from the LIVE run, not a re-simulation. What you get is what was on
+the screen - live audio if it is on, and any slider you moved while it ran. A
+re-simulation would quietly hand you the synthetic generator and the metadata
+defaults instead, which is not what you were looking at when you decided the
+clip was worth keeping.
+
+It records whatever is being SHOWN, so `Q`, `E` and `W` frame the clip: net
+only, cube only, or both side by side. Encoding runs on a worker thread, so the
+window keeps drawing through it; the line beside the button counts down and
+then names the file.
+
+For a repeatable clip of a known effect at known settings, use the headless
+`--gif` above instead - that one IS a re-simulation, which is the point.
+
 ## Frame capture
 
 The running app will write a PNG of its own window on request. Create the

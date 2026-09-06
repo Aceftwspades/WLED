@@ -28,7 +28,7 @@ import dearpygui.dearpygui as dpg
 
 from native.engine import Engine, stats
 from native.synth import Synth
-from native import render
+from native import render, gif
 
 STEP = 23
 CUBE_MAX = 620          # cube render cost is quadratic in this, so it is capped
@@ -140,6 +140,15 @@ class App:
         self._need_layout = True
         self.ui = True              # control column and pane captions
         self._themes = {}           # normal / present, built once in build()
+        # --- recording ---------------------------------------------------
+        # Frames are taken from the LIVE run rather than re-simulated. What
+        # comes out is what was on the screen, including live audio and any
+        # slider you moved while it ran - a re-simulation would quietly give
+        # you the synthetic generator and today's defaults instead.
+        self.rec = None             # list of frames while recording
+        self.rec_next = 0.0         # wall-clock time of the next frame
+        self.rec_left = 0.0         # seconds still to capture
+        self.rec_msg = ""           # what to show under the button
         self._bufs = {}
         self._inputs = set()
         self._dragging = False
@@ -202,6 +211,59 @@ class App:
                 pass
         self.live = None
         dpg.configure_item("live_btn", label="use live audio")
+
+    # --- recording ------------------------------------------------------------
+    REC_FPS = 15
+
+    def start_rec(self, secs=15.0):
+        if self.rec is not None:
+            return
+        self.rec = []
+        self.rec_left = secs
+        self.rec_next = time.perf_counter()
+        self.rec_msg = f"recording {secs:.0f} s..."
+
+    def _encode(self, frames, path):
+        """Runs on a worker thread: encoding 225 frames takes several seconds
+        and the window must keep drawing while it does."""
+        try:
+            n = gif.write(path, frames, fps=self.REC_FPS)
+            self.rec_msg = f"{os.path.basename(path)}  {n/1024:.0f} KB"
+        except Exception as e:
+            self.rec_msg = f"gif failed: {e}"
+
+    def rec_frame(self, net_img, cube_img):
+        """Offered every drawn frame; takes one only when the clock says so."""
+        if self.rec is None:
+            return
+        now = time.perf_counter()
+        if now < self.rec_next:
+            return
+        self.rec_next += 1.0 / self.REC_FPS
+        parts = [p for p in (net_img, cube_img) if p is not None]
+        if not parts:
+            return
+        if len(parts) == 1:
+            frame = parts[0]
+        else:
+            h = max(p.shape[0] for p in parts)
+            frame = np.zeros((h, sum(p.shape[1] for p in parts) + 8, 3), np.uint8)
+            x = 0
+            for p in parts:
+                y = (h - p.shape[0]) // 2
+                frame[y:y + p.shape[0], x:x + p.shape[1]] = p
+                x += p.shape[1] + 8
+        self.rec.append(frame.copy())
+        self.rec_left -= 1.0 / self.REC_FPS
+        if self.rec_left > 0:
+            self.rec_msg = f"recording {self.rec_left:4.1f} s..."
+            return
+        frames, self.rec = self.rec, None
+        name = "".join(c if c.isalnum() else "_" for c in self.eng.names[self.eng.idx])
+        path = os.path.join(SHOT_DIR, f"{name}_{int(time.time())}.gif")
+        self.rec_msg = f"encoding {len(frames)} frames..."
+        import threading
+        threading.Thread(target=self._encode, args=(frames, path), daemon=True).start()
 
     def toggle_live(self):
         self.stop_live() if self.live else self.start_live()
@@ -354,7 +416,8 @@ class App:
             dpg.configure_item(tag, border=self.ui)
         # The captions, the readout and the key hints are UI too - a clean
         # picture means nothing left over the top of it.
-        for tag in ("net_cap", "cube_cap", "stat_txt", "hint1", "hint2"):
+        for tag in ("net_cap", "cube_cap", "stat_txt", "hint1", "hint2",
+                    "rec_btn", "rec_msg"):
             dpg.configure_item(tag, show=self.ui)
 
         # The net is upscaled by a WHOLE number so the LED grid stays hard;
@@ -526,6 +589,7 @@ class App:
 
     def draw(self):
         net = self.net_image()
+        big = img = None
         if self.layout in ("both", "net"):
             big = net.repeat(self.net_scale, 0).repeat(self.net_scale, 1)
             dpg.set_value("net_tex", self._rgba("net", big))
@@ -533,6 +597,10 @@ class App:
             img = render.render(net, self.eng.B, self.cube_px,
                                 self.yaw, self.pitch, self.dist)
             dpg.set_value("cube_tex", self._rgba("cube", img))
+        # Records whatever is being SHOWN, so Q, E and W frame the clip too.
+        self.rec_frame(big, img)
+        if self.rec_msg:
+            dpg.set_value("rec_msg", self.rec_msg)
 
         s = stats(net, self.eng.lit_mask(flat=bool(self.eng.fx.get("o3"))))
         dpg.set_value("stat_txt",
@@ -628,6 +696,10 @@ def build(app):
                          is_float=True)
                 dpg.add_progress_bar(tag="lvl_bar", default_value=0.0, width=280)
                 dpg.add_text("", tag="live_msg", wrap=300)
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="record 15 s GIF", tag="rec_btn",
+                           callback=lambda: app.start_rec(15.0))
+            dpg.add_text("", tag="rec_msg", color=(139, 147, 163))
         dpg.add_text("", tag="stat_txt")
         dpg.add_text("Q net    E cube    W both    H hide UI", tag="hint1",
                      color=(130, 140, 155))
