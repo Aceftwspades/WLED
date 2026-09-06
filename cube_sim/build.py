@@ -343,7 +343,13 @@ def main():
             os.path.join(ROOT, "wled00", "src", "dependencies", "fastled_slim", "fastled_slim.cpp")])
 
     if "--native" in want:
-        build_native(srcs)
+        # The return value is NOT optional. build_native() reports a failure and
+        # carries on, so ignoring it printed "build OK" over a link error and
+        # left the PREVIOUS cubefx.dll in place - which then gets measured as
+        # though it were the new code. The usual cause is the simulator app
+        # holding the DLL open, so this is a routine failure, not a rare one.
+        if not build_native(srcs):
+            sys.exit("build FAILED - the dll was not replaced")
     if "--wasm" not in want:
         print("build OK")
         return
