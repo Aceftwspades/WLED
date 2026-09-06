@@ -85,6 +85,14 @@ def main():
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--measure", metavar="EFFECT")
     ap.add_argument("--snapshot", metavar="EFFECT")
+    ap.add_argument("--gif", metavar="EFFECT",
+                    help="animated preview. a still cannot show motion")
+    ap.add_argument("--secs", type=float, default=15.0)
+    ap.add_argument("--fps", type=int, default=15)
+    ap.add_argument("--view", default="both", choices=("net", "cube", "both"))
+    ap.add_argument("--size", type=int, default=160, help="cube render px")
+    ap.add_argument("--spin", type=float, default=0.0,
+                    help="turns of yaw over the whole clip")
     ap.add_argument("--ms", type=int, default=20000)
     ap.add_argument("--at", default="", help="snapshot times in ms, comma separated")
     ap.add_argument("--scale", type=int, default=6)
@@ -124,12 +132,65 @@ def main():
             print(f"{i:3d}  {n}")
         return
 
-    target = a.measure or a.snapshot
+    target = a.measure or a.snapshot or a.gif
     if not target:
         ap.print_help()
         return
     eng.resize(a.faceB)
     idx = eng.find(target)
+
+    if a.gif:
+        import time
+        import numpy as np
+        from native import render, gif
+        from native.synth import Synth
+        eng.select(idx)
+        _apply(eng, a.set)
+        syn = Synth()
+        # Gated, so mid and treble carry transients too. An effect judged on a
+        # steady tone is being judged on the half of its behaviour that does
+        # not move.
+        syn.gate_bass = syn.gate_mid = syn.gate_treb = True
+
+        for _ in range(40):                       # settle before recording
+            syn.push(eng); eng.frame()
+
+        nfr = max(1, int(a.secs * a.fps))
+        step_ms = 1000.0 / a.fps
+        frames, t0 = [], time.time()
+        for i in range(nfr):
+            # Advance the SIMULATED clock by one output frame, in the engine's
+            # own fixed steps, so the clip runs at true speed rather than at
+            # whatever this machine renders at.
+            tgt = eng.sim_ms + step_ms
+            while eng.sim_ms < tgt:
+                syn.push(eng); eng.frame()
+            net = eng.rgb().copy()
+            if not eng.fx.get("o3"):
+                net[~eng.lit_mask()] = 0
+            parts = []
+            if a.view in ("net", "both"):
+                sc = max(1, a.size // eng.rows)
+                parts.append(net.repeat(sc, 0).repeat(sc, 1))
+            if a.view in ("cube", "both"):
+                yaw = -0.6 + (2 * np.pi * a.spin * i) / nfr
+                parts.append(render.render(net, eng.B, a.size, yaw, 0.75, 4.6))
+            if len(parts) == 1:
+                frames.append(parts[0])
+            else:
+                h = max(p.shape[0] for p in parts)
+                can = np.zeros((h, sum(p.shape[1] for p in parts) + 8, 3), np.uint8)
+                x = 0
+                for p in parts:
+                    y = (h - p.shape[0]) // 2
+                    can[y:y + p.shape[0], x:x + p.shape[1]] = p
+                    x += p.shape[1] + 8
+                frames.append(can)
+        out = a.out if a.out.endswith(".gif") else a.out + ".gif"
+        n = gif.write(out, frames, fps=a.fps)
+        print(f"{out}  {len(frames)} frames  {frames[0].shape[1]}x{frames[0].shape[0]}"
+              f"  {n/1024:.0f} KB  ({time.time()-t0:.1f}s)")
+        return
 
     if a.snapshot:
         times = [int(x) for x in a.at.split(",") if x.strip()] or [8000]
