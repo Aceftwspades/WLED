@@ -286,7 +286,14 @@ static FX_RET mode_maelstrom() {
       // Colour rides the bands when running across them, so an arm keeps one
       // hue as it travels; when running along them it is the arms that sweep
       // through a colour field instead, so the zoom is deliberately left out.
-      const int cw = along ? ((int)lr[i] * arms - (int)az[i] * dens) : (int)v;
+      // Divided down HARD. The along-coordinate runs about 6000 units from the
+      // sink to the base, which is two dozen full trips round the palette
+      // along a single arm - fine stripes crawling up it, not the broad bands
+      // that were wanted. Shifted down by four it makes roughly one and a half
+      // sweeps of the palette across the whole figure, so each arm carries two
+      // or three big swaths whose edges lie square across it and which travel
+      // outward along the arm as the colour scrolls.
+      const int cw = along ? (((int)lr[i] * arms - (int)az[i] * dens) >> 4) : (int)v;
 
       // Bands. A sine gives a soft barber pole; biasing and gaining it hardens
       // the arms and opens real black between them, which is what stops a
