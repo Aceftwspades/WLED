@@ -100,6 +100,9 @@ class App:
         self.yaw, self.pitch, self.dist = -0.6, 0.75, 4.6
         self.beat_flash = 0
         self.layout = "both"        # both | net | cube
+        # Set by anything that needs the panes resized; acted on at the TOP of
+        # the next loop pass, never inside a callback. See request_layout().
+        self._need_layout = True
         self.ui = True              # control column and pane captions
         self._bufs = {}
         self._inputs = set()
@@ -178,7 +181,11 @@ class App:
 
     def on_faceB(self, s, val):
         self.eng.resize(int(val))
-        self.relayout()
+        # resize() re-selects the effect, which resets every parameter to the
+        # metadata defaults - so the sliders have to be rebuilt or they show
+        # values the engine no longer holds.
+        self.rebuild_params()
+        self.request_layout()
 
     def on_color(self, sender, val):
         r, g, b = (int(c * 255) if c <= 1.0 else int(c) for c in val[:3])
@@ -256,6 +263,22 @@ class App:
                              user_data=k, callback=self.on_check)
 
     # --- layout --------------------------------------------------------------
+    def request_layout(self):
+        """Ask for a relayout; do not perform one here.
+
+        relayout() deletes the net and cube textures and builds new ones. Dear
+        PyGui callbacks run INSIDE render_dearpygui_frame(), while those very
+        textures are bound to the image widgets being drawn - and deleting an
+        item that the renderer is walking is a native crash, not an exception.
+        It survives often enough to look fine, which is worse.
+
+        Changing face size is the case that trips it: on_faceB resizes the
+        engine, which changes the net from 48x48 to 96x96, so the textures MUST
+        be rebuilt and cannot simply be reused. Deferring to the top of the next
+        pass costs one frame and takes the deletion out of the render entirely.
+        """
+        self._need_layout = True
+
     def relayout(self):
         """Size both views to whatever the window currently is.
 
@@ -398,7 +421,7 @@ class App:
             self.set_layout("both")
         elif app_data == dpg.mvKey_H:
             self.ui = not self.ui
-            self.relayout()
+            self.request_layout()
 
     def set_layout(self, which):
         """Switch which view fills the frame.
@@ -411,7 +434,7 @@ class App:
             self.ui = False
         else:
             self.layout = which
-        self.relayout()
+        self.request_layout()
 
     # --- the loop ------------------------------------------------------------
     def step_sim(self):
@@ -546,7 +569,7 @@ def build(app):
     app.relayout()
     # Both views follow the window from here on. Without this, maximising left
     # two small pictures marooned in the corner of a large empty panel.
-    dpg.set_viewport_resize_callback(lambda s, d: app.relayout())
+    dpg.set_viewport_resize_callback(lambda s, d: app.request_layout())
 
 
 # Where a capture is asked for, and where the result is written.
@@ -589,11 +612,29 @@ def main():
     build(app)
     dpg.show_viewport()
     os.makedirs(SHOT_DIR, exist_ok=True)
+    print(f"if a frame throws, the traceback lands in {os.path.join(SHOT_DIR, 'crash.txt')}")
     print(f"frame capture: create {SHOT_REQ} to get a PNG at {SHOT_PNG}")
     try:
         while dpg.is_dearpygui_running():
-            app.step_sim()
-            app.draw()
+            if app._need_layout:
+                app._need_layout = False
+                app.relayout()
+            try:
+                app.step_sim()
+                app.draw()
+            except Exception:
+                # One bad frame should not take the window down with it. The
+                # traceback goes to the console AND to a file, because the
+                # console scrolls away and the interesting one is always the
+                # first, not the hundredth.
+                import traceback
+                traceback.print_exc()
+                try:
+                    with open(os.path.join(SHOT_DIR, "crash.txt"), "a") as fh:
+                        fh.write(traceback.format_exc() + "\n")
+                except Exception:
+                    pass
+                app.playing = False
             dpg.render_dearpygui_frame()
             service_capture()
     finally:

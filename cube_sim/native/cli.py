@@ -143,7 +143,6 @@ def main():
         import time
         import numpy as np
         from native import render, gif
-        from native.synth import Synth
         eng.select(idx)
         _apply(eng, a.set)
         syn = Synth()
