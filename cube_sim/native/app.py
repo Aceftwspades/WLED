@@ -85,6 +85,41 @@ def apply_theme():
                             (dpg.mvStyleVar_CellPadding, 6, 3)):
                 dpg.add_theme_style(t, a, b, category=dpg.mvThemeCat_Core)
     dpg.bind_theme(th)
+    return th
+
+
+def present_theme():
+    """Everything black, nothing framed.
+
+    Presentation mode is not the normal layout with the controls hidden - it is
+    a different thing entirely. The panel backgrounds, the rounded corners, the
+    borders and the padding all exist to separate a view from the controls
+    beside it, and with the controls gone they are just furniture around a
+    picture. A visualiser has no furniture.
+
+    Bound globally while presenting and unbound after, so the working layout
+    keeps its own look.
+    """
+    black = (0, 0, 0)
+    with dpg.theme() as th:
+        with dpg.theme_component(dpg.mvAll):
+            for t in (dpg.mvThemeCol_WindowBg, dpg.mvThemeCol_ChildBg,
+                      dpg.mvThemeCol_Border, dpg.mvThemeCol_BorderShadow,
+                      dpg.mvThemeCol_PopupBg):
+                dpg.add_theme_color(t, black, category=dpg.mvThemeCat_Core)
+            for t, v in ((dpg.mvStyleVar_WindowBorderSize, 0),
+                         (dpg.mvStyleVar_ChildBorderSize, 0),
+                         (dpg.mvStyleVar_ChildRounding, 0),
+                         (dpg.mvStyleVar_WindowRounding, 0)):
+                dpg.add_theme_style(t, v, category=dpg.mvThemeCat_Core)
+            for t, a, b in ((dpg.mvStyleVar_WindowPadding, 0, 0),
+                            (dpg.mvStyleVar_FramePadding, 0, 0),
+                            (dpg.mvStyleVar_ItemSpacing, 0, 0),
+                            (dpg.mvStyleVar_CellPadding, 0, 0)):
+                dpg.add_theme_style(t, a, b, category=dpg.mvThemeCat_Core)
+    return th
+
+
 PALETTES = [("Rainbow", 1), ("Fire", 2), ("Ocean", 3), ("Party", 4),
             ("Mono", 5), ("Sunset", 6), ("Default (segment colour)", 0)]
 
@@ -104,6 +139,7 @@ class App:
         # the next loop pass, never inside a callback. See request_layout().
         self._need_layout = True
         self.ui = True              # control column and pane captions
+        self._themes = {}           # normal / present, built once in build()
         self._bufs = {}
         self._inputs = set()
         self._dragging = False
@@ -293,15 +329,29 @@ class App:
         # column hidden its 340 px come back, with one view hidden the other
         # gets the whole width, and the pane captions stop reserving a line.
         nview = 2 if self.layout == "both" else 1
-        sidew = SIDE_W if self.ui else 0
-        pane_h = max(VIEW_MIN, vh - (108 if self.ui else 40))
-        avail = vw - sidew - (22 * nview + 24)
+        if self.ui:
+            pane_h = max(VIEW_MIN, vh - 108)
+            avail  = vw - SIDE_W - (22 * nview + 24)
+        else:
+            # Presenting: no control column, no captions, no borders and no
+            # padding, so none of it gets an allowance. The picture takes the
+            # whole frame less the gap between two of them.
+            pane_h = max(VIEW_MIN, vh)
+            avail  = vw - (16 if nview == 2 else 0)
         per = max(VIEW_MIN, avail // nview)
         side = max(VIEW_MIN, min(per, pane_h))
 
         dpg.configure_item("net_win",  show=self.layout in ("both", "net"))
         dpg.configure_item("cube_win", show=self.layout in ("both", "cube"))
         dpg.configure_item("side_win", show=self.ui)
+
+        th = self._themes.get("present" if not self.ui else "normal")
+        if th:
+            dpg.bind_theme(th)
+        dpg.set_viewport_clear_color([0, 0, 0, 255] if not self.ui
+                                     else [17, 19, 24, 255])
+        for tag in ("net_win", "cube_win", "side_win"):
+            dpg.configure_item(tag, border=self.ui)
         # The captions, the readout and the key hints are UI too - a clean
         # picture means nothing left over the top of it.
         for tag in ("net_cap", "cube_cap", "stat_txt", "hint1", "hint2"):
@@ -321,9 +371,28 @@ class App:
         self.cube_px = min(CUBE_MAX, side)
         self.view_side = side
 
-        for tag in ("net_win", "cube_win"):
-            dpg.configure_item(tag, width=side + 22, height=pane_h + 34)
-        dpg.configure_item("side_win", height=pane_h + 34)
+        if self.ui:
+            for tag in ("net_win", "cube_win"):
+                dpg.configure_item(tag, width=side + 22, height=pane_h + 34)
+            dpg.configure_item("side_win", height=pane_h + 34)
+        # Centre what is left, rather than letting it sit against the corner.
+        # In presentation mode the panes are exactly the size of their pictures
+        # and are positioned by hand; the black around them is the viewport
+        # showing through, which is why the clear colour matters as much as the
+        # theme does.
+        if not self.ui:
+            gap = 16 if nview == 2 else 0
+            total = side * nview + gap
+            x0 = max(0, (vw - total) // 2)
+            y0 = max(0, (vh - side) // 2)
+            if self.layout in ("both", "net"):
+                dpg.configure_item("net_win", width=side, height=side)
+                dpg.set_item_pos("net_win", [x0, y0])
+                x0 += side + gap
+            if self.layout in ("both", "cube"):
+                dpg.configure_item("cube_win", width=side, height=side)
+                dpg.set_item_pos("cube_win", [x0, y0])
+
         # Only the visible views get textures. A hidden one would otherwise
         # allocate at full pane size and never be written to - 7.7 MB of
         # float32 for a net nobody is looking at. Switching back runs this
@@ -424,16 +493,19 @@ class App:
             self.request_layout()
 
     def set_layout(self, which):
-        """Switch which view fills the frame.
+        """Q, E and W go straight to a full-frame picture, every time.
 
-        Pressing the key for the layout already showing hides the UI instead of
-        doing nothing, so one key gets from the working layout to a clean
-        picture of it. H still toggles the UI from anywhere, including back.
+        These are not layout choices with a separate "and now hide the
+        controls" step - they ARE the presentation mode, and the view is what
+        you wanted to look at. Requiring a second press to clear the chrome
+        made the first press produce something nobody asked for: the same
+        cluttered window with one view missing.
+
+        H brings the controls back without leaving the layout, for adjusting a
+        slider while watching, and takes them away again.
         """
-        if which == self.layout and self.ui:
-            self.ui = False
-        else:
-            self.layout = which
+        self.layout = which
+        self.ui = False
         self.request_layout()
 
     # --- the loop ------------------------------------------------------------
@@ -562,7 +634,8 @@ def build(app):
         dpg.add_text("space = play/pause    F11 = fullscreen window", tag="hint2",
                      color=(130, 140, 155))
 
-    apply_theme()
+    app._themes['normal'] = apply_theme()
+    app._themes['present'] = present_theme()
     app.rebuild_params()
     dpg.set_primary_window("root", True)
     dpg.setup_dearpygui()

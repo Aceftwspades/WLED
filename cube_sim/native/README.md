@@ -103,10 +103,14 @@ buffer cannot make that mistake, because the app has nothing else to give.
 | `F11` | fullscreen the window itself |
 | `space` | play/pause |
 
-Pressing the key for the layout already showing hides the UI, so one key gets
-from a working layout to a clean picture of it. `H` brings the controls back
-without leaving the layout, which is the point — adjusting a slider while
-looking at a fullscreen view is the case these exist for.
+`Q`, `E` and `W` go straight to a full-frame picture: the view centred on
+black, no control column, no captions, no borders, no padding. They are not
+layout choices with a separate "now hide the chrome" step — the view is what you
+wanted to look at, so it is all that is on screen. Pair with `F11` for a
+visualiser that owns the display.
+
+`H` brings the controls back without leaving the layout, for adjusting a slider
+while watching, and takes them away again.
 
 The cube render is **capped at 620 px** whatever the pane size, and the image is
 scaled up to fill. The renderer is quadratic and is already the most expensive
