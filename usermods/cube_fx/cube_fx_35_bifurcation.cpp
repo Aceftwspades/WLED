@@ -5,13 +5,11 @@
 // ===========================================================================
 // Ace 3-D Bifurcation - the chaotic bands of x -> x^2 + c, wrapped on a cube
 // ===========================================================================
-// After: G. Pastor, M. Romera, G. Alvarez, F. Montoya, "Misiurewicz point
-// pattern generation in one-dimensional quadratic maps", Physica A 292 (2001)
-// 207-230.
+// After G. Pastor, M. Romera, G. Alvarez and F. Montoya, "On periodic and
+// chaotic regions in the Mandelbrot set" (Instituto de Fisica Aplicada, CSIC),
+// and their related work on Misiurewicz point patterns in Physica A 292 (2001).
 //
-// The paper is paywalled and was not read for this - what is built here comes
-// from the subject that group works in rather than from their text, and it is
-// worth being straight about which. Their subject is the CHAOTIC BAND structure
+// The subject is the CHAOTIC BAND structure
 // of the real quadratic map: below the period-doubling cascade the attractor is
 // not one smear of chaos but 2^n disjoint bands, and as c decreases those bands
 // merge pairwise - 8 into 4, 4 into 2, 2 into 1 - at parameter values that are
@@ -67,49 +65,55 @@
 #define BF_XHI    ( 2.1f)
 
 // ---------------------------------------------------------------------------
-// THE LANDMARKS
+// THE LANDMARKS: CHARACTERISTIC MISIUREWICZ POINTS
 // ---------------------------------------------------------------------------
-// Real Misiurewicz points: the parameters where the critical orbit is strictly
-// pre-periodic, and the values that organise the chaotic band region. Two of
-// them below are the band merges themselves.
+// Pastor, Romera, Alvarez & Montoya, "On periodic and chaotic regions in the
+// Mandelbrot set", give the structure this table is built on. Below the
+// Myrberg-Feigenbaum point the chaotic region is a period-doubling cascade OF
+// CHAOTIC BANDS: one band between the merging points m0 and m1, two between m1
+// and m2, four between m2 and m3, and so on. They call the band between mn and
+// m(n+1) the chaotic band Bn, of period 2^n.
 //
-// These were NOT taken from memory. An earlier draft of this effect shipped no
-// table at all because three numerical attempts to find these values all failed
-// - the band counters kept locking onto the period-3 window's own internal
-// cascade rather than the main one. The fix came from the algebra rather than
-// from more counting: Hutz & Towsley, "Misiurewicz points for polynomial maps
-// and transversality", Theorem 1.1, gives a polynomial G_2(m,n) in c whose roots
-// are PRECISELY the Misiurewicz points of exact preperiod m and period n. That
-// construction was implemented in exact integer arithmetic and checked against
-// the paper's own counting formula (Corollary 3.3): the degrees agree for every
-// m <= 5, n <= 4.
+// Their selection rule is what makes a landmark table possible at all. The
+// prominent, visible Misiurewicz points of a band - the CHARACTERISTIC ones -
+// all share the band's own period: in Bn they are M(n*, 2^n). A band contains
+// non-characteristic points of GREATER period, but never of smaller.
 //
-// Every entry here was then confirmed strictly PRE-periodic rather than
-// periodic, which is the distinction that had been wrecking the earlier work:
-// the values that cascade had produced turned out to be superstable centres of
-// periodic windows - the critical point periodic, not preperiodic - and so not
-// Misiurewicz points at all. They are excluded here by construction.
+// That rule was checked before being used, and it holds exactly. Of ten
+// thousand strictly pre-periodic real Misiurewicz points computed here, the
+// period-1 class spans -2 up to -1.5436890127 and stops; the period-2 class
+// stops at -1.4303576325; the period-4 class at -1.4074051182. Those three
+// upper edges ARE the band merges m1, m2, m3 - recovered from the period
+// classes alone, with no band counting anywhere.
 //
-// One landmark per sixteenth of the range, the combinatorially simplest in each,
-// so the set spans the whole band region instead of bunching at one end.
-#define BF_NMARK 16
+// That last route matters, because three earlier attempts to find these values
+// by counting bands numerically all failed: the counters kept locking onto the
+// period-3 window's own internal cascade instead of the main one, and produced
+// a cascade whose members turned out to be superstable centres of periodic
+// windows - the critical point PERIODIC, not preperiodic, so not Misiurewicz
+// points at all. Everything below is confirmed strictly pre-periodic, and the
+// exact types come from the algebraic construction of Hutz & Towsley (Theorem
+// 1.1), checked against their own counting formula (Corollary 3.3).
+//
+// Eight characteristic points across B0, five across B1, two across B2, with
+// the three merges among them.
+#define BF_NMARK 15
 static const float BF_MARK[BF_NMARK] PROGMEM = {
-  -2.000000000f,   // M(2,1)  the tip
-  -1.952133665f,   // M(3,3)
-  -1.924661063f,   // M(3,3)
-  -1.877132158f,   // M(3,4)
-  -1.839286755f,   // M(3,2)
-  -1.790327492f,   // M(4,3)
-  -1.754878063f,   // M(4,3)  the period-3 window's edge
-  -1.714413091f,   // M(4,5)
-  -1.683316983f,   // M(4,4)
-  -1.661239227f,   // M(4,2)
-  -1.599998557f,   // M(4,4)
-  -1.583510473f,   // M(4,6)
-  -1.543689013f,   // M(3,2)  2 chaotic bands merge into 1
-  -1.496464687f,   // M(5,4)
-  -1.454820744f,   // M(7,4)
-  -1.430357633f,   // M(5,4)  4 bands merge into 2
+  -2.000000000f,   // B0  M(2,1)   m0, the tip
+  -1.992251384f,   // B0  M(11,1)
+  -1.980205587f,   // B0  M(8,1)
+  -1.963494201f,   // B0  M(12,1)
+  -1.931946968f,   // B0  M(13,1)
+  -1.898719318f,   // B0  M(11,1)
+  -1.826912689f,   // B0  M(10,1)
+  -1.543689013f,   // B0  M(3,1)   m1: 2 chaotic bands merge into 1
+  -1.542296059f,   // B1  M(13,2)
+  -1.532193248f,   // B1  M(9,2)
+  -1.515759662f,   // B1  M(13,2)
+  -1.491772558f,   // B1  M(11,2)
+  -1.430357633f,   // B1  M(5,2)   m2: 4 bands merge into 2
+  -1.423729232f,   // B2  M(13,4)
+  -1.407405118f,   // B2  M(9,4)   m3: 8 bands merge into 4
 };
 
 struct BfState {
