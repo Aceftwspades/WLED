@@ -58,6 +58,11 @@
 #define WS_SINK   0xFFFF        // no lower neighbour: water pools here
 #define WS_SLICE  8             // frames to walk the whole surface once
 #define WS_HSCALE 64            // fixed-point headroom on the height field
+// A candidate has to beat the CURRENT outflow by this much before the channel
+// is allowed to move. Two neighbours a hair apart otherwise trade the outflow
+// back and forth every frame, and the whole network shimmers - which is what
+// the troughs were doing.
+#define WS_HYST   44
 
 // Flow accumulation spans orders of magnitude - a trunk carries hundreds of
 // times what a headwater does - so brightness has to be LOGARITHMIC or the
@@ -77,6 +82,7 @@ struct WsState {
   uint8_t  clk[2];
   uint16_t slice;               // where the incremental rebuild has got to
   float    hop;                 // fractional advection steps carried over
+  float    drift;               // landscape phase, so the channels migrate
   uint8_t  surge;
   uint16_t hueCyc;
   uint8_t  relief;              // the Relief the field was last built at
@@ -114,7 +120,8 @@ static FX_RET mode_watershed() {
   const bool fresh = (SEGENV.call == 0 || s->mode != want);
   if (fresh) {
     s->mode = want; s->clk[0] = s->clk[1] = 0;
-    s->slice = 0; s->hop = 0.0f; s->surge = 0; s->hueCyc = 0; s->relief = 255;
+    s->slice = 0; s->hop = 0.0f; s->drift = 0.0f;
+    s->surge = 0; s->hueCyc = 0; s->relief = 255;
     for (size_t i = 0; i < m; i++) { w[i] = 0; w2[i] = 0; acc[i] = 0; hue[i] = 0; }
 
     if (cube) {
@@ -179,21 +186,32 @@ static FX_RET mode_watershed() {
     const size_t step = (m + WS_SLICE - 1) / WS_SLICE;
     const size_t from = reset ? 0 : (size_t)s->slice;
     const size_t to   = reset ? m : ((from + step > m) ? m : from + step);
-    const float amp = 0.35f + (float)relief * (1.65f / 255.0f);
+    const float amp = 0.20f + (float)relief * (1.05f / 255.0f);
+    const float ph = s->drift;
 
     for (size_t i = from; i < to; i++) {
       const float X = (float)px[i] * 0.01f, Y = (float)py[i] * 0.01f, Z = (float)pz[i] * 0.01f;
-      float v = sinf(2.1f * X + 1.3f * Y) * 1.00f
-              + sinf(1.7f * Y - 2.3f * Z + 1.1f) * 0.85f
-              + sinf(2.9f * Z + 1.9f * X + 2.4f) * 0.60f
-              + sinf(4.3f * X - 3.7f * Z + 0.7f) * 0.30f
-              + sinf(5.1f * Y + 4.7f * X + 1.8f) * 0.18f;
-      int hbv = (int)(v * amp * 42.0f);
+      // GRAVITY FIRST. Without it the landscape was pure noise and the drainage
+      // ran off in whatever direction the noise happened to tilt - it came out
+      // flowing east to west, with no reason for it to do anything else. Height
+      // now rises with world Z, so the lid is the high ground and every wall
+      // drains downward from it. That is also what a cube on a table does.
+      float v = Z * 3.4f;
+      v += sinf(2.1f * X + 1.3f * Y + ph) * 1.00f * amp
+         + sinf(1.7f * Y - 2.3f * Z + 1.1f - ph * 0.7f) * 0.85f * amp
+         + sinf(2.9f * Z + 1.9f * X + 2.4f + ph * 1.3f) * 0.60f * amp
+         + sinf(4.3f * X - 3.7f * Z + 0.7f - ph * 1.9f) * 0.30f * amp
+         + sinf(5.1f * Y + 4.7f * X + 1.8f + ph * 2.2f) * 0.18f * amp;
+      int hbv = (int)(v * 30.0f);
       if (hbv < -127) hbv = -127; else if (hbv > 127) hbv = 127;
       hb[i] = (int8_t)hbv;
       if (reset) h[i] = (int16_t)(hbv * WS_HSCALE);
     }
     s->slice = (uint16_t)((to >= m) ? 0 : to);
+    // The landscape itself creeps. Without this the troughs are fixed for ever
+    // and the picture has no variance in it - the channels are wherever the
+    // noise put them at boot and they stay there.
+    s->drift += (float)dt * 0.000045f;
   }
 
   // Steepest descent. Recomputed over the whole surface every frame - it is four
@@ -205,6 +223,8 @@ static FX_RET mode_watershed() {
     if (ai < 0) ai = 0; else if (ai >= Bq) ai = Bq - 1;
     if (bi < 0) bi = 0; else if (bi >= Bq) bi = Bq - 1;
     uint16_t best = WS_SINK; int bh = h[i];
+    const uint16_t cur = dn[i];
+    const bool curOk = (cur != WS_SINK && (size_t)cur < m && (int)h[cur] < (int)h[i]);
     if (cube) {
       const uint16_t n0 = cfx_rev(rev, Bq, f, ai - 1, bi);
       const uint16_t n1 = cfx_rev(rev, Bq, f, ai + 1, bi);
@@ -228,7 +248,10 @@ static FX_RET mode_watershed() {
         if ((int)h[j] < bh) { bh = h[j]; best = (uint16_t)j; }
       }
     }
-    dn[i] = best;
+    // Move the outflow only on a clear win, or if the old one is no longer
+    // downhill at all. This is the flicker fix.
+    if (!curOk) dn[i] = best;
+    else if (best != WS_SINK && (int)h[best] < (int)h[cur] - WS_HYST) dn[i] = best;
   }
 
   // --- rain -------------------------------------------------------------------
@@ -238,7 +261,9 @@ static FX_RET mode_watershed() {
   // trunk is bright because it is large. Scattering a handful of random drops
   // instead - which is what this did first - draws almost nothing: 8 lit pixels
   // a frame measured mean 4.0 with 94% of the surface dark.
-  const int drizzle = 1 + (rain * 7) / 255;
+  // Smaller drops, more often: the flow reads as water rather than as a
+  // sequence of lumps arriving.
+  const int drizzle = 1 + (rain * 3) / 255;
   if (storms && beat > 90) {
     int best = 0, bestRise = -1;
     for (int k = 0; k < 16; k++) {
@@ -261,9 +286,9 @@ static FX_RET mode_watershed() {
   }
 
   // --- advect -----------------------------------------------------------------
-  s->hop += (5.0f + (float)SEGMENT.speed * (34.0f / 255.0f)) * (float)dt * 0.001f;
+  s->hop += (9.0f + (float)SEGMENT.speed * (52.0f / 255.0f)) * (float)dt * 0.001f;
   int hops = (int)s->hop;
-  if (hops > 3) { hops = 3; s->hop = 0.0f; } else s->hop -= (float)hops;
+  if (hops > 5) { hops = 5; s->hop = 0.0f; } else s->hop -= (float)hops;
 
   for (int q = 0; q < hops; q++) {
     for (size_t i = 0; i < m; i++) {
@@ -290,8 +315,13 @@ static FX_RET mode_watershed() {
   {
     const uint8_t f = fx_fade(1 + ((255 - memory) * 12) / 255, dt);
     for (size_t i = 0; i < m; i++) {
-      const uint8_t a = acc[i];
-      acc[i] = (w[i] > a) ? w[i] : ((a > f) ? (uint8_t)(a - f) : 0);
+      // Rise toward the flow rather than snapping to it. Taking the max made
+      // the channel jump with every arriving parcel of water, which read as the
+      // memory flickering rather than as a channel filling.
+      int a = (int)acc[i];
+      if ((int)w[i] > a) a += ((int)w[i] - a + 1) >> 1;
+      else               a -= (int)f;
+      acc[i] = (uint8_t)(a < 0 ? 0 : (a > 255 ? 255 : a));
       if (erode) {
         // Flow cuts down; the ground everywhere relaxes back toward its base
         // shape. A busy channel deepens and captures its neighbours until
@@ -326,7 +356,11 @@ static FX_RET mode_watershed() {
         b = (b * gainI) >> 8;
         if (b > 255) b = 255;
         if (b > 0) {
-          c = SEGMENT.color_from_palette(hue[i], false, true, 0);
+          // The palette shifts with how much water this pixel carries, so a
+          // trunk is not merely brighter than its headwaters but a different
+          // colour - the hierarchy reads even where everything is bright.
+          const uint8_t idx = (uint8_t)((int)hue[i] + (int)ws_log((uint8_t)chan) / 3);
+          c = SEGMENT.color_from_palette(idx, false, true, 0);
           c = mq_scale(c, (uint8_t)b);
         }
       }
@@ -337,7 +371,7 @@ static FX_RET mode_watershed() {
 }
 
 static const char _data_FX_MODE_WATERSHED[] PROGMEM =
-  "Ace 3-D Watershed@Flow speed,Brightness,Relief,Channel memory,Rainfall,Storms on beat,Erosion,Flat mode;;!;2f;sx=110,ix=210,c1=140,c2=180,c3=16,o1=1,o2=1,pal=11";
+  "Ace 3-D Watershed@Flow speed,Brightness,Relief,Channel memory,Rainfall,Storms on beat,Erosion,Flat mode;;!;2f;sx=110,ix=160,c1=150,c2=170,c3=14,o1=1,o2=1,pal=11";
 
 
 // ---------------------------------------------------------------------------
