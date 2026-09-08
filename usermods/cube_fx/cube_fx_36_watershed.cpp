@@ -86,7 +86,8 @@ struct WsState {
   uint8_t  surge;
   uint16_t hueCyc;
   uint8_t  relief;              // the Relief the field was last built at
-  uint8_t  hopN;                // hop counter, for metering the drizzle
+  float    rainAcc;             // fractional drizzle hops carried over
+  uint16_t wavePh;              // Q8 phase of the rainbow running downstream
 };
 
 static FX_RET mode_watershed() {
@@ -122,7 +123,7 @@ static FX_RET mode_watershed() {
   if (fresh) {
     s->mode = want; s->clk[0] = s->clk[1] = 0;
     s->slice = 0; s->hop = 0.0f; s->drift = 0.0f;
-    s->surge = 0; s->hueCyc = 0; s->relief = 255; s->hopN = 0;
+    s->surge = 0; s->hueCyc = 0; s->relief = 255; s->rainAcc = 0.0f; s->wavePh = 0;
     for (size_t i = 0; i < m; i++) { w[i] = 0; w2[i] = 0; acc[i] = 0; hue[i] = 0; }
 
     if (cube) {
@@ -170,7 +171,11 @@ static FX_RET mode_watershed() {
     s->surge = (uint8_t)(f < 0 ? 0 : f); }
 
   // --- parameters ---------------------------------------------------------------
-  const int  gainI  = 40 + ((int)SEGMENT.intensity * 215) / 255;
+  // Brightness is fixed and the slider carries DROP SIZE instead: how much
+  // water one drop delivers. Small drops are a sheet with no grain in it; large
+  // ones arrive as visible parcels that swell the channels as they pass.
+  const int  gainI = 205;
+  const int  drop  = 1 + ((int)SEGMENT.intensity * 7) / 255;
   const int  relief = (int)SEGMENT.custom1;
   const int  memory = (int)SEGMENT.custom2;
   const int  rain   = (int)cfx_c3full(SEGMENT.custom3);
@@ -267,7 +272,11 @@ static FX_RET mode_watershed() {
   // five units per pixel per second - which is far more water than the network
   // can pass, so it simply filled up and stayed full. Rainfall now sets how
   // often a drizzle hop happens at all; the storms are the events.
-  const int rainEvery = 17 - (rain * 16) / 255;      // 17 (nearly dry) .. 1
+  // Metered as a RATE, accumulated fractionally, not as "every Nth hop". The
+  // modulo version made the rate 1/N, so almost all of the slider's effect was
+  // crammed into its top few percent - settings 0 and 8 measured identically.
+  // Arid at the bottom, a drizzle hop every hop at the top, linear between.
+  const float rainRate = (float)rain * (1.0f / 255.0f);
   if (storms && beat > 90) {
     int best = 0, bestRise = -1;
     for (int k = 0; k < 16; k++) {
@@ -283,7 +292,7 @@ static FX_RET mode_watershed() {
     for (size_t i = 0; i < m; i++) {
       const int d = (int)px[i] * cx + (int)py[i] * cy + (int)pz[i] * cz;
       if (d < lim) continue;
-      const int nw = (int)w[i] + 40 + (int)beat / 3;
+      const int nw = (int)w[i] + (30 + (int)beat / 3) * drop / 3;
       w[i] = (uint8_t)(nw > 255 ? 255 : nw);
       hue[i] = sh;
     }
@@ -295,10 +304,11 @@ static FX_RET mode_watershed() {
   if (hops > 5) { hops = 5; s->hop = 0.0f; } else s->hop -= (float)hops;
 
   for (int q = 0; q < hops; q++) {
-    s->hopN++;
-    if (rain > 4 && (s->hopN % (uint8_t)rainEvery) == 0) {
+    s->rainAcc += rainRate;
+    if (s->rainAcc >= 1.0f) {
+      s->rainAcc -= 1.0f;
       for (size_t i = 0; i < m; i++) {
-        const int nw = (int)w[i] + 1;
+        const int nw = (int)w[i] + drop;
         w[i] = (uint8_t)(nw > 255 ? 255 : nw);
         if (!acc[i] && !hue[i]) hue[i] = (uint8_t)(s->hueCyc >> 8);
       }
@@ -353,6 +363,12 @@ static FX_RET mode_watershed() {
   }
 
   s->hueCyc = (uint16_t)(s->hueCyc + (uint32_t)dt * 9u);
+  // The rainbow rides the HEIGHT FIELD, which is the one coordinate that is
+  // monotonic along every flow path - water only ever moves from high h to low
+  // h. So bands of colour drawn on h automatically lie across the channels and
+  // travel down them as the phase advances, without anything needing to know
+  // which way any particular trough runs.
+  s->wavePh = (uint16_t)(s->wavePh + (uint32_t)dt * 26u);
   const uint8_t drive = cfx_drive(vol, 0.5f, 195);
 
   // --- paint ----------------------------------------------------------------
@@ -376,7 +392,10 @@ static FX_RET mode_watershed() {
           // The palette shifts with how much water this pixel carries, so a
           // trunk is not merely brighter than its headwaters but a different
           // colour - the hierarchy reads even where everything is bright.
-          const uint8_t idx = (uint8_t)((int)hue[i] + (int)ws_log((uint8_t)chan) / 3);
+          const uint8_t idx = (uint8_t)((int)hue[i]
+                                        + (int)(uint8_t)(s->wavePh >> 8)
+                                        + (int)(h[i] >> 4)
+                                        + (int)ws_log((uint8_t)chan) / 4);
           c = SEGMENT.color_from_palette(idx, false, true, 0);
           c = mq_scale(c, (uint8_t)b);
         }
@@ -388,7 +407,7 @@ static FX_RET mode_watershed() {
 }
 
 static const char _data_FX_MODE_WATERSHED[] PROGMEM =
-  "Ace 3-D Watershed@Flow speed,Brightness,Relief,Channel memory,Rainfall,Storms on beat,Erosion,Flat mode;;!;2f;sx=110,ix=160,c1=150,c2=170,c3=14,o1=1,o2=1,pal=11";
+  "Ace 3-D Watershed@Flow speed,Drop size,Relief,Channel memory,Rainfall,Storms on beat,Erosion,Flat mode;;!;2f;sx=110,ix=90,c1=150,c2=170,c3=20,o1=1,o2=1,pal=11";
 
 
 // ---------------------------------------------------------------------------
