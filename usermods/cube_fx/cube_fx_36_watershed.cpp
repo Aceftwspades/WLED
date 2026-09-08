@@ -86,6 +86,7 @@ struct WsState {
   uint8_t  surge;
   uint16_t hueCyc;
   uint8_t  relief;              // the Relief the field was last built at
+  uint8_t  hopN;                // hop counter, for metering the drizzle
 };
 
 static FX_RET mode_watershed() {
@@ -121,7 +122,7 @@ static FX_RET mode_watershed() {
   if (fresh) {
     s->mode = want; s->clk[0] = s->clk[1] = 0;
     s->slice = 0; s->hop = 0.0f; s->drift = 0.0f;
-    s->surge = 0; s->hueCyc = 0; s->relief = 255;
+    s->surge = 0; s->hueCyc = 0; s->relief = 255; s->hopN = 0;
     for (size_t i = 0; i < m; i++) { w[i] = 0; w2[i] = 0; acc[i] = 0; hue[i] = 0; }
 
     if (cube) {
@@ -211,7 +212,7 @@ static FX_RET mode_watershed() {
     // The landscape itself creeps. Without this the troughs are fixed for ever
     // and the picture has no variance in it - the channels are wherever the
     // noise put them at boot and they stay there.
-    s->drift += (float)dt * 0.000045f;
+    s->drift += (float)dt * 0.00028f;
   }
 
   // Steepest descent. Recomputed over the whole surface every frame - it is four
@@ -261,9 +262,12 @@ static FX_RET mode_watershed() {
   // trunk is bright because it is large. Scattering a handful of random drops
   // instead - which is what this did first - draws almost nothing: 8 lit pixels
   // a frame measured mean 4.0 with 94% of the surface dark.
-  // Smaller drops, more often: the flow reads as water rather than as a
-  // sequence of lumps arriving.
-  const int drizzle = 1 + (rain * 3) / 255;
+  // Rain is METERED, and at the bottom of the slider it stops entirely. The
+  // first version rained one unit on every pixel on every hop - about twenty
+  // five units per pixel per second - which is far more water than the network
+  // can pass, so it simply filled up and stayed full. Rainfall now sets how
+  // often a drizzle hop happens at all; the storms are the events.
+  const int rainEvery = 17 - (rain * 16) / 255;      // 17 (nearly dry) .. 1
   if (storms && beat > 90) {
     int best = 0, bestRise = -1;
     for (int k = 0; k < 16; k++) {
@@ -291,10 +295,13 @@ static FX_RET mode_watershed() {
   if (hops > 5) { hops = 5; s->hop = 0.0f; } else s->hop -= (float)hops;
 
   for (int q = 0; q < hops; q++) {
-    for (size_t i = 0; i < m; i++) {
-      const int nw = (int)w[i] + drizzle;
-      w[i] = (uint8_t)(nw > 255 ? 255 : nw);
-      if (!acc[i] && !hue[i]) hue[i] = (uint8_t)(s->hueCyc >> 8);
+    s->hopN++;
+    if (rain > 4 && (s->hopN % (uint8_t)rainEvery) == 0) {
+      for (size_t i = 0; i < m; i++) {
+        const int nw = (int)w[i] + 1;
+        w[i] = (uint8_t)(nw > 255 ? 255 : nw);
+        if (!acc[i] && !hue[i]) hue[i] = (uint8_t)(s->hueCyc >> 8);
+      }
     }
     for (size_t i = 0; i < m; i++) w2[i] = 0;
     for (size_t i = 0; i < m; i++) {
@@ -305,7 +312,17 @@ static FX_RET mode_watershed() {
       // The LARGER flow keeps its colour. Averaging two distant palette entries
       // gives grey and throws away the thing the colour is carrying.
       if (t != i && v > w2[t]) hue[t] = hue[i];
-      const int nv = (int)w2[t] + (int)((t == i) ? (v * 3) / 4 : v);
+      // WATER LEAVES THE SYSTEM. This is the piece that was missing, and
+      // without it the effect had no drainage in it at all: rain arrived, ran
+      // downhill, reached the bottom and stayed, because a closed surface has
+      // no outlet. Everything saturated and the picture stopped moving.
+      //
+      // A sink now passes most of its water out rather than holding it, and
+      // everything seeps a little on the way, so the network empties on its own
+      // between storms and what you see is DISCHARGE - water on its way
+      // somewhere - rather than depth piling up.
+      int carry = (t == i) ? (v * 22) / 100 : (v * 96) / 100;
+      const int nv = (int)w2[t] + carry;
       w2[t] = (uint8_t)(nv > 255 ? 255 : nv);
     }
     for (size_t i = 0; i < m; i++) w[i] = w2[i];
