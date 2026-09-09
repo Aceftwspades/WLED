@@ -138,6 +138,22 @@ static void cfx_smoothSpec(uint8_t *spec, const uint8_t *fft, uint8_t sm) {
   }
 }
 
+// Fast atan2, max error ~1e-5 rad, no library call. Effects that need an ANGLE
+// per pixel - a phase, a sector index, a winding - were each carrying their own
+// copy of this; it lives here now. Accurate enough that the result is
+// indistinguishable at 8-bit palette resolution, and it never divides by zero.
+static inline float cfx_atan2f(float y, float x) {
+  const float ax = fabsf(x), ay = fabsf(y);
+  const float mx = (ax > ay) ? ax : ay;
+  if (mx < 1e-20f) return 0.0f;
+  const float a = ((ax > ay) ? ay : ax) / mx;
+  const float s = a * a;
+  float r = ((-0.0464964749f * s + 0.15931422f) * s - 0.327622764f) * s * a + a;
+  if (ay > ax) r = 1.57079637f - r;
+  if (x < 0.0f) r = 3.14159274f - r;
+  return (y < 0.0f) ? -r : r;
+}
+
 static inline int8_t cfx_clamp8(float v) {
   const int r = (int)(v * 127.0f);
   return (int8_t)((r < -127) ? -127 : (r > 127 ? 127 : r));

@@ -200,19 +200,6 @@ struct PcState {
 static const float PC_QC[PC_QWAVES] = { 1.000000f, 0.809017f, 0.309017f, -0.309017f, -0.809017f };
 static const float PC_QS[PC_QWAVES] = { 0.000000f, 0.587785f, 0.951057f,  0.951057f,  0.587785f };
 
-// ~1e-5 rad, no library call.
-static inline float pc_atan2(float y, float x) {
-  const float ax = fabsf(x), ay = fabsf(y);
-  const float mx = (ax > ay) ? ax : ay;
-  if (mx < 1e-20f) return 0.0f;
-  const float a = ((ax > ay) ? ay : ax) / mx;
-  const float s = a * a;
-  float r = ((-0.0464964749f * s + 0.15931422f) * s - 0.327622764f) * s * a + a;
-  if (ay > ax) r = 1.57079637f - r;
-  if (x < 0.0f) r = 3.14159274f - r;
-  return (y < 0.0f) ? -r : r;
-}
-
 // Palette indices are cyclic, so a blend has to take the short way round -
 // straight interpolation between 250 and 5 sweeps the whole wheel backwards.
 static inline uint8_t pc_mixIdx(uint8_t a, uint8_t b, uint8_t f) {
@@ -391,7 +378,7 @@ static FX_RET mode_poincare() {
 
       // --- reduce into the fundamental triangle -----------------------------
       for (int it = 0; it < PC_MAXIT; it++) {
-        const float th = pc_atan2(v, u);
+        const float th = cfx_atan2f(v, u);
         int k = (int)floorf(th * (float)s->p * 0.159154943f + 0.5f);   // /(2pi)
         k %= (int)s->p; if (k < 0) k += (int)s->p;
         if (k) { const float c = s->rotC[k], sn = s->rotS[k];
@@ -453,7 +440,7 @@ static FX_RET mode_poincare() {
             tv[n] = (uint8_t)(acc / PC_QWAVES);
             break; }
           default: {                                     // phase within the tile
-            const float ph = pc_atan2(nv, nu) * (float)s->p * 0.318309886f;
+            const float ph = cfx_atan2f(nv, nu) * (float)s->p * 0.318309886f;
             tv[n] = (uint8_t)(int)(ph * qk * 130.0f);
             break; }
         }

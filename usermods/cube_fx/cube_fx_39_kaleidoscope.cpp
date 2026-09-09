@@ -1,4 +1,5 @@
 #include "wled.h"
+#include <string.h>
 #include "cube_fx_common.h"
 #include "cube_fx_bank.h"
 
@@ -70,6 +71,7 @@
 #define KD_NSYM     32
 #define KD_MAXMIR   16          // Dn at n = 16; icosahedral needs 15
 #define KD_MAXCUT   12
+#define KD_NROOT     4          // two zeros and two poles
 #define KD_PASSES    4          // measured worst case is 2 sweeps
 #define KD_PHI      1.61803399f
 
@@ -81,11 +83,13 @@ struct KdState {
   uint16_t spinA, spinB;        // the two rotation clocks
   uint16_t drift;               // palette rotation
   uint16_t cutPh[KD_MAXCUT];    // each cut's own offset phase
+  uint16_t rootPh[KD_NROOT];    // where the zeros and poles have drifted to
   // --- derived from `sym` --------------------------------------------------
   uint8_t  nm;                  // how many mirrors
   float    mir[KD_MAXMIR][3];
   float    cx, cy, cz;          // centroid direction of the fundamental domain
-  float    spread;              // how far the domain reaches from that centroid
+  float    t1[3], t2[3];        // a tangent frame there - the phase field's chart
+  float    spread, invSpread;   // how far the domain reaches from that centroid
   float    cut[KD_MAXCUT][3];   // cut plane normals, fixed per symmetry
 };
 
@@ -223,6 +227,24 @@ static void kd_load(KdState *s, uint8_t idx) {
     }
   s->spread = sqrtf(far > 0.0f ? far : 0.02f);   // chord-ish, good enough
   if (s->spread < 0.05f) s->spread = 0.05f;
+  s->invSpread = 1.0f / s->spread;
+
+  // A tangent frame at the centroid. This is the chart the phase field is
+  // evaluated in - the domain is a small patch, so a tangent plane is the
+  // right local coordinate and costs two dot products instead of a
+  // projection. Built from whichever axis is least aligned with the centroid,
+  // so the cross product never collapses.
+  { float ux = 0.0f, uy = 0.0f, uz = 1.0f;
+    if (fabsf(s->cz) > 0.9f) { ux = 1.0f; uz = 0.0f; }
+    float ax = uy * s->cz - uz * s->cy;
+    float ay = uz * s->cx - ux * s->cz;
+    float az = ux * s->cy - uy * s->cx;
+    float L2 = sqrtf(ax * ax + ay * ay + az * az);
+    if (L2 < 1e-6f) { ax = 1.0f; ay = 0.0f; az = 0.0f; L2 = 1.0f; }
+    s->t1[0] = ax / L2; s->t1[1] = ay / L2; s->t1[2] = az / L2;
+    s->t2[0] = s->cy * s->t1[2] - s->cz * s->t1[1];
+    s->t2[1] = s->cz * s->t1[0] - s->cx * s->t1[2];
+    s->t2[2] = s->cx * s->t1[1] - s->cy * s->t1[0]; }
 
   for (int k = 0; k < KD_MAXCUT; k++) {
     s->cut[k][0] = KD_CUTDIR[k][0];
@@ -248,7 +270,8 @@ static FX_RET mode_kaleidoscope() {
     s->mode = want; s->clk[0] = s->clk[1] = 0;
     s->spinA = 0; s->spinB = 0; s->drift = 0; s->surge = 0;
     s->sym = 0xFF;
-    for (int k = 0; k < KD_MAXCUT; k++) s->cutPh[k] = (uint16_t)(k * 7411);
+    for (int k = 0; k < KD_MAXCUT; k++) s->cutPh[k]  = (uint16_t)(k * 7411);
+    for (int k = 0; k < KD_NROOT;  k++) s->rootPh[k] = (uint16_t)(k * 16384 + 2000);
   }
 
   uint16_t dt = fx_dt8(s->clk);
@@ -259,7 +282,7 @@ static FX_RET mode_kaleidoscope() {
   const int  nCut   = 2 + ((int)SEGMENT.custom1 * 10) / 255;      // 2..12
                                      // never 1: two cells, one of which
                                      // hashes dark, is 95% black surface
-  const int  spread = (int)SEGMENT.custom2;
+  const int  mix    = (int)SEGMENT.custom2;   // cell id <-> phase field
   const bool seams  = SEGMENT.check2;
   {
     uint8_t pick = SEGMENT.custom3;                               // 5-bit index
@@ -284,6 +307,9 @@ static FX_RET mode_kaleidoscope() {
   for (int k = 0; k < nCut; k++)
     s->cutPh[k] = (uint16_t)(s->cutPh[k] +
                   ((uint32_t)dt * (uint32_t)(11 + (int)SEGMENT.speed / 3) * (3u + k)) / (23u * 4u));
+  for (int k = 0; k < KD_NROOT; k++)
+    s->rootPh[k] = (uint16_t)(s->rootPh[k] +
+                   ((uint32_t)dt * (uint32_t)(7 + (int)SEGMENT.speed / 5) * (2u + k)) / (23u * 3u));
   s->drift = (uint16_t)(s->drift + (uint32_t)dt * 2u);
 
   // Two rotations about different axes. Composed once per frame, not per pixel.
@@ -303,6 +329,16 @@ static FX_RET mode_kaleidoscope() {
     const float base = s->cut[k][0] * s->cx + s->cut[k][1] * s->cy + s->cut[k][2] * s->cz;
     const float w    = (float)(int16_t)(sin16_t(s->cutPh[k])) * (1.0f / 32768.0f);
     cOff[k] = base + w * s->spread * 0.85f;
+  }
+
+  // Zeros and poles of the rational map, drifting on their own circles inside
+  // the domain. Two of each: arg((z-a0)(z-a1) * conj((z-b0)(z-b1))) is the
+  // phase, which takes five complex multiplies and ONE atan2 rather than four.
+  float rr[KD_NROOT], ri[KD_NROOT];
+  for (int k = 0; k < KD_NROOT; k++) {
+    const float a = (float)s->rootPh[k] * (6.28318531f / 65536.0f);
+    const float R = 0.30f + 0.16f * (float)k;
+    rr[k] = R * cosf(a); ri[k] = R * sinf(a);
   }
 
   const uint8_t hueOff = (uint8_t)(s->drift >> 8);
@@ -353,13 +389,66 @@ static FX_RET mode_kaleidoscope() {
       }
 
       // --- colour -----------------------------------------------------------
-      // Hue carries WHICH cell, brightness stays near-flat, so cells read as
-      // distinct regions rather than as a brightness ramp. Cells keep their
-      // identity as the cuts drift because the id is the bitmask, not a count.
+      // Two hue sources on two different channels, which is the whole reason
+      // they compose. The cell id is DISCRETE - it says which island you are
+      // on, and it is constant across that island. The phase field is
+      // CONTINUOUS - the argument of a rational map with two zeros and two
+      // poles, read in the tangent chart at the domain centroid - and it
+      // sweeps the whole colour wheel around every zero and pole, winding one
+      // way at a zero and the other at a pole.
+      //
+      // Because it is evaluated at the FOLDED point it inherits the mirror
+      // symmetry exactly, so every vortex appears in all 8 to 120 copies at
+      // once. And because the cell borders are black, colour flowing across
+      // them does not blur the islands together.
       uint32_t h = cell * 2654435761u;
       h ^= h >> 13;
       const uint8_t cid = (uint8_t)(h >> 7);
-      const uint8_t idx = (uint8_t)(((int)cid * spread) / 255 + hueOff);
+
+      uint8_t phs = 0;
+      if (mix) {
+        const float zx = (nx * s->t1[0] + ny * s->t1[1] + nz * s->t1[2]) * s->invSpread;
+        const float zy = (nx * s->t2[0] + ny * s->t2[1] + nz * s->t2[2]) * s->invSpread;
+        float ar = 1.0f, ai = 0.0f, br = 1.0f, bi = 0.0f;
+        for (int k = 0; k < KD_NROOT; k++) {
+          const float dr = zx - rr[k], di = zy - ri[k];
+          if (k < 2) { const float t = ar * dr - ai * di; ai = ar * di + ai * dr; ar = t; }
+          else       { const float t = br * dr - bi * di; bi = br * di + bi * dr; br = t; }
+        }
+        const float wr = ar * br + ai * bi;        // num * conj(den)
+        const float wi = ai * br - ar * bi;
+
+        // Domain colouring proper: hue from the argument, contour rings from
+        // the modulus. The argument alone was too quiet - one turn of the
+        // palette spread over a whole island is barely a gradient - so it
+        // winds twice per turn, and the |f| contours add the rings that
+        // converge on every zero and pole. Together they make the spiral
+        // that says which singularity you are looking at and which way it
+        // turns.
+        int fld = (int)(cfx_atan2f(wi, wr) * (128.0f / 3.14159274f));
+
+        // log2|f|^2 without a log call: a float already stores its exponent,
+        // and the top mantissa bits are a good enough fractional part at
+        // 8-bit palette resolution.
+        { const float den2 = br * br + bi * bi;
+          const float num2 = ar * ar + ai * ai;
+          float mod2 = num2 / ((den2 > 1e-20f) ? den2 : 1e-20f);
+          if (!(mod2 > 1e-20f)) mod2 = 1e-20f;
+          uint32_t bits; memcpy(&bits, &mod2, sizeof(bits));
+          const int e   = (int)((bits >> 23) & 0xFF) - 127;
+          int l2 = (e << 8) | (int)((bits >> 15) & 0xFF);           // 8.8
+          // CLAMPED, and that is the whole difference between contours and
+          // noise: log|f| runs to minus infinity at a zero and plus infinity
+          // at a pole, so unbounded rings pile up without limit exactly where
+          // the eye is drawn. Four octaves either side is all that resolves at
+          // sixteen pixels a face.
+          if (l2 >  1024) l2 =  1024; else if (l2 < -1024) l2 = -1024;
+          fld += l2 >> 4; }
+
+        phs = (uint8_t)fld;
+      }
+      const uint8_t idx = (uint8_t)(((int)cid * (255 - mix)) / 255
+                                  + ((int)phs * mix) / 255 + hueOff);
 
       // Cells take a wide brightness range from their own id, not a narrow
       // one. Held near a mid grey they came out muddy - every cell the same
@@ -389,7 +478,7 @@ static FX_RET mode_kaleidoscope() {
 }
 
 static const char _data_FX_MODE_KALEIDOSCOPE[] PROGMEM =
-  "Ace 3-D Kaleidoscope@Spin,Fill,Circles,Colour spread,Symmetry,Beat surge,Seams,Flat mode;;!;2f;sx=110,ix=128,c1=90,c2=190,c3=4,o1=1,pal=11";
+  "Ace 3-D Kaleidoscope@Spin,Fill,Circles,Colour mix,Symmetry,Beat surge,Seams,Flat mode;;!;2f;sx=110,ix=128,c1=90,c2=170,c3=4,o1=1,pal=11";
 
 
 // ---------------------------------------------------------------------------
