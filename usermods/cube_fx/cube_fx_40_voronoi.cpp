@@ -60,8 +60,48 @@
 // seed eat the sphere.
 // ===========================================================================
 
+// ---------------------------------------------------------------------------
+// TEN PARAMETERS OUT OF FIVE SLIDERS
+// ---------------------------------------------------------------------------
+// check1 is a SHIFT key. It does not change the picture at all - it changes
+// which page of parameters the five sliders address, so the effect carries ten
+// controls on hardware that only has five.
+//
+// The mechanism matters, because the obvious one does not work. Writing the
+// incoming page back into SEGMENT.speed and friends - which the parameter
+// memory usermod already does, so it is legal - loses the other page the
+// moment anything pushes all five sliders at once, and both the simulator's
+// control column and a preset load do exactly that.
+//
+// So nothing is ever written back. Both pages are held here, the sliders are
+// treated as a CONTROLLER rather than as storage, and a page only takes a new
+// value for a slider that actually moved since the last frame. Flipping shift
+// therefore disturbs nothing: the sliders have not moved, so neither page
+// changes, and the five controls simply start addressing the other page.
+//
+// The visible cost is that after a flip the slider POSITIONS no longer show
+// the values they control, until you touch them - the first touch snaps that
+// one parameter to wherever the slider physically sits. That is the honest
+// trade for ten controls, and it is why the page-two names are in the metadata
+// alongside the page-one ones.
+//
+// The pages live at file scope rather than in segment data, so they survive
+// switching to another effect and back. They do not survive a reboot; the
+// parameter memory usermod restores whichever page was active, and the other
+// returns to its defaults.
+// ===========================================================================
+
 #define VN_MAX      48          // seeds; the loop is O(seeds) per pixel
 #define VN_GOLDEN   2.39996323f // golden angle, for the seed spiral
+#define VN_NPAR      5          // sliders per page
+
+// Page 0 is filled from the metadata defaults on first run; page 1 is these.
+static uint8_t vnPage[2][VN_NPAR] = {
+  { 110, 128, 110, 160,   8 },
+  { 150, 120,  70, 130,  25 },   // Swell, Relax, Warp, Wander, Hue
+};
+static uint8_t vnSeen[VN_NPAR];
+static bool    vnInit = false;
 
 struct VnState {
   uint8_t  mode;
@@ -123,12 +163,34 @@ static FX_RET mode_voronoi() {
   uint16_t dt = fx_dt8(s->clk);
   if (dt > 60) dt = 60;
 
-  // --- parameters -----------------------------------------------------------
-  const int  fill  = (int)SEGMENT.intensity;
-  const int  cush  = (int)SEGMENT.custom2;
-  const int  edgeW = (int)SEGMENT.custom3;          // 0..31, in pixels/10
-  const bool wire  = SEGMENT.check2;
-  int nWant = 6 + ((int)SEGMENT.custom1 * (VN_MAX - 6)) / 255;
+  // --- parameters, across two pages -----------------------------------------
+  { const uint8_t phys[VN_NPAR] = { SEGMENT.speed, SEGMENT.intensity,
+                                    SEGMENT.custom1, SEGMENT.custom2, SEGMENT.custom3 };
+    if (!vnInit) {
+      for (int i = 0; i < VN_NPAR; i++) { vnPage[0][i] = phys[i]; vnSeen[i] = phys[i]; }
+      vnInit = true;
+    }
+    const int pg = SEGMENT.check1 ? 1 : 0;
+    for (int i = 0; i < VN_NPAR; i++) {
+      if (phys[i] != vnSeen[i]) { vnPage[pg][i] = phys[i]; vnSeen[i] = phys[i]; }
+    }
+  }
+  const int  drift  = (int)vnPage[0][0];
+  const int  fill   = (int)vnPage[0][1];
+  const int  cells  = (int)vnPage[0][2];
+  const int  cush   = (int)vnPage[0][3];
+  const int  edgeW  = (int)vnPage[0][4] & 0x1F;     // custom3 is five bits
+  const int  swell  = (int)vnPage[1][0];
+  const int  relax  = (int)vnPage[1][1];
+  const int  warp   = (int)vnPage[1][2];
+  const int  wander = (int)vnPage[1][3];
+  // Slot four is custom3, which is a FIVE-bit slider - so whatever page uses
+  // it only ever receives 0..31. Edges wants exactly that; Hue wants a full
+  // byte and has to be widened, or it sits in the bottom eighth of its range
+  // and the cube comes out nearly monochrome.
+  const int  hueSpr = (int)cfx_c3full((uint8_t)(vnPage[1][4] & 0x1F));
+  const bool wire   = SEGMENT.check2;
+  int nWant = 6 + (cells * (VN_MAX - 6)) / 255;
   if (nWant < 6) nWant = 6; else if (nWant > VN_MAX) nWant = VN_MAX;
   if (nWant != (int)s->n) vn_seed(s, nWant);
   const int n = (int)s->n;
@@ -136,29 +198,46 @@ static FX_RET mode_voronoi() {
   // --- audio ----------------------------------------------------------------
   um_data_t     *um   = cfx_getAudioData();
   const float    vol  = *(float *)um->u_data[0];
-  const uint8_t  beat = SEGMENT.check1 ? fx_lowBeat(um) : 0;
+  const uint8_t  beat = swell ? fx_lowBeat(um) : 0;
   if (beat) {
     // One kick, one seed. Round-robin rather than random so a run of beats
     // spreads over the sphere instead of hammering the same cell.
     s->wt[s->nextSeed] = 255;
     s->nextSeed = (uint8_t)((s->nextSeed + 7) % n);
   }
-  { const int d = (int)fx_step(9, dt);
+  // Relax sets how long a swell takes to let go - about a sixth of a second at
+  // zero, about three at full. Swell being a depth slider rather than a
+  // checkbox means zero turns it off, so nothing is lost by taking check1 for
+  // the shift key.
+  { const int d = (int)fx_step(2 + ((255 - relax) * 20) / 255, dt);
     for (int i = 0; i < n; i++) s->wt[i] = (uint8_t)((s->wt[i] > d) ? (s->wt[i] - d) : 0); }
 
   // --- wander ---------------------------------------------------------------
+  // Quadratic, not linear. The old 11 + speed/4 only spanned 11 to 74, so the
+  // bottom of the slider was never still and the top was never fast. This runs
+  // 2 to 195 and passes through the old default at the same slider position,
+  // so the shipped look is unchanged and both ends are new ground.
   for (int i = 0; i < n; i++) {
-    const uint32_t r = (uint32_t)(11 + (int)SEGMENT.speed / 4);
+    const uint32_t r = (uint32_t)(2 + (drift * drift) / 336);
     s->ph[i][0] = (uint16_t)(s->ph[i][0] + ((uint32_t)dt * r * (3u + (i & 3u))) / (23u * 5u));
     s->ph[i][1] = (uint16_t)(s->ph[i][1] + ((uint32_t)dt * r * (2u + (i & 5u))) / (23u * 7u));
   }
-  s->drift = (uint16_t)(s->drift + (uint32_t)dt * 2u);
+  // Palette rotation rides the SAME control, at its own much slower rate.
+  // Left on a fixed clock it was the only thing still moving at Drift 0, so
+  // the bottom of the slider never actually reached still - and a frozen
+  // diagram with only the beat swell moving turns out to be one of the better
+  // things this effect does.
+  s->drift = (uint16_t)(s->drift + ((uint32_t)dt * (uint32_t)drift) / 55u);
 
   // Live seed positions. Amplitude is a third of the seed spacing - see the
   // header for why this is an oscillation about a home and not a free drift.
   float sx[VN_MAX], sy[VN_MAX], sz[VN_MAX];
   { const float spacing = 2.0f / sqrtf((float)n);
-    const float amp = spacing * 0.34f;
+    // Amplitude is a separate axis from rate: small and quick reads as
+    // jitter, wide and slow as a slow morph. Past about half the spacing the
+    // seeds start to crowd each other and cells vary a lot in size, which is
+    // a legitimate look rather than a failure - hence the range reaching it.
+    const float amp = spacing * (0.05f + (float)wander * (0.55f / 255.0f));
     for (int i = 0; i < n; i++) {
       const float u = amp * (float)sin16_t(s->ph[i][0]) * (1.0f / 32768.0f);
       const float v = amp * (float)sin16_t(s->ph[i][1]) * (1.0f / 32768.0f);
@@ -187,7 +266,19 @@ static FX_RET mode_voronoi() {
   float wt[VN_MAX];
   { float cap = 0.80f / sqrtf((float)n);
     if (cap > 0.22f) cap = 0.22f;
+    cap *= (float)swell * (1.0f / 255.0f);
     for (int i = 0; i < n; i++) wt[i] = cap * (float)s->wt[i] * (1.0f / 255.0f); }
+
+  // Warp gives every seed its own MULTIPLICATIVE weight. Additive weights
+  // (the swell) slide a boundary while keeping it a straight bisector;
+  // multiplicative ones bend it into a circular arc and make cells genuinely
+  // different sizes - an Apollonius diagram rather than a Voronoi one.
+  float mw[VN_MAX];
+  { const float k = (float)warp * (0.95f / 255.0f);
+    for (int i = 0; i < n; i++) {
+      uint32_t h = (uint32_t)(i * 2246822519u + 374761393u); h ^= h >> 15;
+      mw[i] = 1.0f + k * ((float)(h & 255) * (1.0f / 255.0f) - 0.5f);
+    } }
 
   const uint8_t hueOff = (uint8_t)(s->drift >> 8);
   const uint8_t drive  = cfx_drive(vol, 0.5f, 200);
@@ -211,7 +302,7 @@ static FX_RET mode_voronoi() {
       float b1 = 1e9f, b2 = 1e9f;
       int   i1 = 0, i2 = 0;
       for (int i = 0; i < n; i++) {
-        const float d = 1.0f - (px * sx[i] + py * sy[i] + pz * sz[i]) - wt[i];
+        const float d = (1.0f - (px * sx[i] + py * sy[i] + pz * sz[i])) * mw[i] - wt[i];
         if (d < b1)      { b2 = b1; i2 = i1; b1 = d; i1 = i; }
         else if (d < b2) { b2 = d;  i2 = i; }
       }
@@ -219,7 +310,11 @@ static FX_RET mode_voronoi() {
       // Distance to the boundary, in pixels. Exact - see the header.
       float edgePx;
       { const float dx = sx[i1] - sx[i2], dy = sy[i1] - sy[i2], dz = sz[i1] - sz[i2];
-        float chord = sqrtf(dx * dx + dy * dy + dz * dz);
+        // The chord alone is the gradient only for a plain bisector. With
+        // multiplicative weights in play the field is scaled by them too, so
+        // the mean of the two goes in or the outline thickens wherever warp
+        // has shrunk a cell.
+        float chord = sqrtf(dx * dx + dy * dy + dz * dz) * 0.5f * (mw[i1] + mw[i2]);
         if (chord < 1e-5f) chord = 1e-5f;
         edgePx = ((b2 - b1) / chord) / (pxA * iL); }
 
@@ -238,7 +333,7 @@ static FX_RET mode_voronoi() {
       // colour: identity from the seed, gradient from the cushion
       uint32_t hsh = (uint32_t)(i1 + 1) * 2654435761u;
       hsh ^= hsh >> 13;
-      const uint8_t idx = (uint8_t)((int)(uint8_t)(hsh >> 9)
+      const uint8_t idx = (uint8_t)(((int)(uint8_t)(hsh >> 9) * hueSpr) / 255
                                   + (int)(cu * (float)cush * 0.45f) + hueOff);
 
       int lum;
@@ -272,7 +367,7 @@ static FX_RET mode_voronoi() {
 }
 
 static const char _data_FX_MODE_VORONOI[] PROGMEM =
-  "Ace 3-D Voronoi@Drift,Fill,Cells,Cushion,Edges,Swell on beat,Wire,Flat mode;;!;2f;sx=110,ix=128,c1=110,c2=160,c3=8,o1=1,pal=11";
+  "Ace 3-D Voronoi@Drift/Swell,Fill/Relax,Cells/Warp,Cushion/Wander,Edges/Hue,Shift,Wire,Flat mode;;!;2f;sx=110,ix=128,c1=110,c2=160,c3=8,pal=11";
 
 
 // ---------------------------------------------------------------------------
