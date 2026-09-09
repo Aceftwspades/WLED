@@ -260,7 +260,8 @@ class App:
             return
         frames, self.rec = self.rec, None
         name = "".join(c if c.isalnum() else "_" for c in self.eng.names[self.eng.idx])
-        path = os.path.join(SHOT_DIR, f"{name}_{int(time.time())}.gif")
+        os.makedirs(GIF_DIR, exist_ok=True)
+        path = os.path.join(GIF_DIR, f"{name}_{int(time.time())}.gif")
         self.rec_msg = f"encoding {len(frames)} frames..."
         import threading
         threading.Thread(target=self._encode, args=(frames, path), daemon=True).start()
@@ -726,6 +727,14 @@ SHOT_DIR = os.path.join(tempfile.gettempdir(), "cubefx")
 SHOT_REQ = os.path.join(SHOT_DIR, "capture.request")
 SHOT_PNG = os.path.join(SHOT_DIR, "capture.png")
 
+# Recordings go in the REPO, not in the temp directory the IPC lives in. The two
+# are different kinds of file: capture.request and crash.txt are scratch that
+# nobody minds losing, whereas a recording is a thing you made and meant to
+# keep, and Windows is entitled to empty %TEMP% whenever it likes. Gitignored,
+# so keeping them here does not mean committing them.
+GIF_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "captures")
+
 
 def service_capture():
     """Write a PNG of THIS APP'S OWN window if one has been asked for.
@@ -757,6 +766,7 @@ def main():
     build(app)
     dpg.show_viewport()
     os.makedirs(SHOT_DIR, exist_ok=True)
+    os.makedirs(GIF_DIR, exist_ok=True)
     print(f"if a frame throws, the traceback lands in {os.path.join(SHOT_DIR, 'crash.txt')}")
     print(f"frame capture: create {SHOT_REQ} to get a PNG at {SHOT_PNG}")
     try:
