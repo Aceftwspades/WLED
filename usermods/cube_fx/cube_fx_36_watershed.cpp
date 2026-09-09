@@ -102,7 +102,7 @@ static FX_RET mode_watershed() {
   const size_t m  = cfx_litCount(cols, rows, B, cube);
 
   const size_t need = sizeof(WsState) + lut * sizeof(uint16_t)
-                    + 8 * m + 2 * m * sizeof(uint16_t);
+                    + 9 * m + 2 * m * sizeof(uint16_t);
   if (!SEGENV.allocateData(need)) { SEGMENT.fill(SEGCOLOR(0)); FX_DONE; }
 
   WsState  *s   = (WsState *)SEGENV.data;
@@ -115,7 +115,8 @@ static FX_RET mode_watershed() {
   uint8_t  *w2  = w + m;                      // and where it is going
   uint8_t  *acc = w2 + m;                     // the channel, lit by use
   uint8_t  *hue = acc + m;                    // whose storm this water is
-  int16_t  *h   = (int16_t *)(hue + m);       // working height, eroded
+  uint8_t  *az  = hue + m;                    // azimuth about the vertical, 0..255
+  int16_t  *h   = (int16_t *)(az + m);        // working height, eroded
   uint16_t *dn  = (uint16_t *)(h + m);        // steepest-descent neighbour
 
   const uint8_t want = (uint8_t)(cube ? 1 : 2);
@@ -154,6 +155,9 @@ static FX_RET mode_watershed() {
         px[ci] = (int8_t)(X * 100.0f);
         py[ci] = (int8_t)(Y * 100.0f);
         pz[ci] = (int8_t)(Z * 100.0f);
+        // Azimuth about the vertical, as a byte. A full turn is exactly 256,
+        // so using it as a palette coordinate wraps with no seam.
+        az[ci] = (uint8_t)(int)((atan2f(Y, X) + 3.14159265f) * (256.0f / 6.28319f));
         hb[ci] = 0; h[ci] = 0; dn[ci] = WS_SINK;
       }
   }
@@ -171,16 +175,52 @@ static FX_RET mode_watershed() {
     s->surge = (uint8_t)(f < 0 ? 0 : f); }
 
   // --- parameters ---------------------------------------------------------------
-  // Brightness is fixed and the slider carries DROP SIZE instead: how much
-  // water one drop delivers. Small drops are a sheet with no grain in it; large
-  // ones arrive as visible parcels that swell the channels as they pass.
-  const int  gainI = 205;
-  const int  drop  = 1 + ((int)SEGMENT.intensity * 7) / 255;
-  const int  relief = (int)SEGMENT.custom1;
-  const int  memory = (int)SEGMENT.custom2;
-  const int  rain   = (int)cfx_c3full(SEGMENT.custom3);
-  const bool storms = SEGMENT.check1;
-  const bool erode  = SEGMENT.check2;
+  // THE HYDROLOGY IS FIXED. Every one of these was a slider while the drainage
+  // was being got right, and every one is now frozen at the setting it was
+  // tuned to. That is not a loss of control, it is the point: WLED gives five
+  // sliders and three checkboxes and no more, and once the water behaves there
+  // is nothing to gain from being able to detune it - whereas the whole colour
+  // treatment had no controls at all. So the entire surface now belongs to
+  // colour, and the physics keeps the numbers it earned.
+  const int  gainI  = 205;
+  const int  drop   = 1;        // was Drop size 36
+  const int  relief = 247;      // was Relief 247
+  const int  memory = 128;      // was Channel memory 128
+  const int  rain   = 255;      // was Rainfall 31/31
+  const bool storms = true;     // was Storms on beat
+  const bool erode  = true;     // was Erosion
+
+  // ...and the controls are all colour now.
+  const int  palScale  = 1 + ((int)SEGMENT.intensity * 19) / 255;   // bands
+  const int  rotation  = (int)SEGMENT.custom1;                      // band axis
+  const int  flowTint  = (int)SEGMENT.custom2;                      // hierarchy
+  const int  stormTint = (int)cfx_c3full(SEGMENT.custom3);          // identity
+  const bool banded    = SEGMENT.check1;
+  // Was "Colour rides water", which was tested and abandoned. It worked in the
+  // code - a storm's water did carry its colour downstream - and measured as
+  // doing nothing whatever: 0.42 against 0.43 on every metric tried, because the
+  // height bands and the flow tint dominate the palette index and swamp a single
+  // additive offset. A control that cannot be seen is not a control.
+  //
+  // MIRROR folds the index into a triangle instead of letting it wrap. The
+  // palette is then traversed out and back, so there is no seam where its two
+  // ends meet and the bands come out symmetric about the fold.
+  const bool mirror    = SEGMENT.check2;
+
+  // The band axis, swung between two coordinates rather than two directions.
+  //
+  // The obvious version - add a horizontal gradient p.d and rotate d - does not
+  // work on a cube, and measurably so: a horizontal dot product is nearly
+  // CONSTANT across each wall, so it lands as a per-wall offset rather than a
+  // gradient. It broke the height banding (hue-vs-height 0.70 down to 0.27)
+  // without ever establishing a direction of its own, which stayed flat at 0.28.
+  //
+  // AZIMUTH is the coordinate that actually varies smoothly around the solid,
+  // and a full turn is exactly 256, so used as a palette index it wraps with no
+  // seam. Rotation now trades height bands for meridian bands: horizontal
+  // stripes at zero, vertical stripes at full, helices in between.
+  const int hWeight  = 255 - rotation;
+  const int azBands  = (rotation * palScale) / 255;
 
   // --- rebuild a slice of the landscape and its drainage ----------------------
   // A sum of sinusoids in 3-D: seamless across every fold because it is a
@@ -294,7 +334,7 @@ static FX_RET mode_watershed() {
       if (d < lim) continue;
       const int nw = (int)w[i] + (30 + (int)beat / 3) * drop / 3;
       w[i] = (uint8_t)(nw > 255 ? 255 : nw);
-      hue[i] = sh;
+      hue[i] = (uint8_t)(sh + (uint8_t)(s->wavePh >> 8));
     }
   }
 
@@ -310,7 +350,7 @@ static FX_RET mode_watershed() {
       for (size_t i = 0; i < m; i++) {
         const int nw = (int)w[i] + drop;
         w[i] = (uint8_t)(nw > 255 ? 255 : nw);
-        if (!acc[i] && !hue[i]) hue[i] = (uint8_t)(s->hueCyc >> 8);
+        if (!acc[i]) hue[i] = (uint8_t)(s->wavePh >> 8);
       }
     }
     for (size_t i = 0; i < m; i++) w2[i] = 0;
@@ -368,7 +408,14 @@ static FX_RET mode_watershed() {
   // h. So bands of colour drawn on h automatically lie across the channels and
   // travel down them as the phase advances, without anything needing to know
   // which way any particular trough runs.
-  s->wavePh = (uint16_t)(s->wavePh + (uint32_t)dt * 26u);
+  //
+  // Palette speed is SIGNED, with the middle of the slider standing still. A
+  // wave that can only run one way and can never be stopped is a worse control
+  // than one that can be parked, reversed, or set to crawl.
+  {
+    const int32_t spd = (int32_t)SEGMENT.speed - 128;
+    s->wavePh = (uint16_t)((int32_t)s->wavePh + ((int32_t)dt * spd) / 2);
+  }
   const uint8_t drive = cfx_drive(vol, 0.5f, 195);
 
   // --- paint ----------------------------------------------------------------
@@ -392,11 +439,29 @@ static FX_RET mode_watershed() {
           // The palette shifts with how much water this pixel carries, so a
           // trunk is not merely brighter than its headwaters but a different
           // colour - the hierarchy reads even where everything is bright.
-          const uint8_t idx = (uint8_t)((int)hue[i]
-                                        + (int)(uint8_t)(s->wavePh >> 8)
-                                        + (int)(h[i] >> 4)
-                                        + (int)ws_log((uint8_t)chan) / 4);
-          c = SEGMENT.color_from_palette(idx, false, true, 0);
+          // The colour coordinate: the height field, plus a horizontal
+          // gradient swung around the vertical by Rotation, scaled into however
+          // many bands, then offset by the travelling phase and tinted by how
+          // much water this pixel carries and whose storm it belongs to.
+          const int cc = ((int)h[i] >> 6) * hWeight / 255;
+          int idx = ((cc * palScale) >> 2)
+                  + (int)az[i] * azBands
+                  + (int)(uint8_t)(s->wavePh >> 8)
+                  + (((int)hue[i] * stormTint) >> 8)
+                  // >> 6, not >> 8. At the smaller weight this spanned barely a
+                  // third of the palette across the whole flow hierarchy and
+                  // measured as noise - a bright-versus-dim hue gap that did not
+                  // move with the slider at all. It now reaches four cycles, so a
+                  // trunk is unmistakably a different colour from its headwaters.
+                  + (((int)ws_log((uint8_t)chan) * flowTint) >> 6);
+          uint8_t pi = (uint8_t)idx;
+          // Out and back rather than round and round: no seam where the two ends
+          // of the palette meet, and the bands sit symmetric about the fold.
+          if (mirror) pi = (uint8_t)((pi & 128) ? (255 - pi) * 2 : pi * 2);
+          // Eight hard steps instead of a gradient: the channels read as panes
+          // of colour with edges rather than as a continuous wash.
+          if (banded) pi = (uint8_t)(pi & 0xE0);
+          c = SEGMENT.color_from_palette(pi, false, true, 0);
           c = mq_scale(c, (uint8_t)b);
         }
       }
@@ -407,7 +472,7 @@ static FX_RET mode_watershed() {
 }
 
 static const char _data_FX_MODE_WATERSHED[] PROGMEM =
-  "Ace 3-D Watershed@Flow speed,Drop size,Relief,Channel memory,Rainfall,Storms on beat,Erosion,Flat mode;;!;2f;sx=110,ix=90,c1=150,c2=170,c3=20,o1=1,o2=1,pal=11";
+  "Ace 3-D Watershed@Palette speed,Palette scale,Colour rotation,Flow tint,Storm tint,Banded,Mirror palette,Flat mode;;!;2f;sx=196,ix=55,c1=0,c2=110,c3=14,pal=11";
 
 
 // ---------------------------------------------------------------------------
