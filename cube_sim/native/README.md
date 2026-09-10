@@ -66,10 +66,10 @@ both still exist.
 > **These two numbers are stale as of the palette work.** They were taken when
 > the simulator ignored an effect's `pal=` default and pinned the palette to its
 > own id 1; both sides now honour the metadata default against WLED's real
-> palette set, so the same runs produce different - and more representative -
-> figures. The comparison itself is untouched and still worth running; it could
-> not be re-taken here because the browser target needs `emcc` and this machine
-> has no `EMSDK_ENV` on PATH.
+> palette set, so the same runs produce different — and more representative —
+> figures. The comparison itself is untouched and still worth running. Re-taking
+> it needs the browser harness driven in an actual browser, which is the only
+> part of this that cannot be done from a script.
 
 ## Palettes
 
