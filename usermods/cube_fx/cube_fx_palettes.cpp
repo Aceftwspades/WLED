@@ -422,11 +422,55 @@ class CfxPalettes : public Usermod {
       return ok;
     }
 
+    // `source` is a palette id, so it gets the palette DROPDOWN rather than a
+    // number field - nobody should have to know that Aurora is 50. The list is
+    // built from JSON_palette_names, the same table the main UI reads, so the
+    // names here are the names there and a palette added to the firmware turns
+    // up in this list without anything being edited.
+    //
+    // The options are emitted ONCE as a JS array and then looped into the
+    // select. Seventy-odd addOption() calls printed straight out is a few KB of
+    // script, and the whole usermod settings block is wrapped in one function
+    // that has to parse as a unit - the bank usermod on this same page already
+    // learned that the hard way, and a script truncated mid-call silently
+    // leaves every field as the raw number input it started as. The array form
+    // is about a third the size. CFXPS is named apart from the bank's CFXO and
+    // CFXD because they share that one function scope.
+    //
+    // Custom palettes are appended by id, so uploaded gradients are selectable
+    // by their real names too.
+    //
+    // "* Random Cycle" (id 1) is deliberately absent. It has no meaning as a
+    // SOURCE - buildSource() resolves it to Party, same as Default - and
+    // listing it would promise a cycle that is not implemented. An old config
+    // holding 1 lands on option 0, which behaves identically, so nothing
+    // silently changes colour.
     void appendConfigData(Print &s) override {
-      s.print(F("addInfo('CubeFX:source',1,'<i>WLED palette id (0-200) the audio "
-                "palettes take their colours from. 2-5 follow the segment "
-                "colour pickers; 6-71 are the built-ins; 72+ are uploaded "
-                "palettes.</i>');"));
+#ifndef CFX_SIM
+      char nm[36];
+      s.print(F("var CFXPS=["));
+      bool first = true;
+      for (unsigned i = 0; i < FIXED_PALETTE_COUNT; i++) {
+        if (i == 1) continue;
+        extractModeName(i, JSON_palette_names, nm, sizeof(nm) - 1);
+        if (!first) s.print(',');
+        first = false;
+        s.print(F("['")); s.print(nm); s.print(F("',")); s.print((int)i); s.print(']');
+      }
+      for (unsigned i = 0; i < customPalettes.size(); i++) {
+        const unsigned id = WLED_CUSTOM_PALETTE_ID_BASE - i;
+        extractModeName(id, JSON_palette_names, nm, sizeof(nm) - 1);
+        s.print(F(",['")); s.print(nm); s.print(F("',")); s.print((int)id); s.print(']');
+      }
+      s.print(F("];var CFXPD=addDropdown('")); s.print(FPSTR(_cfxPalName));
+      s.print(F("','")); s.print(FPSTR(_cfxSrcKey));
+      s.print(F("');for(var _p=0;_p<CFXPS.length;_p++)"
+                "addOption(CFXPD,CFXPS[_p][0],CFXPS[_p][1]);"));
+      s.print(F("addInfo('CubeFX:source',1,'<i>Where the CubeFX audio palettes "
+                "take their colours from. The starred entries follow this "
+                "segment&apos;s colour pickers, so you can choose the colours "
+                "directly and they update live.</i>');"));
+#endif
     }
 
     uint16_t getId() override { return USERMOD_ID_UNSPECIFIED; }

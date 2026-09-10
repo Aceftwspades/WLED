@@ -140,6 +140,11 @@ class App:
         self.last = time.perf_counter()
         self.yaw, self.pitch, self.dist = -0.6, 0.75, 4.6
         self.beat_flash = 0
+        # WLED's segment defaults: primary amber, secondary and tertiary BLACK.
+        # Faithful rather than convenient - "* Colors 1&2" fading to black is
+        # what the device does before you have set a secondary, and the
+        # simulator should show that rather than a prettier lie.
+        self.seg_cols = [0xFFA000, 0x000000, 0x000000]
         self.layout = "both"        # both | net | cube
         # Set by anything that needs the panes resized; acted on at the TOP of
         # the next loop pass, never inside a callback. See request_layout().
@@ -313,7 +318,8 @@ class App:
 
     def on_color(self, sender, val):
         r, g, b = (int(c * 255) if c <= 1.0 else int(c) for c in val[:3])
-        self.eng.colors((r << 16) | (g << 8) | b)
+        self.seg_cols[int(dpg.get_item_user_data(sender))] = (r << 16) | (g << 8) | b
+        self.eng.colors(*self.seg_cols)
 
     def _set_param(self, k, v):
         self.eng.fx[k] = int(v)
@@ -676,12 +682,19 @@ def build(app):
                               callback=app.on_pal_source)
                 dpg.add_combo(["4", "8", "16", "32"], label="face B", default_value="16",
                               width=80, callback=app.on_faceB)
-                # Several effects paint with SEGCOLOR(0). WLED's DEFAULT_COLOR
-                # is amber, so without this those effects could only ever be
-                # seen in one colour here.
-                dpg.add_color_edit((255, 160, 0, 255), label="primary",
-                                   width=170, no_alpha=True,
-                                   callback=app.on_color)
+                # Several effects paint with SEGCOLOR(0), and the CubeFX audio
+                # palettes read all THREE when their source is one of WLED's
+                # segment-colour palettes - "* Color 1" takes the primary,
+                # "* Colors 1&2" the first two, "* Color Gradient" and
+                # "* Colors Only" all three. Without these the only way to
+                # choose the colours those palettes draw from was to edit them
+                # in code. WLED's DEFAULT_COLOR is amber; 2 and 3 start black,
+                # as they do on the device.
+                for _ci, (_lbl, _rgb) in enumerate((("primary",   (255, 160, 0, 255)),
+                                                    ("secondary", (0, 0, 0, 255)),
+                                                    ("tertiary",  (0, 0, 0, 255)))):
+                    dpg.add_color_edit(_rgb, label=_lbl, width=170, no_alpha=True,
+                                       user_data=_ci, callback=app.on_color)
                 with dpg.group(horizontal=True):
                     dpg.add_button(label="play/pause",
                                    callback=lambda: setattr(app, "playing", not app.playing))

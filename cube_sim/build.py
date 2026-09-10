@@ -404,6 +404,11 @@ def build_native(srcs):
            # the default 64 silently dropped the last ten - cfxBankAdd
            # returns quietly when the roster is full.
            "-DCFX_BANK_MAX_FX=128",
+           # Skips the bits that only make sense against the firmware's
+           # settings page - the palette usermod's appendConfigData() reaches
+           # for extractModeName() and JSON_palette_names, which live in
+           # FX_fcn.cpp and have no place in a shim.
+           "-DCFX_SIM",
            "-Wno-vla-cxx-extension", "-Wno-unknown-attributes",
            "-Wno-deprecated-declarations"] + \
           [f'"{fs(s)}"' for s in srcs] + ["-o", f'"{out}"']
@@ -462,7 +467,8 @@ def main():
     # operator new, __cxa_throw and class vtables. emcc says so itself in
     # the failure - "try linking with em++ or passing -sDEFAULT_TO_CXX".
     cmd = ["em++", "-std=gnu++17", "-O2", "-I", "shim",
-           "-DWLED_PS_DONT_REPLACE_2D_FX", "-DCFX_BANK_MAX_FX=128"] + srcs + [
+           "-DWLED_PS_DONT_REPLACE_2D_FX", "-DCFX_BANK_MAX_FX=128",
+           "-DCFX_SIM"] + srcs + [
         "-o", "cubefx.js",
         # HEAPU8/HEAPU32 must be listed explicitly - current Emscripten does not
         # attach the heap views to the module by default, and reading pixels
