@@ -152,6 +152,13 @@ enum : uint8_t {
   AUI_P_BRI = 0, AUI_P_FX, AUI_P_PAL, AUI_P_SPEED, AUI_P_INTENSITY,
   AUI_P_C1, AUI_P_C2, AUI_P_C3, AUI_P_O1, AUI_P_O2, AUI_P_O3,
   AUI_P_HUE, AUI_P_SAT, AUI_P_CCT, AUI_P_PRESET, AUI_P_SEG, AUI_P_VAL,
+  // Panel settings, edited from System -> Screen through the same value editor
+  // the segment parameters use. APPENDED, never inserted: the encoder's saved
+  // `bind` is one of these numbers, and renumbering would silently repoint a
+  // knob that has been working for months. They are deliberately absent from
+  // the bind dropdown - that list is written out by hand - so nothing offers to
+  // pin an encoder to a sleep timer.
+  AUI_P_DIMSEC, AUI_P_SLEEPSEC, AUI_P_IDLEHOME,
   AUI_P_COUNT
 };
 
@@ -324,6 +331,30 @@ struct AceUiBus {
   // idleHomeSec = 0 means NEVER. See the header note.
   uint16_t idleHomeSec = AUI_IDLE_HOME_SEC;
   uint8_t  startScreen = AUI_START_MENU;
+
+  // The wake / dim / sleep ladder's two timers, and the VU screen's opt-out.
+  // These moved out of the screen usermod's private config and onto the bus so
+  // that System -> Screen can EDIT them from the panel itself. The bus is the
+  // runtime truth; the screen's own members are the config-file mirror, filled
+  // from here whenever the settings are written out. Both directions matter -
+  // a value typed on the settings page has to reach the ladder, and a value
+  // dialled in on the knob has to survive Save settings.
+  //
+  // Seconds, and 0 means never, for both.
+  uint16_t dimSec   = 10;
+  uint16_t sleepSec = 30;
+  bool     vuAwake  = true;
+
+  // One-shot: the menu sets it, the screen consumes it on its next pass and
+  // clears it. A flag rather than a call because the menu has no handle on the
+  // panel - it does not know a u8g2 exists, and a build without the screen has
+  // to keep compiling with this row still in the list.
+  //
+  // Blanking is not the same as arriving at the sleep timer's end: this SKIPS
+  // the timer rather than resetting it, so the panel goes dark on the click
+  // instead of dimming first. The next input wakes it exactly as a timed sleep
+  // would, because the wake path is the same one.
+  bool     sleepNow = false;
 
   bool     lockOn      = false;   // child lock - input ignored except unlock
   bool     screenReady = false;

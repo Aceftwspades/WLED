@@ -25,6 +25,16 @@
 //                      Same gesture, everywhere, once something is selected.
 //     Palette / Params / Brightness / Colour / Presets / Segment / System
 //
+//   System carries the two settings screens as well as its one-shot actions:
+//
+//     Screen          Sleep now, and the dim / sleep / walk-home timers. These
+//                     were settings-page-only, which meant the one thing you
+//                     want with the panel in your hand - "stop blanking on me
+//                     while I am working" - needed a browser.
+//     Palette source  which palette the CubeFX audio-reactive palettes sample
+//                     their colours from. They only ever recolour something
+//                     that already exists, so this is where you choose what.
+//
 // ---------------------------------------------------------------------------
 // NOTHING MOVES THE SCREEN BUT YOU
 // ---------------------------------------------------------------------------
@@ -74,11 +84,11 @@
 // ---------------------------------------------------------------------------
 // THE PALETTE LIST IS NOT THE PALETTE ID
 // ---------------------------------------------------------------------------
-// Built-in palettes are ids 0..N-1. Custom ones are ids 255, 254, 253 ...
-// counting DOWN, with nothing in between. So the row the encoder sits on and
-// the number handed to setPalette() are different quantities - see the palette
-// section below for the two conversions and why the naive version makes the
-// knob look broken.
+// Built-in palettes are ids 0..N-1. Custom ones count DOWN from 200 and usermod
+// ones count DOWN from 255, with dead space between all three. So the row the
+// encoder sits on and the number handed to setPalette() are different
+// quantities - see the palette section below for the two conversions and why
+// the naive version makes the knob look broken.
 //
 // ---------------------------------------------------------------------------
 // THE EFFECT FILTER IS A TABLE, NOT A SWITCH
@@ -117,6 +127,14 @@
 // ===========================================================================
 
 extern "C" void aceImuAction(int8_t action) __attribute__((weak));
+
+// cube_fx_palettes.cpp registers the audio-reactive palettes and owns the id of
+// the palette they sample their colours from. Weak, and NOT extern "C" - those
+// are C++ definitions, so the declaration has to mangle the same way. Drop that
+// file from the build and the two rows that use these report "not available",
+// exactly as the three IMU rows already do.
+void    cfxSetPaletteSource(uint8_t s) __attribute__((weak));
+uint8_t cfxGetPaletteSource()          __attribute__((weak));
 
 // Palette names live in a PROGMEM JSON blob with no public accessor. Declaring
 // it here rather than relying on a header keeps this file independent; set
@@ -184,7 +202,9 @@ static void auiSaveConfig() {
 // ---------------------------------------------------------------------------
 enum : uint8_t {
   SC_ROOT = 0, SC_NOWPLAY, SC_VU, SC_FXFILTER, SC_FXLIST, SC_PAL, SC_PARAMS,
-  SC_EDIT, SC_COLOUR, SC_PRESETS, SC_SEG, SC_SEGOPT, SC_SYSTEM, SC_NET, SC_CONFIRM
+  SC_EDIT, SC_COLOUR, SC_PRESETS, SC_SEG, SC_SEGOPT, SC_SYSTEM, SC_NET, SC_CONFIRM,
+  SC_SCREEN,          // System -> Screen: the dim / sleep ladder
+  SC_PALSRC           // System -> Palette source: what the audio palettes sample
 };
 
 // Rows on the per-segment options page, reached by drilling into a segment
@@ -327,15 +347,15 @@ static bool auiModeSlider(uint8_t m, uint8_t slot, char *out, uint8_t n) {
 // palettes: counting them, and the row/id conversion
 // ---------------------------------------------------------------------------
 // WS2812FX::getPaletteCount() existed in 0.14 and was removed in the 16.x
-// palette refactor, so there is nothing to call. Two separate numbers matter
-// here and WLED hands over neither:
+// palette refactor, so there is nothing to call. THREE separate bands matter,
+// and they are not contiguous with each other:
 //
-//   BUILT-INS   ids 0 .. N-1, contiguous. N is exactly the number of names in
-//               JSON_palette_names - which this file already walks to draw the
-//               rows - so counting them once costs nothing and is guaranteed
-//               to agree with what the screen says.
-//   CUSTOMS     ids 255, 254, 253 ... counting DOWN, one per paletteN.json on
-//               the filesystem, ten at most. NOT contiguous with the built-ins.
+//   BUILT-INS  ids 0 .. FIXED_PALETTE_COUNT-1, contiguous. The six dynamic
+//              ones, seven FastLED, 59 cpt-city gradients.
+//   CUSTOMS    ids 200, 199, 198 ... counting DOWN, one per paletteN.json.
+//   USERMOD    ids 255, 254, 253 ... counting DOWN, whatever a usermod has
+//              registered - which is where this folder's own audio-reactive
+//              palettes live.
 //
 // Scroll one past the last built-in with the naive mapping and you walk into a
 // dead band that Segment::setPalette() silently clamps back to 0. The knob
@@ -343,89 +363,62 @@ static bool auiModeSlider(uint8_t m, uint8_t slot, char *out, uint8_t n) {
 // which reads as "the encoder is broken" rather than "that palette does not
 // exist". auiPalId() and auiPalIndex() are the two conversions, and AUI_P_PAL
 // works in ROW space end to end so a BOUND encoder walks the whole list.
+//
+// This was written against 0.14's map, where customs came down from 255 and
+// there was no usermod band at all - and it counted built-ins by walking
+// JSON_palette_names, and probed `strip.customPalettes` for a member that the
+// refactor turned into a plain global. On a 16.x tree the probe silently chose
+// its zero fallback, so the OLED list stopped at the last built-in: no custom
+// palettes, and no usermod ones either. Every CubeFX audio palette existed,
+// appeared in the web UI, and was unreachable from the panel.
+//
+// The counts now come from the same three places the firmware itself reads, so
+// there is nothing left to drift.
 // ---------------------------------------------------------------------------
-#ifndef AUI_PAL_BUILTIN_FALLBACK
-  #define AUI_PAL_BUILTIN_FALLBACK 13
-#endif
-
-static uint8_t auiPalBuiltin() {
-  static uint8_t cached = 0;                 // POD, zero-init, no guard variable
-  if (cached) return cached;
-#if AUI_PALETTE_NAMES
-  const char *s = JSON_palette_names;
-  uint16_t n = 0; bool inStr = false;
-  for (char c = (char)pgm_read_byte(s); c; c = (char)pgm_read_byte(++s))
-    if (c == '"') { if (inStr) n++; inStr = !inStr; }
-  // clamped so a built-in can never reach the custom band at 246..255
-  cached = (uint8_t)(n > 246 ? 246 : n);
-#endif
-  if (!cached) cached = AUI_PAL_BUILTIN_FALLBACK;
-  return cached;
-}
-
-// strip.customPalettes is a public member in 16.x but has not always been.
-// Probe for it; the fallback overload only instantiates when the member is
-// truly absent. `strip` goes in as a parameter rather than being named in the
-// body, and that is not stylistic: a non-dependent expression inside a
-// template body is checked at DEFINITION time, so `strip.customPalettes` there
-// is a hard error on a tree that lacks the member even though the overload is
-// never chosen. Deducing T makes s.customPalettes dependent, which defers it
-// to instantiation.
-namespace aui_detail {
-  template <typename T>
-  static auto palCustom(const T &s, int) -> decltype(s.customPalettes.size(), (uint8_t)0) {
-    const size_t n = s.customPalettes.size();
-    return (uint8_t)(n > 10 ? 10 : n);       // ids 255..246, WLED's own ceiling
-  }
-  template <typename T>
-  static uint8_t palCustom(const T &, long) { return 0; }
-}
-static inline uint8_t auiPalCustom() { return aui_detail::palCustom(strip, 0); }
+static inline int16_t auiPalBuiltin() { return (int16_t)FIXED_PALETTE_COUNT; }
+static inline int16_t auiPalCustom()  { return (int16_t)customPalettes.size(); }
+static inline int16_t auiPalUsermod() { return (int16_t)usermodPalettes.size(); }
 
 static inline int16_t auiPalCount() {
-  return (int16_t)auiPalBuiltin() + (int16_t)auiPalCustom();
+  return auiPalBuiltin() + auiPalCustom() + auiPalUsermod();
 }
 
 // row -> palette id
 static uint8_t auiPalId(int16_t idx) {
-  const int16_t bi = (int16_t)auiPalBuiltin();
+  const int16_t bi = auiPalBuiltin(), cu = auiPalCustom(), um = auiPalUsermod();
   if (idx < 0)  return 0;
   if (idx < bi) return (uint8_t)idx;
-  const int16_t k = idx - bi;                        // 0-based custom slot
-  if (k >= (int16_t)auiPalCustom()) return 0;        // off the end -> Default
-  return (uint8_t)(255 - k);
+  int16_t k = idx - bi;
+  if (k < cu) return (uint8_t)(WLED_CUSTOM_PALETTE_ID_BASE - k);
+  k -= cu;
+  if (k < um) return (uint8_t)(WLED_USERMOD_PALETTE_ID_BASE - k);
+  return 0;                                          // off the end -> Default
 }
 
-// palette id -> row. Anything in the dead band lands on row 0 rather than
+// palette id -> row. Anything in a dead band lands on row 0 rather than
 // parking the cursor somewhere the list cannot draw.
 static int16_t auiPalIndex(uint8_t id) {
-  const int16_t bi = (int16_t)auiPalBuiltin();
+  const int16_t bi = auiPalBuiltin(), cu = auiPalCustom(), um = auiPalUsermod();
   if (id < (uint8_t)bi) return (int16_t)id;
-  if (id > 245) {
-    const int16_t k = (int16_t)(255 - id);
-    if (k < (int16_t)auiPalCustom()) return bi + k;
+  if (id > WLED_CUSTOM_PALETTE_ID_BASE) {
+    const int16_t k = (int16_t)(WLED_USERMOD_PALETTE_ID_BASE - id);
+    if (k < um) return bi + cu + k;
+    return 0;
   }
+  const int16_t k = (int16_t)(WLED_CUSTOM_PALETTE_ID_BASE - id);
+  if (k < cu) return bi + k;
   return 0;
 }
 
-// Takes an ID, not a row.
+// Takes an ID, not a row. extractModeName() is the firmware's own lookup and
+// already knows all three bands - it names a custom palette "~ Custom 3 ~" and
+// a usermod one "CubeFX: Arc", which the hand-rolled JSON walk that used to
+// live here could not do because those names are not in the JSON at all.
 static void auiPaletteName(uint8_t p, char *out, uint8_t n) {
-  if (p > 245) {                             // customs, named after their file
-    snprintf(out, n, "Custom %u", (unsigned)(255 - p));
-    return;
-  }
 #if AUI_PALETTE_NAMES
-  const char *s = JSON_palette_names;
-  uint8_t idx = 0; bool inStr = false; uint8_t o = 0;
-  while (true) {
-    const char c = (char)pgm_read_byte(s++);
-    if (!c) break;
-    if (c == '"') {
-      if (inStr) { if (idx == p) { out[o] = 0; return; } idx++; o = 0; }
-      inStr = !inStr;
-      continue;
-    }
-    if (inStr && idx == p && o < n - 1) out[o++] = c;
+  if (extractModeName(p, JSON_palette_names, out, (uint8_t)(n - 1))) {
+    out[n - 1] = 0;
+    return;
   }
 #endif
   snprintf(out, n, "Palette %u", (unsigned)p);
@@ -471,6 +464,12 @@ static int32_t auiGet(uint8_t id) {
     case AUI_P_VAL:       return auiVal;
     case AUI_P_CCT:       return sg.cct;
     case AUI_P_SEG:       return auiSegSel;
+    // Panel settings rather than segment state. They live on the bus because
+    // the screen usermod and this file both need them and neither owns the
+    // other - see the note on AceUiBus.
+    case AUI_P_DIMSEC:    return aceUi().dimSec;
+    case AUI_P_SLEEPSEC:  return aceUi().sleepSec;
+    case AUI_P_IDLEHOME:  return aceUi().idleHomeSec;
     default:              return 0;
   }
 }
@@ -485,6 +484,9 @@ static void auiRange(uint8_t id, int32_t &lo, int32_t &hi) {
     case AUI_P_C3: hi = 31; break;              // Segment::custom3 is a 5-bit field
     case AUI_P_SEG: hi = (int32_t)strip.getSegmentsNum() - 1; break;
     case AUI_P_PRESET: lo = 1; hi = 25; break;
+    // An hour is the ceiling the settings page already clamps to, so the two
+    // agree and a value typed there can always be found again on the knob.
+    case AUI_P_DIMSEC: case AUI_P_SLEEPSEC: case AUI_P_IDLEHOME: hi = 3600; break;
     default: break;
   }
   if (hi < lo) hi = lo;
@@ -515,6 +517,12 @@ static void auiSet(uint8_t id, int32_t v) {
     case AUI_P_O3:        sg.check3 = v != 0; break;
     case AUI_P_CCT:       sg.setCCT((uint8_t)v); break;
     case AUI_P_SEG:       auiSegSel = (uint8_t)v; return;      // no state push
+    // Return, not break: these change the PANEL, not the strip, and falling
+    // through to auiApplied() would push a segment update and light the whole
+    // cube up over a sleep timer.
+    case AUI_P_DIMSEC:    aceUi().dimSec      = (uint16_t)v; return;
+    case AUI_P_SLEEPSEC:  aceUi().sleepSec    = (uint16_t)v; return;
+    case AUI_P_IDLEHOME:  aceUi().idleHomeSec = (uint16_t)v; return;
     case AUI_P_HUE: case AUI_P_SAT: case AUI_P_VAL: {
       if      (id == AUI_P_HUE) auiHue = (uint8_t)v;
       else if (id == AUI_P_SAT) auiSat = (uint8_t)v;
@@ -540,6 +548,9 @@ static void auiParamName(uint8_t id, char *out, uint8_t n) {
     case AUI_P_SEG:       auiStr(out, "Segment", n); return;
     case AUI_P_FX:        auiStr(out, "Effect", n); return;
     case AUI_P_PAL:       auiStr(out, "Palette", n); return;
+    case AUI_P_DIMSEC:    auiStr(out, "Dim after", n); return;
+    case AUI_P_SLEEPSEC:  auiStr(out, "Sleep after", n); return;
+    case AUI_P_IDLEHOME:  auiStr(out, "Return home", n); return;
     default: break;
   }
   const uint8_t slot = (uint8_t)(id - AUI_P_SPEED);
@@ -708,10 +719,40 @@ static const char *AUI_ROOT[RT_COUNT] = {
 // AUI_FILT lives up in the effect-list section, next to the prefix table it
 // has to stay in step with.
 static const char *AUI_COL[4]  = {"Hue","Saturation","Value","CCT"};
-#define AUI_SYS_COUNT 8
+// Same lesson the main menu learned: this used to be a switch on eight bare
+// integers in auiDoSystem(), and inserting a row in the middle renumbered
+// everything under it in a way that still compiles and lands you on Reboot when
+// you asked for Lock knob. Screen and Palette source go in ABOVE the three IMU
+// rows because they are settings you change, and the IMU three are one-shot
+// actions you fire.
+enum : uint8_t {
+  SY_POWER = 0, SY_NETWORK, SY_SCREEN, SY_PALSRC,
+  SY_GYROCAL, SY_LEVEL, SY_TRIM, SY_LOCK, SY_SAVE, SY_REBOOT, SY_COUNT
+};
+#define AUI_SYS_COUNT SY_COUNT
 static const char *AUI_SYS[AUI_SYS_COUNT] = {
-  "Power","Network","Calibrate gyro","Level now","Clear level trim",
+  "Power","Network","Screen","Palette source",
+  "Calibrate gyro","Level now","Clear level trim",
   "Lock knob","Save settings","Reboot"};
+
+// Rows on System -> Screen. The two timers and the walk-home timer were
+// settings-page-only, which meant the one thing you would want to change with
+// the panel in your hand - "stop blanking on me while I am working" - was the
+// one thing you had to go to a browser for.
+enum : uint8_t { SR_SLEEPNOW = 0, SR_DIM, SR_SLEEP, SR_HOME, SR_VUAWAKE, SR_COUNT };
+static const char *AUI_SCR[SR_COUNT] = {
+  "Sleep now","Dim after","Sleep after","Return home","VU stays awake"};
+
+// Seconds, rendered the way the ladder actually reads them: 0 is not "zero
+// seconds", it is OFF, and printing it as 0 invites you to think the panel
+// should blank instantly.
+static void auiSecs(uint16_t v, char *out, uint8_t n) {
+  if (!v) { auiStr(out, "never", n); return; }
+  if (v < 60) snprintf(out, n, "%us", (unsigned)v);
+  else if (v % 60) snprintf(out, n, "%um%us", (unsigned)(v / 60), (unsigned)(v % 60));
+  else snprintf(out, n, "%um", (unsigned)(v / 60));
+  out[n - 1] = 0;
+}
 
 static void auiRowText(int16_t i, char *out, uint8_t n) {
   const uint8_t sc = auiStack[auiDepth - 1].id;
@@ -751,6 +792,26 @@ static void auiRowText(int16_t i, char *out, uint8_t n) {
       break;
     }
     case SC_SYSTEM:   auiStr(out, AUI_SYS[i % AUI_SYS_COUNT], n); break;
+
+    case SC_SCREEN: {
+      const AceUiBus &b = aceUi();
+      char v[10];
+      switch ((uint8_t)i % SR_COUNT) {
+        case SR_DIM:     auiSecs(b.dimSec, v, sizeof(v));      break;
+        case SR_SLEEP:   auiSecs(b.sleepSec, v, sizeof(v));    break;
+        case SR_HOME:    auiSecs(b.idleHomeSec, v, sizeof(v)); break;
+        case SR_VUAWAKE: auiStr(v, b.vuAwake ? "on" : "off", sizeof(v)); break;
+        default:         v[0] = 0; break;                      // Sleep now: an action
+      }
+      if (v[0]) snprintf(out, n, "%-10s %s", AUI_SCR[(uint8_t)i % SR_COUNT], v);
+      else      auiStr(out, AUI_SCR[(uint8_t)i % SR_COUNT], n);
+      break;
+    }
+
+    // Built-ins and customs only. A usermod palette sourcing a usermod palette
+    // is a loop, and the row/id mapping puts that band last, so simply stopping
+    // short of it is the whole of the guard.
+    case SC_PALSRC:   auiPaletteName(auiPalId(i), out, n); break;
     case SC_NET:      auiNetRow(i, out, n); return;      // already terminated
     default:          out[0] = 0; break;
   }
@@ -864,6 +925,20 @@ static void auiRefresh() {
       auiStr(v.title, "System", AUI_TITLE_LEN); v.crumb[0] = 0;
       break;
 
+    case SC_SCREEN:
+      v.kind = AUI_V_LIST; v.count = SR_COUNT;
+      auiStr(v.title, "Screen", AUI_TITLE_LEN); v.crumb[0] = 0;
+      break;
+
+    case SC_PALSRC:
+      v.kind = AUI_V_LIST; v.count = auiPalBuiltin() + auiPalCustom();
+      auiStr(v.title, "Palette source", AUI_TITLE_LEN);
+      v.crumb[0] = 0;
+      // The dot marks what the audio palettes are sampling right now, the same
+      // way the palette list marks what is playing.
+      v.live = cfxGetPaletteSource ? auiPalIndex(cfxGetPaletteSource()) : -1;
+      break;
+
     case SC_NET:
       v.kind = AUI_V_INFO; v.count = AUI_NET_LINES;
       auiStr(v.title, "Network", AUI_TITLE_LEN); v.crumb[0] = 0;
@@ -878,6 +953,8 @@ static void auiRefresh() {
       v.valNum = auiGet(auiEditParam);
       if (auiEditParam >= AUI_P_O1 && auiEditParam <= AUI_P_O3)
         auiStr(v.valText, v.valNum ? "on" : "off", AUI_ROW_LEN);
+      else if (auiEditParam >= AUI_P_DIMSEC && auiEditParam <= AUI_P_IDLEHOME)
+        auiSecs((uint16_t)v.valNum, v.valText, AUI_ROW_LEN);
       else v.valText[0] = 0;
       break;
     }
@@ -953,27 +1030,59 @@ static void auiTogglePower() {
 
 static void auiDoSystem(int16_t i) {
   switch (i) {
-    case 0: auiTogglePower(); break;
-    case 1: auiPush(SC_NET); break;
-    case 2:
+    case SY_POWER:   auiTogglePower(); break;
+    case SY_NETWORK: auiPush(SC_NET); break;
+    case SY_SCREEN:  auiPush(SC_SCREEN); break;
+    case SY_PALSRC:
+      if (!cfxSetPaletteSource) { auiToastSet("no audio palettes"); break; }
+      auiPush(SC_PALSRC);
+      if (cfxGetPaletteSource)
+        auiStack[auiDepth - 1].cursor = auiPalIndex(cfxGetPaletteSource());
+      auiRefresh();
+      break;
+    case SY_GYROCAL:
       if (aceImuAction) { aceImuAction(1); auiToastSet("hold still...", 2500); }
       else auiToastSet("no IMU driver");
       break;
-    case 3:
+    case SY_LEVEL:
       if (aceImuAction) { aceImuAction(2); auiToastSet("levelled"); }
       else auiToastSet("no IMU driver");
       break;
-    case 4:
+    case SY_TRIM:
       if (aceImuAction) { aceImuAction(3); auiToastSet("trim cleared"); }
       else auiToastSet("no IMU driver");
       break;
-    case 5: aceUi().lockOn = true; auiToastSet("locked - hold 2s to free", 1500); break;
-    case 6: auiSaveConfig(); auiToastSet("saved"); break;
+    case SY_LOCK: aceUi().lockOn = true; auiToastSet("locked - hold 2s to free", 1500); break;
+    case SY_SAVE: auiSaveConfig(); auiToastSet("saved"); break;
     // Through the confirm screen, not straight to the flag. A reboot from a
     // menu row is one detent away from Save settings, and "I nudged the knob
     // and the cube restarted mid-set" is not a bug report anyone should file.
     // The two-button chord skips this because the chord IS the confirmation.
-    case 7: auiConfirmKind = AUI_CF_REBOOT; auiConfirmAct = 0; auiPush(SC_CONFIRM); break;
+    case SY_REBOOT: auiConfirmKind = AUI_CF_REBOOT; auiConfirmAct = 0; auiPush(SC_CONFIRM); break;
+    default: break;
+  }
+}
+
+// System -> Screen. The two settings screens are separate functions for the
+// same reason auiDoSystem() is: a click handler that is one long switch is
+// where row numbers and row meanings drift apart.
+static void auiDoScreen(int16_t i) {
+  AceUiBus &b = aceUi();
+  switch ((uint8_t)i % SR_COUNT) {
+    // No toast. The panel going dark IS the acknowledgement, and a message you
+    // cannot read because the screen has just switched off is worse than
+    // silence - it would also have to be dismissed with the click that was
+    // meant to wake the thing up. The one case worth saying something about is
+    // there being no panel at all, where nothing visible would otherwise
+    // happen.
+    case SR_SLEEPNOW:
+      if (!b.screenReady) { auiToastSet("no screen"); break; }
+      b.sleepNow = true;
+      break;
+    case SR_DIM:     auiEditParam = AUI_P_DIMSEC;   auiPush(SC_EDIT); break;
+    case SR_SLEEP:   auiEditParam = AUI_P_SLEEPSEC; auiPush(SC_EDIT); break;
+    case SR_HOME:    auiEditParam = AUI_P_IDLEHOME; auiPush(SC_EDIT); break;
+    case SR_VUAWAKE: b.vuAwake = !b.vuAwake; auiRefresh(); break;
     default: break;
   }
 }
@@ -1022,6 +1131,11 @@ static void auiTurn(uint8_t enc, int16_t d, bool shift) {
     int32_t step = d;
     if (shift) step = d * 10;
     if (auiEditParam >= AUI_P_O1 && auiEditParam <= AUI_P_O3) step = d > 0 ? 1 : -1;
+    // Seconds, over a range of an hour. One per detent is 3,600 of them and a
+    // slider you cannot cross is a slider you cannot set; five gets you across
+    // the useful part in a flick and shift-thirty covers the rest.
+    if (auiEditParam >= AUI_P_DIMSEC && auiEditParam <= AUI_P_IDLEHOME)
+      step = d * (shift ? 30 : 5);
     auiSet(auiEditParam, auiGet(auiEditParam) + step);
     auiRefresh();
     return;
@@ -1185,6 +1299,15 @@ static void auiClick(uint8_t enc) {
       break;
     }
     case SC_SYSTEM: auiDoSystem(cur); break;
+    case SC_SCREEN: auiDoScreen(cur); break;
+
+    // Applies and stays, the way the palette list does - the source is
+    // something you audition against what is playing, so being thrown back a
+    // level after every pick would make comparing two of them a chore.
+    case SC_PALSRC:
+      if (cfxSetPaletteSource) cfxSetPaletteSource(auiPalId(cur));
+      auiRefresh();
+      break;
     case SC_NET: auiPop(); break;               // any click leaves the page
 
     case SC_EDIT: auiPop(); break;              // click on a value = done

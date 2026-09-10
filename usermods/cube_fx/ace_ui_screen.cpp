@@ -97,6 +97,14 @@
 // All four numbers are on the settings page - the percentages above are the
 // defaults, not fixed values.
 //
+// Both TIMERS are also on the panel itself, at System -> Screen, along with a
+// "Sleep now" row that blanks it on the click. The two timers therefore live on
+// the bus rather than in this class: the menu edits them there, this file
+// reads them there every pass, and addToConfig() pulls them back off the bus on
+// the way out so Save settings persists whatever was dialled in. Anything you
+// change from the knob is live immediately and permanent only once saved, which
+// is the same bargain every other row in that menu makes.
+//
 // ---------------------------------------------------------------------------
 // WHY THE CONTRAST SETTING DID NOTHING - TWO SEPARATE FAULTS
 // ---------------------------------------------------------------------------
@@ -473,6 +481,8 @@ class AceUiScreenUsermod : public Usermod {
   int      failPin = -1;        // the pin that could not be claimed
   bool     needPins = false;    // bus selected but its pins are unset
   bool     dimmed  = false;
+  // millis() of a "sleep now" from the menu, 0 when not forced. See the ladder.
+  uint32_t forceSleepAt = 0;
   bool     pinFail = false, clash = false;
   bool     spiNoBus = false;   // SPI selected but WLED's SCLK/MOSI are unset
   uint32_t lastProbeMs = 0;
@@ -1311,7 +1321,24 @@ class AceUiScreenUsermod : public Usermod {
     // you do not want to touch. Nothing else in the UI has that property, so
     // nothing else opts out.
     vuWholeBody = (b.view.kind == AUI_V_VU);
-    const bool holdAwake = vuWholeBody && vuAwake;
+    const bool holdAwake = vuWholeBody && b.vuAwake;
+
+    // Sleep now, from System -> Screen. Consumed here rather than acted on by
+    // the menu because only this file owns the panel.
+    //
+    // Held as the TIME the request was made rather than as a bool, and it ends
+    // when an input arrives after it. That gives the manual sleep the same exit
+    // as the timed one for free - the next knob event stamps lastInputMs, the
+    // stamp is newer than the request, and the panel comes back. A separate
+    // flag would have needed its own wake path, and the only thing worse than a
+    // panel that will not sleep is one that will not wake.
+    //
+    // Backdating lastInputMs instead would have been shorter and is wrong twice
+    // over: it does nothing at all when the sleep timer is set to never, which
+    // is exactly when you most want the row, and the menu's own walk-home timer
+    // reads the same stamp and would fire on the way past.
+    if (b.sleepNow) { b.sleepNow = false; forceSleepAt = now ? now : 1u; }
+    if (forceSleepAt && (int32_t)(b.lastInputMs - forceSleepAt) > 0) forceSleepAt = 0;
 
     // Idle timers only mean something once there is something to be idle FROM.
     //
@@ -1323,8 +1350,11 @@ class AceUiScreenUsermod : public Usermod {
     // switches itself off permanently is worse than one that never dims.
     const bool everTouched = (b.lastInputMs != 0);
     const uint32_t idle = now - b.lastInputMs;
-    const bool wantSleep = everTouched && !holdAwake && (sleepSec > 0) && (idle > (uint32_t)sleepSec * 1000u);
-    const bool wantDim   = everTouched && !holdAwake && (dimSec   > 0) && (idle > (uint32_t)dimSec   * 1000u);
+    // A requested sleep outranks everTouched, the timer being off, and the VU
+    // screen's opt-out alike. You asked.
+    const bool wantSleep = (forceSleepAt != 0) ||
+                           (everTouched && !holdAwake && (b.sleepSec > 0) && (idle > (uint32_t)b.sleepSec * 1000u));
+    const bool wantDim   = everTouched && !holdAwake && (b.dimSec   > 0) && (idle > (uint32_t)b.dimSec   * 1000u);
 
     if (wantSleep != blanked) {
       blanked = wantSleep;
@@ -1548,6 +1578,17 @@ class AceUiScreenUsermod : public Usermod {
     top["addr"]     = addr;
     top["rot180"]   = rot180;
     top["split"]    = split;
+    // Pulled back off the bus first, so a timer dialled in from System ->
+    // Screen is what gets written - otherwise Save settings would quietly
+    // restore whatever was last typed on this page and the knob edit would
+    // look like it had been ignored.
+    {
+      const AceUiBus &b = aceUi();
+      dimSec   = (int)b.dimSec;
+      sleepSec = (int)b.sleepSec;
+      idleHome = (int)b.idleHomeSec;
+      vuAwake  = b.vuAwake;
+    }
     top["briFull"]  = briFull;
     top["briDim"]   = briDim;
     top["dimSec"]   = dimSec;
@@ -1640,14 +1681,26 @@ class AceUiScreenUsermod : public Usermod {
     if (startScr < AUI_START_MENU || startScr > AUI_START_VU) startScr = AUI_START_MENU;
     if (idleHome < 0)    idleHome = 0;
     if (idleHome > 3600) idleHome = 3600;
+    // The same ceiling the menu's editor stops at, so a value typed here can
+    // always be found again on the knob and vice versa.
+    if (dimSec   < 0)    dimSec   = 0;
+    if (dimSec   > 3600) dimSec   = 3600;
+    if (sleepSec < 0)    sleepSec = 0;
+    if (sleepSec > 3600) sleepSec = 3600;
 
     // The menu has no Usermod subclass and therefore no settings page of its
-    // own, so its two behavioural knobs are published here. Done on EVERY
-    // read, not just the live one, because the boot-time read has to land
-    // before aceUiMenuInit() picks a startup screen.
+    // own, so its behavioural knobs are published here. Done on EVERY read,
+    // not just the live one, because the boot-time read has to land before
+    // aceUiMenuInit() picks a startup screen - and because the dim and sleep
+    // timers are now read off the bus by the ladder rather than out of these
+    // members, so a page save that did not publish would leave the panel
+    // running on the previous values until reboot.
     AceUiBus &b = aceUi();
-    b.idleHomeSec = (uint16_t)(idleHome < 0 ? 0 : (idleHome > 3600 ? 3600 : idleHome));
+    b.idleHomeSec = (uint16_t)idleHome;
     b.startScreen = (uint8_t)startScr;
+    b.dimSec      = (uint16_t)dimSec;
+    b.sleepSec    = (uint16_t)sleepSec;
+    b.vuAwake     = vuAwake;
 
     // Brightness, the governor and the header height all take effect live -
     // the last one because it is only ever an arithmetic constant, not a
@@ -1725,8 +1778,8 @@ class AceUiScreenUsermod : public Usermod {
     info("briFull",  "%, contrast while you are using it. the scale is perceptual, not linear");
     info("briDim",   "%, contrast once it has been left alone. the scale changed - <b>25</b> is genuinely dim now, so re-tune this if you had it set before");
     info("deepDim",  "also step Vcomh, which is what actually sets the floor. untick if a panel dislikes it");
-    info("dimSec",   "idle seconds before dimming. scrolling stops here too");
-    info("sleepSec", "idle seconds before the panel blanks. 0 = never");
+    info("dimSec",   "idle seconds before dimming. scrolling stops here too. also on the panel at <b>System &rarr; Screen</b>");
+    info("sleepSec", "idle seconds before the panel blanks. 0 = never. also on the panel at <b>System &rarr; Screen</b>, which has a <b>Sleep now</b> row too");
     info("idleHome", "seconds of idle before the menu walks back to the top. <b>0</b> = stay where I left it");
     info("startScr", "which screen the panel comes up on");
     info("vuMode",   "the one-row meter on Now Playing ONLY. Auto gives it up before it gives up cube frames");
