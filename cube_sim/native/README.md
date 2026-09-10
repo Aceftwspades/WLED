@@ -63,14 +63,44 @@ float paths (`sinf`/`cosf`/`sqrtf` differ between C libraries in principle).
 lets the browser build eventually be retired, and it is only meaningful while
 both still exist.
 
-## Gotcha worth knowing
+> **These two numbers are stale as of the palette work.** They were taken when
+> the simulator ignored an effect's `pal=` default and pinned the palette to its
+> own id 1; both sides now honour the metadata default against WLED's real
+> palette set, so the same runs produce different - and more representative -
+> figures. The comparison itself is untouched and still worth running; it could
+> not be re-taken here because the browser target needs `emcc` and this machine
+> has no `EMSDK_ENV` on PATH.
 
-Palette is **not** taken from an effect's metadata default. The simulator
-carries six palettes where WLED has seventy-odd, so a default like `pal=11`
-lands somewhere unrelated — it maps to Mono here, rendering the effect in
-greyscale and reporting a saturation of zero. The browser page has always driven
-this from its own selector, defaulting to 1, and the native side matches that.
-Override with `--set pal=N`.
+## Palettes
+
+The simulator carries WLED's **real** palette set, not a stand-in. `palettes.cpp`
+is lifted verbatim at build time (only its `#include` lines are rewritten), and
+`Segment::loadPalette()` is transcribed from `FX_fcn.cpp`, so a palette ID means
+the same thing here as on the device:
+
+| IDs | what |
+|---|---|
+| 0 | the effect's own default, else Party |
+| 1–5 | dynamic: random, and the segment-colour ones |
+| 6–12 | the seven FastLED palettes |
+| 13–71 | the 59 cpt-city gradients |
+| 201–255 | usermod-registered, counting **down** from 255 |
+
+Because the IDs now agree, an effect's `pal=` metadata default is honoured like
+every other default. **This used to be the biggest gotcha in the tool**: with only
+six hand-copied gradients here, a metadata default of `pal=11` was Rainbow on the
+device and landed on Mono in the simulator, so effects were previewed in
+greyscale at a reported saturation of zero and the page had to override it.
+
+Usermods run as well — `setup()` before the first frame, `loop()` before each
+one — so `cube_fx_palettes.cpp`'s four audio-reactive palettes register and
+repaint here as they do on hardware. They show up as `CubeFX: Kick` and friends.
+
+One deliberate divergence, in `simLoadPalette()`: the firmware reads the gradient
+table with `pgm_read_dword`, which is correct where a pointer is 32 bits and
+truncates one on a 64-bit host. `PROGMEM` is a no-op here, so the entry is read
+as an ordinary pointer.
+
 
 ## Recording a GIF
 

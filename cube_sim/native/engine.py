@@ -60,6 +60,10 @@ class Engine:
         L.simAudioSet.argtypes = [C.c_float, C.c_int]
         L.simFrame.argtypes = [C.c_int, C.c_int]
         L.simPixels.restype = C.POINTER(C.c_uint32)
+        L.simPalCount.restype   = C.c_int
+        L.simUmPalCount.restype = C.c_int
+        L.simUmPalName.restype  = C.c_char_p; L.simUmPalName.argtypes = [C.c_int]
+        L.simPalColor.restype   = C.c_uint32; L.simPalColor.argtypes = [C.c_int, C.c_int]
 
         self.count = L.simEffectCount()
         self.meta = [parse_meta(L.simEffectMeta(i).decode("utf-8", "replace"))
@@ -101,16 +105,54 @@ class Engine:
             self.fx[k] = 1 if m["defs"].get(k) else 0
         if params:
             self.fx.update(params)
-        # Palette is deliberately NOT taken from the effect's metadata default.
-        # The simulator only carries six palettes, where WLED has seventy-odd,
-        # so a metadata default like pal=11 lands somewhere unrelated - it maps
-        # to Mono here, which renders the effect in greyscale and quietly
-        # reports a saturation of zero. The browser page has always driven this
-        # from its own selector, defaulting to 1; matching that is what makes
-        # the two front ends comparable. Override with --set pal=N.
+        # Palette DOES come from the effect's metadata now, like every other
+        # default, because the simulator carries WLED's real palette set and an
+        # id means the same thing on both sides. It used to be excluded: with
+        # only six hand-copied gradients here, a metadata default of pal=11 was
+        # Rainbow on the device and Mono in the simulator, so effects were
+        # previewed in greyscale at a reported saturation of zero.
+        if params is None or "pal" not in params:
+            self.pal = m["defs"].get("pal", self.pal)
+        elif "pal" in params:
+            self.pal = params["pal"]
         self.push()
         self.lib.simSelect()
         self.sim_ms = 0
+
+    # --- palettes -------------------------------------------------------------
+    _PAL_NAMES = None
+
+    @classmethod
+    def fixed_palette_names(cls):
+        """The firmware's own palette names, lifted by build.py."""
+        if cls._PAL_NAMES is None:
+            import json
+            path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "gen", "palette_names.json")
+            with open(path, encoding="utf-8") as f:
+                cls._PAL_NAMES = json.load(f)
+        return cls._PAL_NAMES
+
+    def palette_list(self):
+        """[(name, id)] for everything selectable - fixed, then usermod.
+
+        Usermod palettes are queried from the DLL rather than listed here, so
+        whatever a usermod registered shows up without this file knowing about
+        it. Their ids count DOWN from 255, as in the firmware.
+        """
+        out = [(n, i) for i, n in enumerate(self.fixed_palette_names())]
+        for i in range(self.lib.simUmPalCount()):
+            nm = self.lib.simUmPalName(i)
+            out.append((nm.decode() if isinstance(nm, bytes) else str(nm), 255 - i))
+        return out
+
+    def palette_swatch(self, pal, n=16):
+        """n colours across a palette, as (r,g,b) - for UI swatches and tests."""
+        out = []
+        for k in range(n):
+            c = self.lib.simPalColor(int(pal), (k * 255) // max(n - 1, 1))
+            out.append(((c >> 16) & 255, (c >> 8) & 255, c & 255))
+        return out
 
     def push(self):
         f = self.fx

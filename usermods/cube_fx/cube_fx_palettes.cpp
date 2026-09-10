@@ -38,14 +38,13 @@
 // so it does not duplicate the three that already exist.
 //
 // ---------------------------------------------------------------------------
-// NOT VISIBLE IN THE SIMULATOR
+// THE SIMULATOR RUNS THESE TOO
 // ---------------------------------------------------------------------------
-// The filename has no NN prefix on purpose: cube_sim/build.py globs
-// cube_fx_[0-9][0-9]_*.cpp, so the simulator skips this file, while the
-// firmware build compiles every .cpp in the folder and picks it up. That is
-// deliberate - the simulator carries six fixed palettes of its own and has no
-// usermod registry to register into - but it does mean these cannot be
-// previewed there. They are verified by compiling for the device.
+// The filename has no NN prefix, so cube_sim/build.py's effect glob skips it -
+// it is not an effect - and build.py names it explicitly instead. The simulator
+// now carries WLED's real palette set, its own usermodPalettes registry and a
+// usermod loop, so these four appear in its palette list and react there
+// exactly as they do on the device.
 // ===========================================================================
 
 #ifndef CFX_PAL_COUNT
@@ -97,7 +96,12 @@ class CfxPalettes : public Usermod {
       um_data_t *um = audio();
       if (!um) return;                       // no audioreactive: leave them black
 
-      const uint32_t now = millis();
+      // strip.now, NOT millis(). WLED sets strip.now = millis() every service,
+      // so on the device they are the same number - but the simulator advances
+      // a SIMULATED clock and renders far faster than real time, so gating on
+      // wall time meant dt never cleared the threshold and these palettes sat
+      // frozen on their first frame. The effect clock is the one to trust.
+      const uint32_t now = strip.now;
       uint16_t dt = (uint16_t)(now - lastMs);
       if (dt < 20) return;                   // 50 Hz is plenty for a gradient
       if (dt > 250) dt = 250;

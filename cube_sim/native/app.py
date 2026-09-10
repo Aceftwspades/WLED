@@ -120,13 +120,19 @@ def present_theme():
     return th
 
 
-PALETTES = [("Rainbow", 1), ("Fire", 2), ("Ocean", 3), ("Party", 4),
-            ("Mono", 5), ("Sunset", 6), ("Default (segment colour)", 0)]
+# Built from the engine at start-up rather than listed here: the fixed set comes
+# from the firmware's own JSON_palette_names, and the usermod-registered ones
+# (the audio-reactive gradients) are queried from the DLL, so anything a usermod
+# adds appears without this file knowing about it.
+PALETTES = []
 
 
 class App:
     def __init__(self):
         self.eng = Engine()
+        global PALETTES
+        if not PALETTES:
+            PALETTES = self.eng.palette_list()
         self.syn = Synth()
         self.live = None
         self.playing = True
@@ -273,10 +279,26 @@ class App:
     def on_effect(self, s, val):
         self.eng.select(self.eng.names.index(val))
         self.rebuild_params()
+        self.sync_palette_combo()
 
     def on_palette(self, s, val):
         self.eng.pal = dict(PALETTES)[val]
         self.eng.push()
+
+    def palette_name_for(self, pid):
+        for n, i in PALETTES:
+            if i == pid:
+                return n
+        return PALETTES[0][0] if PALETTES else ""
+
+    def sync_palette_combo(self):
+        """Selecting an effect now loads ITS palette default, so the combo has
+        to follow - otherwise it shows one palette while the cube renders
+        another."""
+        try:
+            dpg.set_value("pal_combo", self.palette_name_for(self.eng.pal))
+        except Exception:
+            pass
 
     def on_faceB(self, s, val):
         self.eng.resize(int(val))
@@ -640,7 +662,8 @@ def build(app):
                               default_value=app.eng.names[0], width=200,
                               callback=app.on_effect)
                 dpg.add_combo([p[0] for p in PALETTES], label="palette",
-                              default_value="Rainbow", width=200,
+                              default_value=app.palette_name_for(app.eng.pal),
+                              width=200, tag="pal_combo",
                               callback=app.on_palette)
                 dpg.add_combo(["4", "8", "16", "32"], label="face B", default_value="16",
                               width=80, callback=app.on_faceB)

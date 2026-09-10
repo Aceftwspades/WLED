@@ -6,6 +6,7 @@
 // effect sources registered into the bank roster at static-init time, so it
 // cannot drift from what the firmware would register.
 // ===========================================================================
+#include <stdio.h>
 #include "shim/wled.h"
 #include "../usermods/cube_fx/cube_fx_bank.h"
 
@@ -50,54 +51,102 @@ um_data_t *simAudio() {
 }
 
 // --- palettes ----------------------------------------------------------------
-// A representative subset, as 16-stop gradients. Indices line up with the
-// selector in the page, not with WLED's full palette numbering.
-const uint8_t simPalettes[SIM_PAL_COUNT][16][3] = {
-  { {0,0,0},{40,0,60},{90,0,90},{160,0,60},{220,20,20},{255,90,0},{255,160,0},{255,220,60},
-    {255,255,160},{220,255,200},{160,230,255},{80,170,255},{30,90,220},{10,40,150},{4,10,70},{0,0,0} }, // Rainbow-ish
-  { {0,0,0},{20,0,0},{60,0,0},{110,4,0},{160,20,0},{200,45,0},{230,80,0},{245,120,0},
-    {255,160,10},{255,195,40},{255,225,90},{255,240,150},{255,250,200},{255,255,235},{255,255,255},{255,255,255} }, // Fire
-  { {0,0,20},{0,6,45},{0,16,75},{0,30,105},{0,50,130},{0,75,150},{10,105,165},{25,135,175},
-    {50,165,185},{85,190,195},{125,210,205},{165,225,215},{200,238,230},{225,245,240},{240,250,248},{255,255,255} }, // Ocean
-  { {80,0,120},{130,0,140},{180,0,120},{220,0,80},{240,20,40},{250,60,20},{255,110,10},{255,160,20},
-    {240,200,50},{200,225,90},{140,230,140},{80,215,190},{40,180,220},{30,130,220},{50,80,200},{80,0,120} }, // Party
-  { {0,0,0},{15,15,15},{35,35,35},{60,60,60},{90,90,90},{120,120,120},{150,150,150},{175,175,175},
-    {200,200,200},{220,220,220},{235,235,235},{245,245,245},{252,252,252},{255,255,255},{255,255,255},{255,255,255} }, // Mono
-  { {10,0,30},{35,0,70},{70,0,110},{110,0,130},{150,10,120},{190,30,95},{220,60,70},{240,100,55},
-    {250,145,50},{255,185,65},{255,215,105},{250,235,160},{235,245,205},{215,250,240},{190,240,255},{160,220,255} }, // Sunset
-};
+// wled00/palettes.cpp is compiled in, so the tables below are the firmware's
+// own. What is transcribed here is Segment::loadPalette() from FX_fcn.cpp,
+// which is the part that decides what a palette ID MEANS - including the
+// dynamic ones built from segment colours and the usermod range that a
+// registered palette lands in.
+//
+// It matters that this is a transcription and not an approximation: the whole
+// point of the simulator is that a number set here means the same thing on the
+// device, and palette IDs are numbers effects carry in their metadata.
+std::vector<UsermodPalette> usermodPalettes;
+std::vector<CRGBPalette16>  customPalettes;
 
-uint32_t simPaletteLookup(uint8_t pal, uint8_t idx, uint8_t bri, bool wrap) {
-  // Palette ids are 1-based here, mirroring WLED: id 0 is "Default", which means
-  // "use the segment's own colour" and never reaches this function - Segment
-  // returns early for it. The page's selector therefore starts at 1.
-  const uint8_t p = (uint8_t)((pal ? pal - 1 : 0) % SIM_PAL_COUNT);
-  const int hi = idx >> 4;                  // which of the 16 stops
-  const uint8_t f = (uint8_t)((idx & 15) * 17);
-  // The wrap distinction is not cosmetic: asking for the no-wrap form is what
-  // put three hard seams through Soap's colour when the index swept the palette
-  // more than once.
-  const int nx = wrap ? ((hi + 1) & 15) : (hi < 15 ? hi + 1 : 15);
-  uint8_t c[3];
-  for (int k = 0; k < 3; k++) {
-    const int a = simPalettes[p][hi][k], b = simPalettes[p][nx][k];
-    c[k] = (uint8_t)(a + ((b - a) * (int)f) / 255);
-  }
-  return RGBW32(scale8(c[0], bri), scale8(c[1], bri), scale8(c[2], bri), 0);
+size_t removeUsermodPalettes(const char *name) {
+  const size_t before = usermodPalettes.size();
+  for (int i = (int)usermodPalettes.size() - 1; i >= 0; i--)
+    if (usermodPalettes[i].name == name) usermodPalettes.erase(usermodPalettes.begin() + i);
+  return before - usermodPalettes.size();
 }
 
-// Same 16 stops as simPaletteLookup, handed to stock effects as a real
-// CRGBPalette16 so both families draw from identical colours.
+int simPaletteCount() { return (int)(FIXED_PALETTE_COUNT + usermodPalettes.size()); }
+
+// Transcribed from Segment::loadPalette(), wled00/FX_fcn.cpp.
+static void simLoadPalette(CRGBPalette16 &target, uint8_t pal, const uint32_t *colors) {
+  const int umCount   = (int)usermodPalettes.size();
+  const int custCount = (int)customPalettes.size();
+  if (pal >= FIXED_PALETTE_COUNT) {
+    if (pal > WLED_CUSTOM_PALETTE_ID_BASE) {
+      if ((WLED_USERMOD_PALETTE_ID_BASE - pal) >= umCount) pal = 0;
+    } else {
+      if ((WLED_CUSTOM_PALETTE_ID_BASE - pal) >= custCount) pal = 0;
+    }
+  }
+  const CRGB prim = CRGB(R(colors[0]), G(colors[0]), B(colors[0]));
+  const CRGB sec  = CRGB(R(colors[1]), G(colors[1]), B(colors[1]));
+  const CRGB ter  = CRGB(R(colors[2]), G(colors[2]), B(colors[2]));
+  switch (pal) {
+    case 0:  target = PartyColors_gc22; break;
+    // 1 is WLED's randomly generated palette, regenerated on a timer by
+    // handleRandomPalette(). There is no such timer here, so it is pinned to
+    // Party rather than left as an undefined third thing.
+    case 1:  target = PartyColors_gc22; break;
+    case 2:  target = CRGBPalette16(prim); break;
+    case 3:  target = CRGBPalette16(prim, prim, sec, sec); break;
+    case 4:  target = CRGBPalette16(ter, sec, prim); break;
+    case 5:
+      if (colors[2]) target = CRGBPalette16(prim,prim,prim,prim,prim,sec,sec,sec,sec,sec,ter,ter,ter,ter,ter,prim);
+      else           target = CRGBPalette16(prim,prim,prim,prim,prim,prim,prim,prim,sec,sec,sec,sec,sec,sec,sec,sec);
+      break;
+    default:
+      if (pal > WLED_CUSTOM_PALETTE_ID_BASE) {
+        target = usermodPalettes[WLED_USERMOD_PALETTE_ID_BASE - pal].palette;
+      } else if (pal >= FIXED_PALETTE_COUNT) {
+        target = customPalettes[WLED_CUSTOM_PALETTE_ID_BASE - pal];
+      } else if (pal < DYNAMIC_PALETTE_COUNT + FASTLED_PALETTE_COUNT) {
+        target = *fastledPalettes[pal - DYNAMIC_PALETTE_COUNT];
+      } else {
+        // The ONE place this cannot be a literal transcription. The firmware
+        // reads the table entry with pgm_read_dword, which is right on an
+        // ESP32 where a pointer is 32 bits - on a 64-bit host it truncates the
+        // pointer and the first gradient palette dereferences garbage. PROGMEM
+        // is a no-op here, so the entry is just a pointer and is read as one.
+        uint8_t tcp[72];
+        memcpy(tcp, gGradientPalettes[pal - (DYNAMIC_PALETTE_COUNT + FASTLED_PALETTE_COUNT)], sizeof(tcp));
+        target.loadDynamicGradientPalette(tcp);
+      }
+      break;
+  }
+}
+
+// Reloaded every call rather than cached on the palette id, because a usermod
+// palette's SIXTEEN STOPS change under a fixed id - that is the entire point of
+// them. Caching on the id would freeze the audio-reactive ones on their first
+// frame, which is exactly the bug this would have shipped with.
 const CRGBPalette16 &Segment::currentPalette() const {
   static CRGBPalette16 cache;
-  static int cachedFor = -1;
-  const int p = (palette ? palette - 1 : 0) % SIM_PAL_COUNT;
-  if (p != cachedFor) {
-    for (int i = 0; i < 16; i++)
-      cache.entries[i] = CRGB(simPalettes[p][i][0], simPalettes[p][i][1], simPalettes[p][i][2]);
-    cachedFor = p;
-  }
+  simLoadPalette(cache, palette, colors);
   return cache;
+}
+
+// --- usermods -----------------------------------------------------------------
+static std::vector<Usermod *> simUsermods;
+static bool simUsermodsStarted = false;
+void simRegisterUsermod(Usermod *u) { simUsermods.push_back(u); }
+
+// setup() has to be able to run BEFORE the first frame, because that is where a
+// usermod registers its palettes and the host asks for the palette list while
+// building its UI. Deferring it to the first frame left the audio-reactive
+// palettes missing from the list until something had already been rendered.
+void simEnsureUsermods() {
+  if (simUsermodsStarted) return;
+  simUsermodsStarted = true;
+  for (auto *u : simUsermods) u->setup();
+}
+static void simUsermodFrame() {
+  simEnsureUsermods();
+  for (auto *u : simUsermods) u->loop();
 }
 
 // --- stock WLED effects, for side-by-side comparison -------------------------
@@ -191,8 +240,39 @@ SIM_API void simAudioSet(float vol, int peak) {
 SIM_API void simFrame(int idx, int dtMs) {
   if (idx < 0 || idx >= (int)cfxBankCount()) return;
   strip.now += (uint32_t)dtMs;
+  // Usermods run BEFORE the effect, as they do on the device - the palette
+  // usermod rewrites its gradients in loop(), and the effect must draw from the
+  // version belonging to this frame rather than the previous one.
+  simUsermodFrame();
   cfxBankRoster()[idx].fn();
   gSeg.call++;
+}
+
+// How many palettes exist right now, fixed plus whatever usermods registered.
+// Queried after the first frame, because registration happens in setup().
+SIM_API int simPalCount() { simEnsureUsermods(); return simPaletteCount(); }
+
+// One palette entry as 0x00RRGGBB, so the Python side can draw swatches and a
+// test can check a palette IS what its name says rather than inferring it from
+// an effect's output.
+// Display name of a usermod palette, in WLED's "name: palName" form, so the
+// control column can list them without hard-coding what a usermod registered.
+SIM_API const char *simUmPalName(int i) {
+  simEnsureUsermods();
+  static char buf[48];
+  if (i < 0 || i >= (int)usermodPalettes.size()) return "";
+  const UsermodPalette &u = usermodPalettes[i];
+  snprintf(buf, sizeof(buf), "%s: %s", u.name ? u.name : "?",
+           u.palName ? u.palName : "?");
+  return buf;
+}
+
+SIM_API int simUmPalCount() { simEnsureUsermods(); return (int)usermodPalettes.size(); }
+
+SIM_API uint32_t simPalColor(int pal, int idx) {
+  static CRGBPalette16 tmp;
+  simLoadPalette(tmp, (uint8_t)pal, gSeg.colors);
+  return ColorFromPalette(tmp, (unsigned)(idx & 255), 255, LINEARBLEND);
 }
 
 SIM_API uint32_t *simPixels() { return gPixels; }

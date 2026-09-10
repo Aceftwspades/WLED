@@ -34,6 +34,7 @@
 // ===========================================================================
 
 #include <stdint.h>
+#include <vector>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -155,6 +156,10 @@ static inline uint8_t  hw_random8(uint8_t lo, uint8_t hi)   { return hi > lo ? (
 typedef struct { void **u_data; uint8_t u_size; } um_data_t;
 #define USERMOD_ID_AUDIOREACTIVE 1
 extern um_data_t *simAudio();
+#ifndef USERMOD_ID_UNSPECIFIED
+  #define USERMOD_ID_UNSPECIFIED 0
+#endif
+
 struct UsermodManager {
   static bool getUMData(um_data_t **d, uint8_t) { *d = simAudio(); return true; }
 };
@@ -254,12 +259,49 @@ typedef struct Ripple {
 #endif
 
 // --- palettes --------------------------------------------------------------
-// NOT the full WLED set - a representative handful, as 16-stop gradients. The
-// BLENDING is faithful (linear, with the wrap/no-wrap distinction that bit us
-// in Soap); only the choice of palettes is reduced.
-enum { SIM_PAL_COUNT = 6 };
-extern const uint8_t simPalettes[SIM_PAL_COUNT][16][3];
-uint32_t simPaletteLookup(uint8_t pal, uint8_t idx, uint8_t bri, bool wrap);
+// The REAL WLED set, not a handful of hand-copied gradients. wled00/palettes.cpp
+// is compiled straight into the simulator, so the seven FastLED palettes and
+// the 59 cpt-city gradients are the same bytes the firmware ships, and
+// Segment::loadPalette() below is a transcription of the firmware's own.
+//
+// This replaced a six-palette table whose ids did not line up with WLED's at
+// all: a metadata default of pal=11 meant Rainbow on the device and landed on
+// Mono here, so every effect that trusted its own default was previewed in
+// greyscale. Ids now mean the same thing on both sides.
+//
+// The ID space, from wled00/const.h:
+//     0                      default (effect's own, else Party)
+//     1 .. 5                 dynamic - random, and the segment-colour ones
+//     6 .. 12                FastLED palettes
+//    13 .. 71                cpt-city gradients
+//    72 ..200                user custom palettes, growing DOWN from 200
+//   201 ..255                usermod palettes, growing DOWN from 255
+constexpr size_t FASTLED_PALETTE_COUNT  = 7;
+constexpr size_t GRADIENT_PALETTE_COUNT = 59;
+constexpr size_t DYNAMIC_PALETTE_COUNT  = 6;
+constexpr size_t FIXED_PALETTE_COUNT    = DYNAMIC_PALETTE_COUNT + FASTLED_PALETTE_COUNT + GRADIENT_PALETTE_COUNT;
+constexpr uint8_t WLED_USERMOD_PALETTE_ID_BASE = 255;
+constexpr uint8_t WLED_CUSTOM_PALETTE_ID_BASE  = 200;
+constexpr size_t  WLED_MAX_USERMOD_PALETTES    = WLED_USERMOD_PALETTE_ID_BASE - WLED_CUSTOM_PALETTE_ID_BASE;
+
+// Defined by wled00/palettes.cpp, compiled in by build.py.
+extern const TProgmemRGBPalette16  PartyColors_gc22;
+extern const TProgmemRGBPalette16* const fastledPalettes[];
+extern const uint8_t* const gGradientPalettes[];
+
+// A usermod registers palettes by pushing into this vector; the firmware reads
+// the entry LIVE on every frame, which is what lets a usermod repaint a palette
+// continuously and have it show up under any effect. Same contract here.
+struct UsermodPalette {
+  CRGBPalette16 palette;
+  const char   *name;
+  uint8_t       palIndex;
+  const char   *palName;
+};
+extern std::vector<UsermodPalette> usermodPalettes;
+extern std::vector<CRGBPalette16>  customPalettes;
+size_t removeUsermodPalettes(const char *name);
+int    simPaletteCount();
 
 class Segment;
 extern Segment *_segPtr;
@@ -502,7 +544,11 @@ class Segment {
     if (palette == 0 && mcol < 3) return color_fade(colors[mcol], pbri);
     unsigned idx = i;
     if (mapping) idx = (i * 255) / (_vw * _vh ? _vw * _vh : 1);
-    return simPaletteLookup(palette, (uint8_t)idx, pbri, moving);
+    // The wrap distinction is not cosmetic: asking for the no-wrap form is what
+    // put three hard seams through Soap's colour when the index swept the
+    // palette more than once.
+    return ColorFromPalette(currentPalette(), (uint8_t)idx, pbri,
+                            moving ? LINEARBLEND : LINEARBLEND_NOWRAP);
   }
 };
 
@@ -566,10 +612,19 @@ static inline uint32_t micros() { return strip.now * 1000u; }
 // CfxBankReg, and that static registration is exactly the effect list the
 // simulator enumerates - so the roster comes for free and cannot disagree with
 // what the firmware would register.
+// Usermods are REAL here now, not stubs. They were stubbed while the only
+// usermod-shaped code in this folder was effect registration, which happens
+// through CfxBankReg instead - but a usermod that registers and repaints
+// palettes has to actually run, and its loop() is where the audio-reactive
+// gradients are rewritten. sim_main drives setup() once and loop() per frame.
+class Usermod;
+void simRegisterUsermod(Usermod *u);
+
 class Usermod {
  public:
   virtual ~Usermod() {}
   virtual void setup() {}
   virtual void loop() {}
+  virtual uint16_t getId() { return 0; }
 };
-#define REGISTER_USERMOD(x) /* nothing */
+#define REGISTER_USERMOD(x) namespace { struct _umReg_##x { _umReg_##x() { simRegisterUsermod(&x); } } _umRegInst_##x; }
