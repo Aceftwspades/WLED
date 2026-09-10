@@ -122,7 +122,16 @@ static FX_RET mode_moire() {
 
   // --- parameters -----------------------------------------------------------
   const int  fill    = (int)SEGMENT.intensity;
-  const int  distort = (int)SEGMENT.custom1;
+  // Distort is CURVED, cubically. Measured on the real net, the lattice's
+  // periodicity - the strength of its strongest off-origin autocorrelation
+  // peak - runs 0.77 undistorted, 0.50 at 30, 0.30 at 55, and then flattens
+  // out around 0.17 from 80 upward. Past 55 the grid is simply gone and more
+  // distortion buys nothing but smear, so on a linear control four fifths of
+  // the travel did the same thing and the readable region was a sliver at the
+  // bottom. The cube law puts that sliver across the whole lower half and
+  // still reaches full smear at the top: mid-slider now lands on 32.
+  const int  distort = (((int)SEGMENT.custom1 * (int)SEGMENT.custom1) / 255)
+                       * (int)SEGMENT.custom1 / 255;
   const int  scaleI  = (int)SEGMENT.custom2;
   const int  detune  = (int)cfx_c3full(SEGMENT.custom3);
   const bool split   = SEGMENT.check2;
@@ -259,7 +268,7 @@ static FX_RET mode_moire() {
 }
 
 static const char _data_FX_MODE_MOIRE[] PROGMEM =
-  "Ace 3-D Moire@Flow,Fill,Distort,Scale,Detune,Beat surge,Split hue,Flat mode;;!;2f;sx=70,ix=128,c1=110,c2=120,c3=20,o1=1,o2=1,pal=11";
+  "Ace 3-D Moire@Flow,Fill,Distort,Scale,Detune,Beat surge,Split hue,Flat mode;;!;2f;sx=70,ix=128,c1=128,c2=120,c3=20,o1=1,o2=1,pal=11";
 
 
 // ---------------------------------------------------------------------------
