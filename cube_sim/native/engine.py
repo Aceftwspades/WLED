@@ -64,6 +64,8 @@ class Engine:
         L.simUmPalCount.restype = C.c_int
         L.simUmPalName.restype  = C.c_char_p; L.simUmPalName.argtypes = [C.c_int]
         L.simPalColor.restype   = C.c_uint32; L.simPalColor.argtypes = [C.c_int, C.c_int]
+        L.simSetPalSource.argtypes = [C.c_int]
+        L.simGetPalSource.restype  = C.c_int
 
         self.count = L.simEffectCount()
         self.meta = [parse_meta(L.simEffectMeta(i).decode("utf-8", "replace"))
@@ -145,6 +147,17 @@ class Engine:
             nm = self.lib.simUmPalName(i)
             out.append((nm.decode() if isinstance(nm, bytes) else str(nm), 255 - i))
         return out
+
+    # The audio palettes draw their colours from a SOURCE palette. On the device
+    # that is a Usermods setting; here it is a control, because the simulator has
+    # no settings page.
+    @property
+    def pal_source(self):
+        return self.lib.simGetPalSource()
+
+    @pal_source.setter
+    def pal_source(self, v):
+        self.lib.simSetPalSource(int(v))
 
     def palette_swatch(self, pal, n=16):
         """n colours across a palette, as (r,g,b) - for UI swatches and tests."""

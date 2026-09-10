@@ -156,6 +156,34 @@ static inline uint8_t  hw_random8(uint8_t lo, uint8_t hi)   { return hi > lo ? (
 typedef struct { void **u_data; uint8_t u_size; } um_data_t;
 #define USERMOD_ID_AUDIOREACTIVE 1
 extern um_data_t *simAudio();
+// --- just enough of WLED's config plumbing to COMPILE a usermod ------------
+// A usermod that carries settings implements addToConfig / readFromConfig /
+// appendConfigData against ArduinoJson and Print. The simulator has no settings
+// page and no cfg.json, so these do nothing - but they have to exist, or a
+// usermod with settings cannot be built here at all, and the whole point of
+// compiling the real file is that it is the real file.
+//
+// readFromConfig returning false is the honest answer: nothing was read, so the
+// usermod keeps its compiled-in defaults.
+#ifndef FPSTR
+  #define FPSTR(s) (s)
+#endif
+struct JsonObject {
+  struct Slot {
+    template <class T> Slot &operator=(const T &) { return *this; }
+    template <class T> operator T() const { return T(); }
+  };
+  bool isNull() const { return true; }
+  JsonObject createNestedObject(const char *) { return JsonObject(); }
+  Slot operator[](const char *) const { return Slot(); }
+};
+template <class S, class T> inline bool getJsonValue(const S &, T &) { return false; }
+class Print {
+ public:
+  void print(const char *) {}
+  void print(int) {}
+};
+
 #ifndef USERMOD_ID_UNSPECIFIED
   #define USERMOD_ID_UNSPECIFIED 0
 #endif
@@ -626,5 +654,12 @@ class Usermod {
   virtual void setup() {}
   virtual void loop() {}
   virtual uint16_t getId() { return 0; }
+  // The settings hooks exist so a usermod that HAS settings still compiles
+  // here. They are never called - there is no settings page and no cfg.json -
+  // so a usermod keeps its compiled-in defaults, which is what readFromConfig
+  // returning false says.
+  virtual void addToConfig(JsonObject &) {}
+  virtual bool readFromConfig(JsonObject &) { return false; }
+  virtual void appendConfigData(Print &) {}
 };
 #define REGISTER_USERMOD(x) namespace { struct _umReg_##x { _umReg_##x() { simRegisterUsermod(&x); } } _umRegInst_##x; }

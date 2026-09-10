@@ -285,6 +285,9 @@ class App:
         self.eng.pal = dict(PALETTES)[val]
         self.eng.push()
 
+    def on_pal_source(self, s, val):
+        self.eng.pal_source = dict(PALETTES)[val]
+
     def palette_name_for(self, pid):
         for n, i in PALETTES:
             if i == pid:
@@ -665,6 +668,12 @@ def build(app):
                               default_value=app.palette_name_for(app.eng.pal),
                               width=200, tag="pal_combo",
                               callback=app.on_palette)
+                # Only meaningful while a CubeFX audio palette is selected -
+                # it is where those four take their colours from.
+                dpg.add_combo([p[0] for p in PALETTES if p[1] < 201],
+                              label="pal source", width=200, tag="pal_src",
+                              default_value=app.palette_name_for(app.eng.pal_source),
+                              callback=app.on_pal_source)
                 dpg.add_combo(["4", "8", "16", "32"], label="face B", default_value="16",
                               width=80, callback=app.on_faceB)
                 # Several effects paint with SEGCOLOR(0). WLED's DEFAULT_COLOR

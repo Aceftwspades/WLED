@@ -169,6 +169,13 @@ static void registerStock() {
 }
 
 // --- the C surface the page calls -------------------------------------------
+// The palette usermod's one setting. On the device this comes from the Usermods
+// settings page; here it comes from the control column. Declared OUTSIDE the
+// extern "C" block below - inside it they would take C linkage and not match
+// the C++ definitions in cube_fx_palettes.cpp.
+void    cfxSetPaletteSource(uint8_t s);
+uint8_t cfxGetPaletteSource();
+
 extern "C" {
 
 SIM_API int simEffectCount() { registerStock(); return (int)cfxBankCount(); }
@@ -266,6 +273,9 @@ SIM_API const char *simUmPalName(int i) {
            u.palName ? u.palName : "?");
   return buf;
 }
+
+SIM_API void simSetPalSource(int s) { simEnsureUsermods(); cfxSetPaletteSource((uint8_t)s); }
+SIM_API int  simGetPalSource()      { simEnsureUsermods(); return (int)cfxGetPaletteSource(); }
 
 SIM_API int simUmPalCount() { simEnsureUsermods(); return (int)usermodPalettes.size(); }
 

@@ -24,31 +24,57 @@
 // from the effect. That is the whole mechanism.
 //
 // ---------------------------------------------------------------------------
+// THE COLOURS ARE YOURS, NOT MINE
+// ---------------------------------------------------------------------------
+// The first version invented its own hues - a wheel stepping by 71, a warm-cool
+// ramp with hard-coded endpoints - so whatever the rest of a setup looked like,
+// these four went their own way. They now take no view on colour at all. Each
+// one SAMPLES a source palette, and the audio decides only WHERE and HOW WIDELY
+// it samples:
+//
+//   Kick    a narrow window that jumps to a new place in the source on a beat
+//   Tilt    the window slides along the source with the bass/treble balance
+//   Bloom   the window WIDENS with loudness, from one colour to the whole ramp
+//   Ladder  stop i is source position i, brightness is band i's level
+//
+// The source is set in Usermods settings ("source"), and it is an ordinary WLED
+// palette id, which is what makes this cover both halves of the ask:
+//
+//   2..5      WLED's own "primary colour", "primary + secondary" and so on, so
+//             these follow the segment's COLOUR PICKERS - pick colours directly
+//   0..71     any built-in palette
+//   72..200   custom palettes, i.e. any gradient uploaded to the device
+//
+// Usermod ids (201-255) are refused, because a usermod palette sourcing another
+// usermod palette is a loop, and sourcing itself is a loop that also stops
+// producing any colour at all after one frame.
+//
+// ---------------------------------------------------------------------------
 // WHY THESE FOUR, GIVEN AUDIOREACTIVE ALREADY SHIPS THREE
 // ---------------------------------------------------------------------------
 // Its three - Ratio, Hue, Spectrum - are all the same idea: hue taken from an
 // FFT bin, brightness from that bin's level. The palette IS the spectrum, a
-// chart of the sound.
+// chart of the sound - and like the first draft of these, it picks its own
+// colours and cannot be pointed at yours.
 //
-// These are deliberately not that. They take audio as placement and force:
-// one is an EVENT (the whole palette turns on a kick), one is a BALANCE (warm
-// when the bass leads, cool when the treble does), one is DYNAMIC RANGE (how
-// much black the palette contains follows loudness), and only the last reads
-// the spectrum directly - and it does so across the stops rather than as hue,
-// so it does not duplicate the three that already exist.
+// These take audio as placement and force instead: one is an EVENT, one a
+// BALANCE, one DYNAMIC RANGE, and only the last reads the spectrum directly.
 //
 // ---------------------------------------------------------------------------
 // THE SIMULATOR RUNS THESE TOO
 // ---------------------------------------------------------------------------
 // The filename has no NN prefix, so cube_sim/build.py's effect glob skips it -
 // it is not an effect - and build.py names it explicitly instead. The simulator
-// now carries WLED's real palette set, its own usermodPalettes registry and a
+// carries WLED's real palette set, its own usermodPalettes registry and a
 // usermod loop, so these four appear in its palette list and react there
 // exactly as they do on the device.
 // ===========================================================================
 
 #ifndef CFX_PAL_COUNT
   #define CFX_PAL_COUNT 4
+#endif
+#ifndef CFX_PAL_SOURCE_DEFAULT
+  #define CFX_PAL_SOURCE_DEFAULT 11    // Rainbow: wide, so the movement shows
 #endif
 
 // One shared name pointer for all four, which is also how removeUsermodPalettes()
@@ -58,26 +84,84 @@ static const char _cfxPal0[]    PROGMEM = "Kick";
 static const char _cfxPal1[]    PROGMEM = "Tilt";
 static const char _cfxPal2[]    PROGMEM = "Bloom";
 static const char _cfxPal3[]    PROGMEM = "Ladder";
+static const char _cfxSrcKey[]  PROGMEM = "source";
 
 class CfxPalettes : public Usermod {
   private:
     bool     registered = false;
-    uint8_t  kickHue    = 0;     // where Kick's wheel currently sits
-    uint8_t  kickEnv    = 0;     // and how recently it was hit
+    uint8_t  source     = CFX_PAL_SOURCE_DEFAULT;
+    uint8_t  builtFor   = 0xFF;          // which source `src` currently holds
+    uint32_t builtCols[3] = {0, 0, 0};
+    CRGBPalette16 src;                   // the colours everything is drawn from
+
+    uint8_t  kickPos    = 0;             // where in the source Kick is sitting
+    uint8_t  kickEnv    = 0;
     uint8_t  prevPeak   = 0;
-    uint8_t  tilt       = 128;   // smoothed bass/treble balance
-    uint8_t  loud       = 0;     // smoothed loudness
+    uint8_t  tilt       = 128;
+    uint8_t  loud       = 0;
     uint32_t lastMs     = 0;
 
-    // Audio without going through SEGMENT - this runs in loop(), outside any
-    // effect, where there is no current segment to ask about sound simulation.
     static um_data_t *audio() {
       um_data_t *um = nullptr;
       if (!UsermodManager::getUMData(&um, USERMOD_ID_AUDIOREACTIVE)) return nullptr;
       return um;
     }
 
-    static CRGB hsv(uint8_t h, uint8_t s, uint8_t v) { return (CRGB)CHSV(h, s, v); }
+    static const uint32_t *segColors() {
+      return strip.getSegment(strip.getMainSegmentId()).colors;
+    }
+
+    // Segment::loadPalette() is protected, so it cannot be borrowed - but every
+    // table it reads is a public global, so the part that matters is short. A
+    // bad or circular id falls back to the default rather than being clamped,
+    // so a mistake is visible instead of silently sourcing itself.
+    void buildSource() {
+      const uint32_t *cols = segColors();
+      uint8_t pal = source;
+      if (pal > WLED_CUSTOM_PALETTE_ID_BASE) pal = CFX_PAL_SOURCE_DEFAULT;
+      if (pal >= FIXED_PALETTE_COUNT &&
+          (WLED_CUSTOM_PALETTE_ID_BASE - pal) >= (int)customPalettes.size())
+        pal = CFX_PAL_SOURCE_DEFAULT;
+
+      const CRGB p0 = CRGB(R(cols[0]), G(cols[0]), B(cols[0]));
+      const CRGB p1 = CRGB(R(cols[1]), G(cols[1]), B(cols[1]));
+      const CRGB p2 = CRGB(R(cols[2]), G(cols[2]), B(cols[2]));
+      switch (pal) {
+        case 0: case 1: src = PartyColors_gc22; break;
+        case 2:  src = CRGBPalette16(p0); break;
+        case 3:  src = CRGBPalette16(p0, p0, p1, p1); break;
+        case 4:  src = CRGBPalette16(p2, p1, p0); break;
+        case 5:
+          if (cols[2]) src = CRGBPalette16(p0,p0,p0,p0,p0,p1,p1,p1,p1,p1,p2,p2,p2,p2,p2,p0);
+          else         src = CRGBPalette16(p0,p0,p0,p0,p0,p0,p0,p0,p1,p1,p1,p1,p1,p1,p1,p1);
+          break;
+        default:
+          if (pal >= FIXED_PALETTE_COUNT) {
+            src = customPalettes[WLED_CUSTOM_PALETTE_ID_BASE - pal];
+          } else if (pal < DYNAMIC_PALETTE_COUNT + FASTLED_PALETTE_COUNT) {
+            src = *fastledPalettes[pal - DYNAMIC_PALETTE_COUNT];
+          } else {
+            // pgm_read_ptr, not pgm_read_dword. The firmware's own copy of
+            // this uses the dword form, which is right where a pointer is 32
+            // bits and truncates one where it is 64 - the simulator builds for
+            // a 64-bit host and would dereference a cut-down pointer. The ptr
+            // form is correct on both.
+            byte tcp[72];
+            memcpy_P(tcp, (const byte *)pgm_read_ptr(&(gGradientPalettes[pal - (DYNAMIC_PALETTE_COUNT + FASTLED_PALETTE_COUNT)])), sizeof(tcp));
+            src.loadDynamicGradientPalette(tcp);
+          }
+          break;
+      }
+      builtFor = source;
+      builtCols[0] = cols[0]; builtCols[1] = cols[1]; builtCols[2] = cols[2];
+    }
+
+    // One colour out of the source, scaled. Everything below is built from this
+    // and nothing else, which is what keeps these on the chosen colours.
+    inline CRGB pick(uint8_t pos, uint8_t bri) const {
+      const uint32_t c = ColorFromPalette(src, pos, bri, LINEARBLEND);
+      return CRGB(R(c), G(c), B(c));
+    }
 
   public:
     void setup() override {
@@ -89,6 +173,7 @@ class CfxPalettes : public Usermod {
                                     (uint8_t)i, names[i] });
         registered = true;
       }
+      buildSource();
     }
 
     void loop() override {
@@ -107,22 +192,43 @@ class CfxPalettes : public Usermod {
       if (dt > 250) dt = 250;
       lastMs = now;
 
+      // Rebuilt when the setting moves, and also when the segment's COLOURS
+      // move - sources 2-5 are built from them, so a colour picker has to take
+      // effect without a restart.
+      {
+        const uint32_t *c = segColors();
+        if (source != builtFor || c[0] != builtCols[0] ||
+            c[1] != builtCols[1] || c[2] != builtCols[2]) buildSource();
+      }
+
       const float   vol  = *(float *)um->u_data[0];
       const uint8_t *fft = (uint8_t *)um->u_data[2];
       const uint8_t  pk  = *(uint8_t *)um->u_data[3];
 
-      int bass = (fft[0] + fft[1] + fft[2]) / 3;
-      int mid  = (fft[5] + fft[6] + fft[7] + fft[8]) / 4;
-      int treb = (fft[12] + fft[13] + fft[14] + fft[15]) / 4;
+      const int bass = (fft[0] + fft[1] + fft[2]) / 3;
+      const int treb = (fft[12] + fft[13] + fft[14] + fft[15]) / 4;
 
       // --- Kick: an EVENT, not a level -----------------------------------
-      // The wheel steps on a rising transient and then holds. Stepping by a
-      // large, non-dividing amount matters: small steps read as a slow drift
-      // and a step that divides 256 evenly cycles through the same few hues.
+      // Jumps to a new PLACE in the source. Stepping by a large, non-dividing
+      // amount matters: small steps read as a slow drift, and a step that
+      // divides 256 evenly visits the same few positions for ever.
       {
         const bool rising = pk && !prevPeak;
         prevPeak = pk ? 1 : 0;
-        if (rising && bass > 40) { kickHue = (uint8_t)(kickHue + 71); kickEnv = 255; }
+        if (rising && bass > 40) {
+          // Step to somewhere that is actually LIT. Kick samples a narrow slice,
+          // and plenty of palettes have a long dark end - Fire is a quarter
+          // black - so a blind jump lands there often enough that the beat
+          // reads as the effect dying rather than as a hit. Up to four steps
+          // looking for a live spot, then take what there is: a source that is
+          // dark everywhere should stay dark, not be forced bright.
+          for (int t = 0; t < 4; t++) {
+            kickPos = (uint8_t)(kickPos + 71);
+            const CRGB c = pick(kickPos, 255);
+            if ((int)c.r + (int)c.g + (int)c.b > 90) break;
+          }
+          kickEnv = 255;
+        }
         const int d = (int)kickEnv - (dt * 255) / 420;      // ~420 ms to settle
         kickEnv = (uint8_t)(d < 0 ? 0 : d);
       }
@@ -142,58 +248,78 @@ class CfxPalettes : public Usermod {
         CRGB *e = p.palette.entries;
         switch (p.palIndex) {
 
-          case 0: {   // Kick - whole palette turns on the beat, then settles
-            const uint8_t base = kickHue;
-            const uint8_t lift = (uint8_t)(60 + (kickEnv * 195) / 255);
+          case 0: {   // Kick - a narrow slice of the source, moving on the beat
+            const uint8_t lift = (uint8_t)(70 + (kickEnv * 185) / 255);
             for (int i = 0; i < 16; i++) {
-              // a tight spread around the current hue, so the palette reads as
-              // one colour that CHANGES rather than as a rainbow that spins
-              const uint8_t h = (uint8_t)(base + (i - 8) * 4);
-              uint8_t v = (uint8_t)((i == 0) ? 0 : lift);        // keep a black stop
-              if (i > 12) v = (uint8_t)(v / (i - 11));           // and fall away
-              e[i] = hsv(h, (uint8_t)(255 - (kickEnv / 6)), v);
+              const uint8_t pos = (uint8_t)(kickPos + (i - 8) * 3);
+              uint8_t v = (uint8_t)((i == 0) ? 0 : lift);   // keep a black stop
+              if (i > 12) v = (uint8_t)(v / (i - 11));      // and fall away
+              e[i] = pick(pos, v);
             }
             break; }
 
-          case 1: {   // Tilt - warm when the bass leads, cool when treble does
+          case 1: {   // Tilt - the slice slides with the bass/treble balance
             for (int i = 0; i < 16; i++) {
-              // 0 = deep red, 160 = blue; tilt slides the whole ramp along it
-              const uint8_t h = (uint8_t)(((int)tilt * 150) / 255 + i * 5);
-              const uint8_t v = (uint8_t)(i == 0 ? 0 : 40 + i * 14);
-              e[i] = hsv(h, (uint8_t)(230 - i * 4), v);
+              const uint8_t pos = (uint8_t)(tilt + i * 6);
+              e[i] = pick(pos, (uint8_t)(i == 0 ? 0 : 45 + i * 14));
             }
             break; }
 
-          case 2: {   // Bloom - loudness buys CONTRAST, not brightness
-            // Quiet keeps the ramp compressed near black; loud opens it to the
-            // full range. Black is always present at stop 0, which is what
-            // stops it turning into a wash when the track is loud.
-            const int span = 40 + ((int)loud * 215) / 255;
+          case 2: {   // Bloom - loudness WIDENS the slice, it does not brighten it
+            // Quiet is one colour held dim; loud opens out across the whole
+            // source at full contrast. Stop 0 stays black either way, so it
+            // never becomes a wash.
+            const int span = 12 + ((int)loud * 243) / 255;
             for (int i = 0; i < 16; i++) {
-              int v = (i * span) / 15;
+              const uint8_t pos = (uint8_t)((int)loud + (i * span) / 15);
+              int v = 30 + (i * (40 + ((int)loud * 185) / 255)) / 15;
               if (v > 255) v = 255;
-              const uint8_t h = (uint8_t)(150 - ((int)loud * 90) / 255 + i * 3);
-              e[i] = hsv(h, (uint8_t)(255 - v / 3), (uint8_t)v);
+              e[i] = pick(pos, (uint8_t)(i == 0 ? 0 : v));
             }
             break; }
 
-          default: {  // Ladder - the spectrum ACROSS the stops, not as hue
-            // Stop i is band i, so a gradient sweep walks up the spectrum and
-            // the palette's shape is the sound. Hue stays fixed per stop so
-            // the reading is in brightness, which is what the other three
-            // audio palettes do not do.
-            for (int i = 0; i < 16; i++) {
-              const uint8_t lvl = fft[i];
-              const uint8_t h   = (uint8_t)(20 + i * 13);
-              e[i] = hsv(h, (uint8_t)(255 - lvl / 4), lvl);
-            }
+          default: {  // Ladder - the spectrum ACROSS the stops
+            // Stop i is band i, at source position i, so a gradient sweep walks
+            // up the spectrum: the palette's SHAPE is the sound while its
+            // colours stay the ones that were chosen.
+            for (int i = 0; i < 16; i++) e[i] = pick((uint8_t)(i * 17), fft[i]);
             break; }
         }
       }
     }
 
+    void addToConfig(JsonObject &root) override {
+      JsonObject top = root.createNestedObject(FPSTR(_cfxPalName));
+      top[FPSTR(_cfxSrcKey)] = source;
+    }
+
+    bool readFromConfig(JsonObject &root) override {
+      JsonObject top = root[FPSTR(_cfxPalName)];
+      if (top.isNull()) return false;
+      const bool ok = getJsonValue(top[FPSTR(_cfxSrcKey)], source);
+      builtFor = 0xFF;                       // force a rebuild on the next loop
+      return ok;
+    }
+
+    void appendConfigData(Print &s) override {
+      s.print(F("addInfo('CubeFX:source',1,'<i>WLED palette id (0-200) the four "
+                "audio palettes take their colours from. 2-5 follow the segment "
+                "colour pickers; 6-71 are the built-ins; 72+ are uploaded "
+                "palettes.</i>');"));
+    }
+
     uint16_t getId() override { return USERMOD_ID_UNSPECIFIED; }
+
+    // The device writes `source` through the settings page. A host that has no
+    // settings page - the simulator - needs some way in, and a setter is the
+    // whole of it.
+    void setSource(uint8_t s) { source = s; builtFor = 0xFF; }
+    uint8_t getSource() const { return source; }
 };
 
 static CfxPalettes cfx_palettes_instance;
 REGISTER_USERMOD(cfx_palettes_instance);
+
+// Free functions so a host can reach the setting without knowing the class.
+void    cfxSetPaletteSource(uint8_t s) { cfx_palettes_instance.setSource(s); }
+uint8_t cfxGetPaletteSource()          { return cfx_palettes_instance.getSource(); }
