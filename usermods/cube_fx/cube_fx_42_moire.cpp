@@ -132,14 +132,28 @@ static FX_RET mode_moire() {
   const float    vol  = *(float *)um->u_data[0];
   const uint8_t  beat = SEGMENT.check1 ? fx_lowBeat(um) : 0;
   if (beat > s->surge) s->surge = beat;
-  { const int f = (int)s->surge - (int)fx_step(7, dt);
+  // Fast release - about a quarter of a second. At the old rate the envelope
+  // took most of a second to let go, which spreads a kick into a swell: the
+  // median frame-to-frame change rose as much as the peak did, and a surge
+  // that lifts everything is not a surge.
+  { const int f = (int)s->surge - (int)fx_step(24, dt);
     s->surge = (uint8_t)(f < 0 ? 0 : f); }
+
+  // The kick itself is a STEP in phase, applied the frame it lands. Gain alone
+  // cannot read as a jump however hard it is driven - it changes how fast the
+  // pattern is already moving, not where it is. Three different offsets so the
+  // layers lurch out of step with each other rather than sliding together.
+  if (beat) {
+    s->t1 = (uint16_t)(s->t1 + (uint32_t)beat * 44u);
+    s->t2 = (uint16_t)(s->t2 - (uint32_t)beat * 31u);
+    s->t3 = (uint16_t)(s->t3 + (uint32_t)beat * 57u);
+  }
 
   // --- three clocks ---------------------------------------------------------
   // Different rates and no common period, which is what keeps the superposition
   // from settling into a visible loop.
   { const uint32_t r = (uint32_t)(4 + (int)SEGMENT.speed) * (uint32_t)dt
-                       * (uint32_t)(100 + s->surge / 2) / (23u * 100u);
+                       * (uint32_t)(100 + s->surge) / (23u * 100u);
     s->t1 = (uint16_t)(s->t1 + r);
     s->t2 = (uint16_t)(s->t2 + (r * 7u) / 11u);
     s->t3 = (uint16_t)(s->t3 + (r * 13u) / 29u); }
@@ -158,7 +172,7 @@ static FX_RET mode_moire() {
   const float warpA  = (float)distort * (0.16f / 255.0f);           // in surface units
   const float twist  = (float)distort * (60.0f / 255.0f);           // 1/256 turns
   const float radA   = (float)distort * (0.22f / 255.0f);
-  const float surgeF = 1.0f + (float)s->surge * (0.7f / 255.0f);
+  const float surgeF = 1.0f + (float)s->surge * (0.85f / 255.0f);
 
   // Second lattice: the first rotated within its own plane, plus a scale
   // detune. Both together are the moire control - angle alone beats too
@@ -195,9 +209,12 @@ static FX_RET mode_moire() {
       // --- 1. polar transform, about the vertical axis ---------------------
       { const float r  = sqrtf(X * X + Y * Y);
         const float th = cfx_atan2f(Y, X) * (256.0f / MO_TWOPI);   // 1/256 turns
-        const float rr = r * (1.0f + radA * 3.0f * mo_sin(r * 300.0f - p1))
-                           + radA * 0.9f * mo_sin(Z * 200.0f + p2);
-        const float tt = th + twist * (1.6f - r) + twist * 0.5f * mo_sin(Z * 150.0f - p3);
+        // The funnel takes the surge too, so a kick twists the whole solid at
+        // the same instant the warp field lurches.
+        const float rr = r * (1.0f + radA * 3.0f * surgeF * mo_sin(r * 300.0f - p1))
+                           + radA * 0.9f * surgeF * mo_sin(Z * 200.0f + p2);
+        const float tt = th + twist * surgeF * (1.6f - r)
+                            + twist * 0.5f * mo_sin(Z * 150.0f - p3);
         X = rr * mo_cos(tt);
         Y = rr * mo_sin(tt); }
 
