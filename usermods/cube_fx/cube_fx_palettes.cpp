@@ -1,4 +1,5 @@
 #include "wled.h"
+#include "cube_fx_common.h"
 
 // ===========================================================================
 // cube_fx_palettes.cpp - audio-reactive palettes, registered at runtime
@@ -26,19 +27,19 @@
 // ---------------------------------------------------------------------------
 // THE COLOURS ARE YOURS, NOT MINE
 // ---------------------------------------------------------------------------
-// The first version invented its own hues - a wheel stepping by 71, a warm-cool
-// ramp with hard-coded endpoints - so whatever the rest of a setup looked like,
-// these four went their own way. They now take no view on colour at all. Each
-// one SAMPLES a source palette, and the audio decides only WHERE and HOW WIDELY
-// it samples:
+// None of these hold a view on colour. Each SAMPLES a source palette, and the
+// audio decides only where, and how widely, it samples:
 //
 //   Kick    a narrow window that jumps to a new place in the source on a beat
-//   Tilt    the window slides along the source with the bass/treble balance
+//   Tilt    a two-tap SPLIT - bass pulls one tap back, treble pushes the other
+//           forward, and the spectral balance decides which is heard
 //   Bloom   the window WIDENS with loudness, from one colour to the whole ramp
 //   Ladder  stop i is source position i, brightness is band i's level
+//   Arc     every musical feature at once, each owning a bounded slice of
+//           palette travel - see below
 //
 // The source is set in Usermods settings ("source"), and it is an ordinary WLED
-// palette id, which is what makes this cover both halves of the ask:
+// palette id:
 //
 //   2..5      WLED's own "primary colour", "primary + secondary" and so on, so
 //             these follow the segment's COLOUR PICKERS - pick colours directly
@@ -50,15 +51,62 @@
 // producing any colour at all after one frame.
 //
 // ---------------------------------------------------------------------------
-// WHY THESE FOUR, GIVEN AUDIOREACTIVE ALREADY SHIPS THREE
+// THE TWO-TAP SPLIT
 // ---------------------------------------------------------------------------
-// Its three - Ratio, Hue, Spectrum - are all the same idea: hue taken from an
-// FFT bin, brightness from that bin's level. The palette IS the spectrum, a
-// chart of the sound - and like the first draft of these, it picks its own
-// colours and cannot be pointed at yours.
+// Sampling the source at ONE place can only slide. Sampling it at two - one
+// pulled back by the bass, one pushed forward by the treble, blended by which
+// band is louder - lets the palette come APART on full-spectrum material and
+// collapse back to a point when the spectrum narrows. It is the difference
+// between a gradient that moves and one that breathes, and it costs one extra
+// lookup.
 //
-// These take audio as placement and force instead: one is an EVENT, one a
-// BALANCE, one DYNAMIC RANGE, and only the last reads the spectrum directly.
+// The blend needs a floor. high/(bass+high) is meaningless when both are tiny
+// and jitters hard just above silence, so below a small total the two taps are
+// simply given equal weight.
+//
+// ---------------------------------------------------------------------------
+// ARC, AND THE SHIFT BUDGET
+// ---------------------------------------------------------------------------
+// Arc is the one that uses everything. Six musical features each own a bounded
+// slice of palette travel and their shifts sum:
+//
+//   spectral tilt   +/- 80   which way the spectrum leans
+//   tempo phase     +/- 12..48, scaled by CONFIDENCE and by energy
+//   beat pulse       +  26   a 220 ms envelope on each predicted beat
+//   drop intensity   +  42   the tail of a drop
+//   build            -  24   NEGATIVE, on purpose
+//   sustained surge  +  18   a held bass note
+//
+// Two of those are worth spelling out. The tempo term uses the PREDICTED phase
+// rather than hits, so the palette sways continuously between beats instead of
+// only twitching on them - and multiplying by confidence means it fades itself
+// out when the lock is poor rather than swaying to a tempo that is not there.
+//
+// And build is negative while drop is positive: through a riser the palette
+// winds steadily backward, and the drop snaps it forward past where it began.
+// That is an arc measured in bars rather than in frames, and it is the only
+// thing here that operates on a musical timescale longer than a beat.
+//
+// ---------------------------------------------------------------------------
+// CALLING THE SHARED ANALYSERS FROM A USERMOD IS SAFE, BUT NOT OBVIOUSLY SO
+// ---------------------------------------------------------------------------
+// cfx_tempo() and cfx_drop() sit on fx_lowBeat(), which is a ONE-SHOT: it
+// consumes the rising edge of samplePeak so that one hit fires one response.
+// Something calling it from outside the render path could therefore eat beats
+// that the effects were meant to see. It does not, for opposite reasons on the
+// two hosts, and both are worth recording:
+//
+//   device     strip.now is assigned inside WS2812FX::service(), and
+//              UsermodManager::loop() runs BEFORE service() in the main loop.
+//              So a usermod sees the PREVIOUS frame's strip.now, hits the
+//              one-answer-per-frame guard, and is handed the cached value
+//              without consuming anything. Its audio is one frame stale.
+//
+//   simulator  usermods run first WITH the frame's own strip.now, so the
+//              usermod computes and caches, and the effect reads that same
+//              cached answer a moment later.
+//
+// Either way exactly one evaluation happens per frame and nothing is lost.
 //
 // ---------------------------------------------------------------------------
 // THE SIMULATOR RUNS THESE TOO
@@ -66,24 +114,27 @@
 // The filename has no NN prefix, so cube_sim/build.py's effect glob skips it -
 // it is not an effect - and build.py names it explicitly instead. The simulator
 // carries WLED's real palette set, its own usermodPalettes registry and a
-// usermod loop, so these four appear in its palette list and react there
-// exactly as they do on the device.
+// usermod loop, so these appear in its palette list and react there exactly as
+// they do on the device.
 // ===========================================================================
 
 #ifndef CFX_PAL_COUNT
-  #define CFX_PAL_COUNT 4
+  #define CFX_PAL_COUNT 5
 #endif
 #ifndef CFX_PAL_SOURCE_DEFAULT
   #define CFX_PAL_SOURCE_DEFAULT 11    // Rainbow: wide, so the movement shows
 #endif
+#define CFX_TONE_FLOOR 24              // below this, the split blends evenly
 
-// One shared name pointer for all four, which is also how removeUsermodPalettes()
-// identifies them - it matches on pointer identity, not on string contents.
+// One shared name pointer for all of them, which is also how
+// removeUsermodPalettes() identifies them - it matches on pointer identity,
+// not on string contents.
 static const char _cfxPalName[] PROGMEM = "CubeFX";
 static const char _cfxPal0[]    PROGMEM = "Kick";
 static const char _cfxPal1[]    PROGMEM = "Tilt";
 static const char _cfxPal2[]    PROGMEM = "Bloom";
 static const char _cfxPal3[]    PROGMEM = "Ladder";
+static const char _cfxPal4[]    PROGMEM = "Arc";
 static const char _cfxSrcKey[]  PROGMEM = "source";
 
 class CfxPalettes : public Usermod {
@@ -96,10 +147,13 @@ class CfxPalettes : public Usermod {
 
     uint8_t  kickPos    = 0;             // where in the source Kick is sitting
     uint8_t  kickEnv    = 0;
-    uint8_t  prevPeak   = 0;
-    uint8_t  tilt       = 128;
+    uint8_t  pulse      = 0;             // beat envelope, ~220 ms
+    uint8_t  tilt       = 128;           // smoothed bass/treble balance
     uint8_t  loud       = 0;
+    uint8_t  bass = 0, treb = 0;
     uint32_t lastMs     = 0;
+    CfxTempoState tempo = {0, 0, 0, 0, 0, 0};
+    CfxDropState  drop  = {0, 0, 0, 0, 256, false};
 
     static um_data_t *audio() {
       um_data_t *um = nullptr;
@@ -156,17 +210,45 @@ class CfxPalettes : public Usermod {
       builtCols[0] = cols[0]; builtCols[1] = cols[1]; builtCols[2] = cols[2];
     }
 
-    // One colour out of the source, scaled. Everything below is built from this
-    // and nothing else, which is what keeps these on the chosen colours.
+    // One colour out of the source, scaled. Everything is built from this and
+    // nothing else, which is what keeps these on the chosen colours.
     inline CRGB pick(uint8_t pos, uint8_t bri) const {
       const uint32_t c = ColorFromPalette(src, pos, bri, LINEARBLEND);
       return CRGB(R(c), G(c), B(c));
     }
 
+    // The two-tap split: bass pulls one tap back, treble pushes the other
+    // forward, blended by which band is carrying. See the header.
+    inline CRGB pick2(int pos, uint8_t bri, uint8_t spread) const {
+      const uint8_t lo = (uint8_t)(pos - (int)scale8(bass, spread));
+      const uint8_t hi = (uint8_t)(pos + (int)scale8(treb, spread));
+      const int total = (int)bass + (int)treb;
+      const uint8_t mix = (total >= CFX_TONE_FLOOR)
+                        ? (uint8_t)(((int)treb * 255) / total) : 128;
+      const CRGB a = pick(lo, bri), b = pick(hi, bri);
+      return CRGB((uint8_t)(((int)a.r * (255 - mix) + (int)b.r * mix) >> 8),
+                  (uint8_t)(((int)a.g * (255 - mix) + (int)b.g * mix) >> 8),
+                  (uint8_t)(((int)a.b * (255 - mix) + (int)b.b * mix) >> 8));
+    }
+
+    // Silence leaves the source ALONE rather than showing a dimmed or drifting
+    // version of it. Picking one of these with nothing playing should look like
+    // the palette it is built from, not like a broken palette.
+    void passThrough() {
+      for (auto &p : usermodPalettes) {
+        if (p.name != _cfxPalName) continue;
+        // i*16, not i*17: ColorFromPalette takes the entry from pos>>4 and
+        // blends by the low nibble, so i*16 lands exactly ON entry i and
+        // reproduces the source stop for stop. i*17 walks a sixteenth of an
+        // entry further each step and skews the whole ramp.
+        for (int i = 0; i < 16; i++) p.palette.entries[i] = pick((uint8_t)(i * 16), 255);
+      }
+    }
+
   public:
     void setup() override {
       static const char *const names[CFX_PAL_COUNT] PROGMEM =
-        { _cfxPal0, _cfxPal1, _cfxPal2, _cfxPal3 };
+        { _cfxPal0, _cfxPal1, _cfxPal2, _cfxPal3, _cfxPal4 };
       for (int i = 0; i < CFX_PAL_COUNT; i++) {
         if (usermodPalettes.size() >= WLED_MAX_USERMOD_PALETTES) break;
         usermodPalettes.push_back({ CRGBPalette16(CRGB::Black), _cfxPalName,
@@ -179,7 +261,7 @@ class CfxPalettes : public Usermod {
     void loop() override {
       if (!registered) return;
       um_data_t *um = audio();
-      if (!um) return;                       // no audioreactive: leave them black
+      if (!um) return;
 
       // strip.now, NOT millis(). WLED sets strip.now = millis() every service,
       // so on the device they are the same number - but the simulator advances
@@ -203,44 +285,72 @@ class CfxPalettes : public Usermod {
 
       const float   vol  = *(float *)um->u_data[0];
       const uint8_t *fft = (uint8_t *)um->u_data[2];
-      const uint8_t  pk  = *(uint8_t *)um->u_data[3];
+      int b = 0, m = 0, t = 0;
+      cfx_bands(fft, b, m, t);
+      bass = (uint8_t)b; treb = (uint8_t)t;
 
-      const int bass = (fft[0] + fft[1] + fft[2]) / 3;
-      const int treb = (fft[12] + fft[13] + fft[14] + fft[15]) / 4;
+      // See the header: this is a cached read, not a fresh consume, so the
+      // effects keep every beat.
+      tempo = cfx_tempo(um);
+      drop  = cfx_drop(um, tempo);
 
-      // --- Kick: an EVENT, not a level -----------------------------------
-      // Jumps to a new PLACE in the source. Stepping by a large, non-dividing
-      // amount matters: small steps read as a slow drift, and a step that
-      // divides 256 evenly visits the same few positions for ever.
+      const uint8_t energy = (bass > treb) ? bass : treb;
+      if (!energy) { passThrough(); return; }
+
+      // --- beat envelope --------------------------------------------------
+      // Driven by the PREDICTED beat, so it still lands when a hit is missed,
+      // and takes the hit's strength when there was one.
       {
-        const bool rising = pk && !prevPeak;
-        prevPeak = pk ? 1 : 0;
-        if (rising && bass > 40) {
-          // Step to somewhere that is actually LIT. Kick samples a narrow slice,
-          // and plenty of palettes have a long dark end - Fire is a quarter
-          // black - so a blind jump lands there often enough that the beat
-          // reads as the effect dying rather than as a hit. Up to four steps
-          // looking for a live spot, then take what there is: a source that is
-          // dark everywhere should stay dark, not be forced bright.
-          for (int t = 0; t < 4; t++) {
+        const int d = (int)pulse - ((int)dt * 255) / 220;
+        pulse = (uint8_t)(d < 0 ? 0 : d);
+        if (tempo.beat) {
+          const uint8_t s = tempo.hit ? tempo.hit : 160;
+          if (s > pulse) pulse = s;
+        }
+      }
+
+      // --- Kick's own step ------------------------------------------------
+      {
+        if (tempo.beat && bass > 40) {
+          // Step to somewhere that is actually LIT. Kick samples a narrow
+          // slice, and plenty of palettes have a long dark end - Fire is a
+          // quarter black - so a blind jump lands there often enough that the
+          // beat reads as the effect dying rather than as a hit. Up to four
+          // steps looking for a live spot, then take what there is: a source
+          // that is dark everywhere should stay dark, not be forced bright.
+          for (int k = 0; k < 4; k++) {
             kickPos = (uint8_t)(kickPos + 71);
             const CRGB c = pick(kickPos, 255);
             if ((int)c.r + (int)c.g + (int)c.b > 90) break;
           }
           kickEnv = 255;
         }
-        const int d = (int)kickEnv - (dt * 255) / 420;      // ~420 ms to settle
+        const int d = (int)kickEnv - ((int)dt * 255) / 420;
         kickEnv = (uint8_t)(d < 0 ? 0 : d);
       }
 
       // --- smoothed balance and loudness ----------------------------------
       {
-        const int denom = bass + treb + 1;
-        const int want  = 128 + ((treb - bass) * 127) / denom;   // 1..255
+        const int denom = (int)bass + (int)treb + 1;
+        const int want  = 128 + (((int)treb - (int)bass) * 127) / denom;
         tilt = (uint8_t)(tilt + ((want - (int)tilt) * (int)dt) / 260);
         int lw = (int)(vol * 2.2f); if (lw > 255) lw = 255;
-        loud = (uint8_t)((lw > (int)loud) ? lw                    // fast attack
+        loud = (uint8_t)((lw > (int)loud) ? lw
                          : (int)loud - (((int)loud - lw) * (int)dt) / 500);
+      }
+
+      // --- Arc's shift budget ---------------------------------------------
+      int arcShift;
+      {
+        const int spectral = (((int)tilt - 128) * 80) / 128;
+        const int span     = 12 + (int)scale8(energy, 36);
+        const int phase    = ((((int)tempo.phase - 128) * span) * (int)tempo.confidence)
+                             / (128 * 255);
+        const int pulseS   = ((int)pulse * 26) / 255;
+        const int dropS    = ((int)drop.intensity * 42) / 255;
+        const int buildS   = -(((int)drop.build * 24) / 255);
+        const int surgeS   = ((int)drop.surge * 18) / 255;
+        arcShift = spectral + phase + pulseS + dropS + buildS + surgeS;
       }
 
       for (auto &p : usermodPalettes) {
@@ -258,11 +368,9 @@ class CfxPalettes : public Usermod {
             }
             break; }
 
-          case 1: {   // Tilt - the slice slides with the bass/treble balance
-            for (int i = 0; i < 16; i++) {
-              const uint8_t pos = (uint8_t)(tilt + i * 6);
-              e[i] = pick(pos, (uint8_t)(i == 0 ? 0 : 45 + i * 14));
-            }
+          case 1: {   // Tilt - the two-tap split
+            for (int i = 0; i < 16; i++)
+              e[i] = pick2(i * 6, (uint8_t)(i == 0 ? 0 : 45 + i * 14), 64);
             break; }
 
           case 2: {   // Bloom - loudness WIDENS the slice, it does not brighten it
@@ -278,11 +386,24 @@ class CfxPalettes : public Usermod {
             }
             break; }
 
-          default: {  // Ladder - the spectrum ACROSS the stops
+          case 3: {   // Ladder - the spectrum ACROSS the stops
             // Stop i is band i, at source position i, so a gradient sweep walks
             // up the spectrum: the palette's SHAPE is the sound while its
             // colours stay the ones that were chosen.
-            for (int i = 0; i < 16; i++) e[i] = pick((uint8_t)(i * 17), fft[i]);
+            for (int i = 0; i < 16; i++) e[i] = pick((uint8_t)(i * 16), fft[i]);
+            break; }
+
+          default: {  // Arc - the whole budget, through the split
+            // Brightness leans on the beat envelope and the drop tail, so the
+            // palette gains contrast as a section arrives rather than simply
+            // getting brighter. Stop 0 stays black.
+            const int lift = 150 + ((int)pulse * 60) / 255
+                                 + ((int)drop.intensity * 45) / 255;
+            for (int i = 0; i < 16; i++) {
+              int v = (i == 0) ? 0 : (40 + (i * lift) / 15);
+              if (v > 255) v = 255;
+              e[i] = pick2(arcShift + i * 15, (uint8_t)v, 48);
+            }
             break; }
         }
       }
@@ -302,8 +423,8 @@ class CfxPalettes : public Usermod {
     }
 
     void appendConfigData(Print &s) override {
-      s.print(F("addInfo('CubeFX:source',1,'<i>WLED palette id (0-200) the four "
-                "audio palettes take their colours from. 2-5 follow the segment "
+      s.print(F("addInfo('CubeFX:source',1,'<i>WLED palette id (0-200) the audio "
+                "palettes take their colours from. 2-5 follow the segment "
                 "colour pickers; 6-71 are the built-ins; 72+ are uploaded "
                 "palettes.</i>');"));
     }
