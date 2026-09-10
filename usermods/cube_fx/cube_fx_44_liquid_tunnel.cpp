@@ -101,6 +101,7 @@ struct LtState {
   uint8_t  surge;
   uint8_t  regime;              // which F/k row is loaded
   uint16_t scroll;              // tunnel travel, wraps with the grid
+  uint16_t kick;                // tunnel travel owed but not yet delivered
   uint16_t drift;
   uint16_t reseed;              // frames until the medium is checked again
   uint16_t U[LT_CELLS];
@@ -167,7 +168,8 @@ static FX_RET mode_liquidtunnel() {
   const uint8_t want = (uint8_t)(cube ? 1 : 2);
   if (SEGENV.call == 0 || s->mode != want) {
     s->mode = want; s->clk[0] = s->clk[1] = 0;
-    s->scroll = 0; s->drift = 0; s->surge = 0; s->regime = 0xFF; s->reseed = 200;
+    s->scroll = 0; s->kick = 0; s->drift = 0; s->surge = 0;
+    s->regime = 0xFF; s->reseed = 200;
     lt_seed(s);
   }
 
@@ -198,6 +200,27 @@ static FX_RET mode_liquidtunnel() {
   { const int f = (int)s->surge - (int)fx_step(9, dt);
     s->surge = (uint8_t)(f < 0 ? 0 : f); }
 
+  // The beat lurches the viewer DOWN the shaft, rather than speeding the
+  // scroll up. Raising the rate is a swell and measures like one: with the
+  // beat on, the median frame change nearly doubled while the peak barely
+  // moved, so peak-to-median actually FELL - the whole picture ran faster and
+  // nothing landed. Owed rather than applied, a third of the debt paid off a
+  // frame, so about 90% of the travel arrives inside 140 ms and the rush is
+  // drawn instead of cut. Same mechanism as cube_fx_43; the thing being
+  // kicked is tunnel depth rather than a knot's phase.
+  if (beat) {
+    uint32_t k = (uint32_t)s->kick + (uint32_t)beat;
+    if (k > 620u) k = 620u;
+    s->kick = (uint16_t)k;
+  }
+  if (s->kick) {
+    uint32_t give = ((uint32_t)s->kick * (uint32_t)dt) / 70u;
+    if (!give) give = 1;
+    if (give > s->kick) give = s->kick;
+    s->scroll = (uint16_t)(s->scroll + give * 44u);
+    s->kick = (uint16_t)(s->kick - give);
+  }
+
   // --- chemistry ------------------------------------------------------------
   // Three steps a frame. One is too slow to watch develop; much more and the
   // medium outruns the tunnel scroll and the tendrils stop reading as flow.
@@ -218,7 +241,7 @@ static FX_RET mode_liquidtunnel() {
   }
 
   { const uint32_t r = (uint32_t)(6 + (int)SEGMENT.speed) * (uint32_t)dt
-                       * (uint32_t)(100 + s->surge) / (23u * 100u);
+                       * (uint32_t)(100 + s->surge / 3) / (23u * 100u);
     s->scroll = (uint16_t)(s->scroll + r); }
   s->drift = (uint16_t)(s->drift + ((uint32_t)dt * (uint32_t)SEGMENT.speed) / 80u);
 
