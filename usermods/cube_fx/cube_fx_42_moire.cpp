@@ -93,6 +93,7 @@ struct MoState {
   uint8_t  clk[2];
   uint8_t  surge;
   uint16_t t1, t2, t3;          // three clocks, deliberately incommensurate
+  uint16_t kick;                // phase owed to the clocks but not yet delivered
   uint16_t drift;
 };
 
@@ -115,6 +116,7 @@ static FX_RET mode_moire() {
   if (SEGENV.call == 0 || s->mode != want) {
     s->mode = want; s->clk[0] = s->clk[1] = 0;
     s->t1 = 0; s->t2 = 21000; s->t3 = 40000; s->drift = 0; s->surge = 0;
+    s->kick = 0;
   }
 
   uint16_t dt = fx_dt8(s->clk);
@@ -148,14 +150,30 @@ static FX_RET mode_moire() {
   { const int f = (int)s->surge - (int)fx_step(24, dt);
     s->surge = (uint8_t)(f < 0 ? 0 : f); }
 
-  // The kick itself is a STEP in phase, applied the frame it lands. Gain alone
-  // cannot read as a jump however hard it is driven - it changes how fast the
-  // pattern is already moving, not where it is. Three different offsets so the
-  // layers lurch out of step with each other rather than sliding together.
+  // The kick is an offset in phase - gain alone cannot read as a jump however
+  // hard it is driven, because it changes how fast the pattern is already
+  // moving, not where it is. But DELIVERED instantly it is a cut: the frames
+  // between the two states never exist, so the eye gets a discontinuity rather
+  // than a lurch and none of the travel is visible.
+  //
+  // So the offset is owed, not applied. Each frame a third of the outstanding
+  // debt is paid off, which lands about 90% of it inside 140 ms - fast enough
+  // to still read as a hit, slow enough that four or five frames of the rush
+  // actually get drawn. Three different rates so the layers arrive out of step
+  // with each other rather than sliding together.
   if (beat) {
-    s->t1 = (uint16_t)(s->t1 + (uint32_t)beat * 44u);
-    s->t2 = (uint16_t)(s->t2 - (uint32_t)beat * 31u);
-    s->t3 = (uint16_t)(s->t3 + (uint32_t)beat * 57u);
+    uint32_t k = (uint32_t)s->kick + (uint32_t)beat;
+    if (k > 620u) k = 620u;                     // a run of hits cannot pile up
+    s->kick = (uint16_t)k;
+  }
+  if (s->kick) {
+    uint32_t give = ((uint32_t)s->kick * (uint32_t)dt) / 70u;
+    if (!give) give = 1;                        // never stall on integer truncation
+    if (give > s->kick) give = s->kick;
+    s->t1 = (uint16_t)(s->t1 + give * 44u);
+    s->t2 = (uint16_t)(s->t2 - give * 31u);
+    s->t3 = (uint16_t)(s->t3 + give * 57u);
+    s->kick = (uint16_t)(s->kick - give);
   }
 
   // --- three clocks ---------------------------------------------------------

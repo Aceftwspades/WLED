@@ -86,6 +86,7 @@ struct TkState {
   uint8_t  surge;
   uint16_t spinA, spinB;        // the tumble, on two axes
   uint16_t flow;                // the knot's own phase - tubes slide along themselves
+  uint16_t kick;                // phase owed to flow but not yet delivered
   uint16_t drift;               // palette rotation
 };
 
@@ -114,6 +115,7 @@ static FX_RET mode_torusknot() {
   if (SEGENV.call == 0 || s->mode != want) {
     s->mode = want; s->clk[0] = s->clk[1] = 0;
     s->spinA = 0; s->spinB = 11000; s->flow = 0; s->drift = 0; s->surge = 0;
+    s->kick = 0;
   }
 
   uint16_t dt = fx_dt8(s->clk);
@@ -141,7 +143,21 @@ static FX_RET mode_torusknot() {
   if (beat > s->surge) s->surge = beat;
   { const int f = (int)s->surge - (int)fx_step(20, dt);
     s->surge = (uint8_t)(f < 0 ? 0 : f); }
-  if (beat) s->flow = (uint16_t)(s->flow + (uint32_t)beat * 36u);   // a lurch along the tube
+  // A lurch along the tube, owed rather than applied - delivered instantly the
+  // tubes cut to a new position and the travel is never drawn. A third of the
+  // debt a frame puts most of it inside 140 ms and leaves the rush visible.
+  if (beat) {
+    uint32_t k = (uint32_t)s->kick + (uint32_t)beat;
+    if (k > 620u) k = 620u;
+    s->kick = (uint16_t)k;
+  }
+  if (s->kick) {
+    uint32_t give = ((uint32_t)s->kick * (uint32_t)dt) / 70u;
+    if (!give) give = 1;
+    if (give > s->kick) give = s->kick;
+    s->flow = (uint16_t)(s->flow + give * 36u);
+    s->kick = (uint16_t)(s->kick - give);
+  }
 
   // --- clocks ---------------------------------------------------------------
   { const uint32_t r = (uint32_t)(3 + (int)SEGMENT.speed / 2) * (uint32_t)dt / 23u;
