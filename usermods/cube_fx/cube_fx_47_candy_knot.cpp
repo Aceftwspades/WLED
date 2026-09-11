@@ -56,16 +56,18 @@
 // Pastel is not a softer palette, it is the same palette with its brightness
 // equalised - the dark palette entries come up to meet the light ones, so a
 // blue band is as present as a yellow one. Lighting is a wide wrap with a
-// heavy ambient and no specular at all: the reference's tubes are matte, and
-// their roundness comes from the bands foreshortening at the edges and a
-// darkening where the surface turns away, not from a highlight.
+// heavy ambient, a darkening where the surface turns away, and a Blinn-Phong
+// highlight that lands on the black bands as well as the pastel - a black
+// band on a glossy tube still catches the light, and a highlight that only
+// showed on every other band would stutter along the tube.
 //
 // The thin lines that run along the tubes in the reference - a red one, a
 // green one, riding the crest - are the Seam: a stripe a few degrees wide
 // where the tube's normal points along the knot's axis, drawn a half-wheel
-// off the tube's hue. It is a cheap thing that adds a great deal, because it
-// is the only line in the picture that follows the tube's LENGTH, and the eye
-// uses it to read which way each tube is going.
+// off the tube's hue, running inside the pastel bands and stopping at the
+// black ones. It is a cheap thing that adds a great deal, because it is the
+// only line in the picture that follows the tube's LENGTH, and the eye uses
+// it to read which way each tube is going.
 // ===========================================================================
 
 #define CK_R       1.00f        // torus major radius
@@ -233,10 +235,12 @@ static FX_RET mode_candyknot() {
         if (on < 0.0f) on = 0.0f; else if (on > 1.0f) on = 1.0f;
         on = on * on * (3.0f - 2.0f * on);
 
-        // --- matte shading -------------------------------------------------
-        // Wide wrap and a heavy floor. The roundness is carried by the bands
-        // foreshortening and by the surface darkening as it turns away from
-        // the viewer, not by a highlight - there is none.
+        // --- shading -------------------------------------------------------
+        // Wide wrap and a heavy floor, darkening as the surface turns from the
+        // viewer, and a Blinn-Phong highlight on top. The highlight is applied
+        // to the black bands as well as the pastel ones - a black band on a
+        // glossy tube still catches the light - so the gloss sweeps across the
+        // whole tube instead of stuttering band to band.
         float diff = 0.5f + 0.5f * (Nx*Lx + Ny*Ly + Nz*Lz);
         float face = -(Nx*nx + Ny*ny + Nz*nz);           // 1 facing the viewer
         if (face < 0.0f) face = 0.0f;
@@ -244,18 +248,35 @@ static FX_RET mode_candyknot() {
         const float dep = 1.25f - 0.28f * bestL;         // nearer is brighter
         shade *= (dep < 0.45f) ? 0.45f : dep;
 
+        float spec = 0.0f;
+        { float hx = Lx - nx, hy = Ly - ny, hz = Lz - nz;   // view dir is -n
+          const float hl = sqrtf(hx*hx + hy*hy + hz*hz);
+          if (hl > 1e-6f) {
+            spec = (Nx*hx + Ny*hy + Nz*hz) / hl;
+            if (spec < 0.0f) spec = 0.0f;
+            spec *= spec; spec *= spec; spec *= spec;      // ^8
+          } }
+
         // --- the seam ------------------------------------------------------
         // A thin stripe where the normal points along the knot's axis: the
-        // crest of the tube, drawn half a wheel away.
+        // crest of the tube, drawn half a wheel away. It runs INSIDE the
+        // pastel bands and stops at the black ones - it is a mark on the
+        // band, not a line over the tube.
         bool onSeam = false;
-        if (seam) {
+        if (seam && on > 0.5f) {
           const float c = Nz;                            // cos of angle to axis
           if (c > 0.90f) onSeam = true;
         }
 
-        // Dark bands are near-black: the picture is half gap.
-        float lit = onSeam ? 1.0f : (0.05f + 0.95f * on);
-        lum = (int)((float)fill * shade * lit);
+        // Dark bands are near-black: the picture is half gap. The highlight is
+        // added AFTER the band mask so it lands on both - but tighter on the
+        // black bands (^16 against ^8), because at ^8 the lobe lifted whole
+        // black bands to grey and the picture went from half dark to a third.
+        // A black band should stay black except where the light actually
+        // catches it.
+        const float lit  = 0.05f + 0.95f * on;
+        const float glos = spec * (on + (1.0f - on) * spec);
+        lum = (int)((float)fill * (shade * lit + 0.60f * glos));
 
         // Hue walks the wheel along the tube - 1.5 turns round the whole
         // knot - so neighbouring crossings differ and one tube shades through
