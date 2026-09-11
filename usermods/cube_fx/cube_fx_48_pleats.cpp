@@ -93,8 +93,17 @@ struct PlState {
 // Spatial frequency (waves up the height), azimuthal lean, drift rate and gain
 // per slice. Frequencies rise with the slice; gains fall, because a treble
 // ripple that moved the pleats as far as a bass wave would shred them.
+//
+// The lean is applied as PL_KTH * sin(theta + offset), never as PL_KTH * theta.
+// theta comes from atan2 and wraps from +pi to -pi along one line - straight
+// up the middle of the west face - and a term linear in theta with a
+// non-integer coefficient is discontinuous there by 2 pi PL_KTH. The first
+// version had exactly that, and the wave field tore along that line: the
+// pleats on either side were bent by different amounts, and the seam ran the
+// full height of the face. sin(theta) is periodic whatever its coefficient.
 static const float PL_KPHI[PL_NB]  = { 1.1f, 2.2f, 3.4f, 5.0f, 7.2f };
 static const float PL_KTH[PL_NB]   = { 0.6f, 0.9f, 1.4f, 1.9f, 2.6f };
+static const float PL_TOFF[PL_NB]  = { 0.0f, 1.1f, 2.3f, 3.6f, 4.8f };
 static const uint16_t PL_RATE[PL_NB] = { 5, 8, 12, 17, 23 };
 static const float PL_GAIN[PL_NB]  = { 0.95f, 0.70f, 0.48f, 0.34f, 0.24f };
 static const uint8_t PL_LO[PL_NB]  = { 0, 2, 5, 8, 12 };     // FFT bin ranges
@@ -200,6 +209,9 @@ static FX_RET mode_pleats() {
       phs[b] = (float)s->ph[b] * (PL_TWOPI / 65536.0f);
     } }
 
+  float lco[PL_NB], lsi[PL_NB];
+  for (int b = 0; b < PL_NB; b++) { lco[b] = cfx_cosf16(PL_TOFF[b]); lsi[b] = cfx_sinf16(PL_TOFF[b]); }
+
   // Ridge profile: rounded at rest, creased under treble. Both are periodic in
   // u with unit period; h and h' come from the same f.
   const float crease = (float)s->sharp / 255.0f;
@@ -245,14 +257,20 @@ static FX_RET mode_pleats() {
       }
 
       // --- the displacement and its gradient -----------------------------
+      // sin(theta + o) = sin(theta) cos(o) + cos(theta) sin(o), with the
+      // per-slice cos(o)/sin(o) folded in once a frame, so the periodic lean
+      // costs no trig beyond the one pair per pixel.
+      const float sth = cfx_sinf16(theta), cth = cfx_cosf16(theta);
       float D = 0.0f, dDt = 0.0f, dDp = 0.0f;
       for (int b = 0; b < PL_NB; b++) {
         if (amp[b] <= 0.0f) continue;
-        const float arg = PL_KPHI[b] * phi + PL_KTH[b] * theta + phs[b];
+        const float lean  = sth * lco[b] + cth * lsi[b];       // sin(theta + o)
+        const float dlean = cth * lco[b] - sth * lsi[b];       // cos(theta + o)
+        const float arg = PL_KPHI[b] * phi + PL_KTH[b] * lean + phs[b];
         const float sn = cfx_sinf16(arg), cs = cfx_cosf16(arg);
         D   += amp[b] * sn;
         dDp += amp[b] * PL_KPHI[b] * cs;
-        dDt += amp[b] * PL_KTH[b]  * cs;
+        dDt += amp[b] * PL_KTH[b]  * dlean * cs;
       }
 
       // --- the pleat and its normal ---------------------------------------
