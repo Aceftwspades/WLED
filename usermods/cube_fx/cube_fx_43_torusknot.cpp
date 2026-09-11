@@ -90,16 +90,6 @@ struct TkState {
   uint16_t drift;               // palette rotation
 };
 
-// 16-bit angle tables: 0.006 degrees, against 1.4 for the 8-bit ones. The tube
-// angle sets where a strand physically is, so its error lands directly on the
-// silhouette - too coarse and the tubes visibly wobble.
-static inline float tk_sin(float rad) {
-  return (float)sin16_t((uint16_t)(int32_t)(rad * (65536.0f / TK_TWOPI))) * (1.0f / 32767.0f);
-}
-static inline float tk_cos(float rad) {
-  return (float)sin16_t((uint16_t)(int32_t)(rad * (65536.0f / TK_TWOPI)) + 16384u) * (1.0f / 32767.0f);
-}
-
 static FX_RET mode_torusknot() {
   if (!strip.isMatrix || !SEGMENT.is2D()) { SEGMENT.fill(SEGCOLOR(0)); FX_DONE; }
   const int cols = SEG_W, rows = SEG_H;
@@ -173,7 +163,7 @@ static FX_RET mode_torusknot() {
   float M[3][3];
   { const float a = (float)s->spinA * (TK_TWOPI / 65536.0f);
     const float b = (float)s->spinB * (TK_TWOPI / 65536.0f);
-    const float ca = tk_cos(a), sa = tk_sin(a), cb = tk_cos(b), sb = tk_sin(b);
+    const float ca = cfx_cosf16(a), sa = cfx_sinf16(a), cb = cfx_cosf16(b), sb = cfx_sinf16(b);
     M[0][0] =  ca;      M[0][1] = -sa;      M[0][2] = 0.0f;
     M[1][0] =  cb * sa; M[1][1] =  cb * ca; M[1][2] = -sb;
     M[2][0] =  sb * sa; M[2][1] =  sb * ca; M[2][2] =  cb; }
@@ -228,8 +218,8 @@ static FX_RET mode_torusknot() {
       for (int k = 0; k < P; k++) {
         const float t   = (u + TK_TWOPI * (float)k) * invP;
         const float v   = (float)Q * t + phase;
-        const float rho = TK_R + TK_r * tk_cos(v);
-        const float zz  =        TK_r * tk_sin(v);
+        const float rho = TK_R + TK_r * cfx_cosf16(v);
+        const float zz  =        TK_r * cfx_sinf16(v);
         const float ell = rho * sxy + zz * nz;           // along the ray
         if (ell <= 0.0f) continue;                       // behind the viewer
         float d2 = rho * rho + zz * zz - ell * ell;      // perpendicular, squared

@@ -68,13 +68,10 @@
 // path that reads as a wobble rather than a turn. Slerp is a great circle at
 // constant angular velocity, which is what "it is turning" looks like.
 //
-// The table is sixteen orientations on a Fibonacci sphere with the golden angle
-// stepping the rotation amount, walked with a stride of 3. That combination was
-// picked by measurement, not taste: every consecutive pair is at least 97
-// degrees apart and the mean leg is 128, so there is no leg that arrives
-// somewhere it had almost got to already. A table of random targets averages
-// the same but has short legs in it, and a short leg looks like the effect
-// stalled.
+// The table, the slerp and the retargeting are CfxTumble in cube_fx_common.h -
+// they started here and were promoted when Helix Tunnel became the second
+// effect with an axis to wander. The measurement behind the table is recorded
+// there.
 //
 // ---------------------------------------------------------------------------
 // THE VORTEX, AND WHERE THE POWER LAW WENT
@@ -112,54 +109,16 @@
 #define VX_R      1.00f          // major radius. the object is scale-free, so
                                  // this is a unit, not a tuning
 #define VX_TWOPI  6.28318531f
-#define VX_NQ     16             // orientations in the tumble table
-#define VX_QSTRIDE 3             // see the header - measured, not chosen
-
-// Unit quaternions, w first. Axes on a Fibonacci sphere, rotation amounts
-// stepped by the golden angle. Walked with VX_QSTRIDE.
-static const float VX_Q[VX_NQ][4] PROGMEM = {
-  {  0.649448f,  0.264610f,  0.000000f,  0.712881f },
-  {  0.019634f, -0.429775f,  0.393709f,  0.812343f },
-  { -0.619094f,  0.049858f, -0.568101f,  0.539905f },
-  {  0.214309f,  0.491368f,  0.640902f,  0.549431f },
-  { -0.453990f, -0.788962f, -0.139556f,  0.389815f },
-  {  0.400749f,  0.734323f, -0.467116f,  0.286309f },
-  { -0.271440f, -0.245426f,  0.912973f,  0.180460f },
-  {  0.571788f, -0.377390f, -0.726641f,  0.051275f },
-  { -0.078459f,  0.934595f,  0.341313f, -0.062307f },
-  { -0.693087f, -0.654500f,  0.270168f, -0.135160f },
-  {  0.117537f,  0.399828f, -0.854409f, -0.310334f },
-  { -0.539138f,  0.226659f,  0.722624f, -0.368470f },
-  {  0.309017f, -0.680342f, -0.394272f, -0.534969f },
-  { -0.364470f,  0.660461f, -0.145201f, -0.640210f },
-  {  0.488621f, -0.292529f,  0.416092f, -0.708903f },
-  { -0.175796f, -0.044023f, -0.339725f, -0.922900f },
-};
-
 struct VxState {
   uint8_t  mode;
   uint8_t  clk[2];
   uint8_t  surge;
-  uint8_t  qi;                   // index of the leg's destination
-  float    qa[4], qb[4];         // slerp endpoints
-  uint16_t leg;                  // 0..65535 along the current leg
+  CfxTumble tumble;              // the orientation - see cube_fx_common.h
   uint16_t spin;                 // the vortex's own rotation
   uint16_t kick;                 // rotation owed to spin but not yet delivered
   uint16_t breath;               // aperture clock
   uint16_t drift;                // palette rotation
 };
-
-static inline float vx_sin(float rad) {
-  return (float)sin16_t((uint16_t)(int32_t)(rad * (65536.0f / VX_TWOPI))) * (1.0f / 32767.0f);
-}
-static inline float vx_cos(float rad) {
-  return (float)sin16_t((uint16_t)(int32_t)(rad * (65536.0f / VX_TWOPI)) + 16384u) * (1.0f / 32767.0f);
-}
-
-static inline void vx_load(int i, float *q) {
-  const int k = ((i % VX_NQ) + VX_NQ) % VX_NQ;
-  for (int j = 0; j < 4; j++) q[j] = pgm_read_float(&VX_Q[k][j]);
-}
 
 // Wrap into [0,m). fmodf is signed, and a negative local coordinate in the hex
 // lattice would put the cell centre in the wrong place - visible as a seam.
@@ -182,10 +141,8 @@ static FX_RET mode_voxelvortex() {
   const uint8_t want = (uint8_t)(cube ? 1 : 2);
   if (SEGENV.call == 0 || s->mode != want) {
     s->mode = want; s->clk[0] = s->clk[1] = 0;
-    s->qi = 0;
-    vx_load(0, s->qa);
-    vx_load(VX_QSTRIDE, s->qb);
-    s->leg = 0; s->spin = 0; s->kick = 0; s->breath = 0; s->drift = 0; s->surge = 0;
+    cfx_tumbleInit(s->tumble);
+    s->spin = 0; s->kick = 0; s->breath = 0; s->drift = 0; s->surge = 0;
   }
 
   uint16_t dt = fx_dt8(s->clk);
@@ -235,52 +192,14 @@ static FX_RET mode_voxelvortex() {
     // The tumble is deliberately the slowest thing here. A leg is a 97-162
     // degree turn; run it at the ring's own rate and the shape never holds
     // still long enough to be read as a shape.
-    const uint16_t step = (uint16_t)(r / 5u > 0 ? r / 5u : 1u);
-    const uint16_t nl   = (uint16_t)(s->leg + step);
-    // Leg completed: the destination becomes the origin and the next target is
-    // one stride further on. Detected as the counter WRAPPING, not as it being
-    // small - it is small for the first few frames of every leg too, and
-    // testing the value would have retargeted three times on the way out of
-    // each turn and made the tumble jitter.
-    if (nl < s->leg) {
-      for (int j = 0; j < 4; j++) s->qa[j] = s->qb[j];
-      s->qi = (uint8_t)((s->qi + VX_QSTRIDE) % VX_NQ);
-      vx_load((int)s->qi + VX_QSTRIDE, s->qb);
-    }
-    s->leg    = nl;
+    cfx_tumbleStep(s->tumble, (uint16_t)(r / 5u));
     s->breath = (uint16_t)(s->breath + (r * 2u) / 7u); }
   s->drift = (uint16_t)(s->drift + ((uint32_t)dt * (uint32_t)SEGMENT.speed) / 90u);
 
-  // --- slerp, once per frame ------------------------------------------------
-  float q[4];
-  { float d = s->qa[0]*s->qb[0] + s->qa[1]*s->qb[1]
-            + s->qa[2]*s->qb[2] + s->qa[3]*s->qb[3];
-    float b[4] = { s->qb[0], s->qb[1], s->qb[2], s->qb[3] };
-    // q and -q are the same orientation but opposite ways round the sphere.
-    // Without this, half the legs take the long way and the tumble reverses
-    // direction at random.
-    if (d < 0.0f) { d = -d; for (int j = 0; j < 4; j++) b[j] = -b[j]; }
-    const float u = (float)s->leg * (1.0f / 65535.0f);
-    float wa, wb;
-    if (d > 0.9995f) { wa = 1.0f - u; wb = u; }   // sin(Om) -> 0: fall back to lerp
-    else {
-      const float om = acosf(d), so = sinf(om);
-      wa = sinf((1.0f - u) * om) / so;
-      wb = sinf(u * om) / so;
-    }
-    for (int j = 0; j < 4; j++) q[j] = wa * s->qa[j] + wb * b[j];
-    const float n = sqrtf(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]);
-    const float in = (n > 1e-6f) ? (1.0f / n) : 1.0f;
-    for (int j = 0; j < 4; j++) q[j] *= in;
-  }
-
-  // Quaternion to matrix, TRANSPOSED: what a pixel needs is world -> object,
-  // and the transpose of a rotation is its inverse for free.
+  // Orientation, once per frame: slerp along the leg, then the world -> object
+  // matrix. Every pixel's ray goes through this.
   float M[3][3];
-  { const float w = q[0], xx = q[1], yy = q[2], zz = q[3];
-    M[0][0] = 1.0f - 2.0f*(yy*yy + zz*zz); M[1][0] = 2.0f*(xx*yy - zz*w);   M[2][0] = 2.0f*(xx*zz + yy*w);
-    M[0][1] = 2.0f*(xx*yy + zz*w);         M[1][1] = 1.0f - 2.0f*(xx*xx + zz*zz); M[2][1] = 2.0f*(yy*zz - xx*w);
-    M[0][2] = 2.0f*(xx*zz - yy*w);         M[1][2] = 2.0f*(yy*zz + xx*w);   M[2][2] = 1.0f - 2.0f*(xx*xx + yy*yy); }
+  cfx_tumbleMatrix(s->tumble, M);
 
   // --- the aperture ---------------------------------------------------------
   // Power scaling on the breath: the exponent runs 0.45 to 2.4, so low Flare
@@ -288,7 +207,7 @@ static FX_RET mode_voxelvortex() {
   // The linear middle is the boring case and it is where the slider is not.
   float rr;
   { const float ph = (float)s->breath * (VX_TWOPI / 65536.0f);
-    float g = 0.5f + 0.5f * vx_sin(ph);                     // 0..1
+    float g = 0.5f + 0.5f * cfx_sinf16(ph);                     // 0..1
     const float p = 0.45f + (float)flareI * (1.95f / 255.0f);
     g = powf(g, p);
     rr = 0.44f + 0.46f * g;                                 // 0.44 .. 0.90 R

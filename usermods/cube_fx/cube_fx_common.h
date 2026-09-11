@@ -154,6 +154,119 @@ static inline float cfx_atan2f(float y, float x) {
   return (y < 0.0f) ? -r : r;
 }
 
+// 16-bit trig on a float angle in radians. 0.006 degrees of resolution against
+// 1.4 for the 8-bit tables, which matters wherever the angle sets where
+// something physically IS rather than what colour it is - a tube's silhouette,
+// a pole's position - because that error lands on the geometry and reads as a
+// wobble. Torus Knot and Voxel Vortex each carried a copy; it lives here now.
+static inline float cfx_sinf16(float rad) {
+  return (float)sin16_t((uint16_t)(int32_t)(rad * (65536.0f / 6.28318531f))) * (1.0f / 32767.0f);
+}
+static inline float cfx_cosf16(float rad) {
+  return (float)sin16_t((uint16_t)(int32_t)(rad * (65536.0f / 6.28318531f)) + 16384u) * (1.0f / 32767.0f);
+}
+
+// ---------------------------------------------------------------------------
+// Quaternion tumble - a slow, gimbal-free wander through orientations
+// ---------------------------------------------------------------------------
+// For effects whose whole identity is an AXIS - a ring, a vortex, a pair of
+// poles - and that want that axis to roam the solid. Euler angles are the wrong
+// tool for exactly those: they spend their life near the configuration where
+// two of the three angles control the same rotation, and interpolating them
+// independently sends the axis on a curved, speed-varying path that reads as a
+// wobble. Slerp between unit quaternions is a great circle at constant angular
+// velocity, which is what "it is turning" looks like.
+//
+// The table is sixteen orientations with axes on a Fibonacci sphere and the
+// rotation amount stepped by the golden angle, walked with a stride of 3. That
+// pair was measured, not chosen: every consecutive leg is at least 97 degrees
+// and the mean is 128, so no leg arrives somewhere it had almost got to already.
+// Random targets average the same and have short legs in them, and a short leg
+// looks like the effect stalled.
+//
+// Usage: a CfxTumble in SEGENV data, cfx_tumbleInit() on the first call, then
+// cfx_tumbleStep() with a 16-bit step per frame (65536 = one full leg) and
+// cfx_tumbleMatrix() for the world -> object matrix. The leg counter WRAPPING
+// is what retargets, not the counter being small - it is small for the first
+// few frames of every leg too.
+#define CFX_TUMBLE_N      16
+#define CFX_TUMBLE_STRIDE 3
+static const float CFX_TUMBLE_Q[CFX_TUMBLE_N][4] PROGMEM = {   // w, x, y, z
+  {  0.649448f,  0.264610f,  0.000000f,  0.712881f },
+  {  0.019634f, -0.429775f,  0.393709f,  0.812343f },
+  { -0.619094f,  0.049858f, -0.568101f,  0.539905f },
+  {  0.214309f,  0.491368f,  0.640902f,  0.549431f },
+  { -0.453990f, -0.788962f, -0.139556f,  0.389815f },
+  {  0.400749f,  0.734323f, -0.467116f,  0.286309f },
+  { -0.271440f, -0.245426f,  0.912973f,  0.180460f },
+  {  0.571788f, -0.377390f, -0.726641f,  0.051275f },
+  { -0.078459f,  0.934595f,  0.341313f, -0.062307f },
+  { -0.693087f, -0.654500f,  0.270168f, -0.135160f },
+  {  0.117537f,  0.399828f, -0.854409f, -0.310334f },
+  { -0.539138f,  0.226659f,  0.722624f, -0.368470f },
+  {  0.309017f, -0.680342f, -0.394272f, -0.534969f },
+  { -0.364470f,  0.660461f, -0.145201f, -0.640210f },
+  {  0.488621f, -0.292529f,  0.416092f, -0.708903f },
+  { -0.175796f, -0.044023f, -0.339725f, -0.922900f },
+};
+
+struct CfxTumble {
+  float    qa[4], qb[4];       // the leg's endpoints
+  uint16_t leg;                // 0..65535 along it
+  uint8_t  qi;                 // table index of qb
+};
+
+static inline void cfx_tumbleLoad(int i, float *q) {
+  const int k = ((i % CFX_TUMBLE_N) + CFX_TUMBLE_N) % CFX_TUMBLE_N;
+  for (int j = 0; j < 4; j++) q[j] = pgm_read_float(&CFX_TUMBLE_Q[k][j]);
+}
+
+static inline void cfx_tumbleInit(CfxTumble &t) {
+  t.qi = CFX_TUMBLE_STRIDE;
+  cfx_tumbleLoad(0, t.qa);
+  cfx_tumbleLoad(t.qi, t.qb);
+  t.leg = 0;
+}
+
+static inline void cfx_tumbleStep(CfxTumble &t, uint16_t step) {
+  if (!step) step = 1;
+  const uint16_t nl = (uint16_t)(t.leg + step);
+  if (nl < t.leg) {                                    // wrapped: leg complete
+    for (int j = 0; j < 4; j++) t.qa[j] = t.qb[j];
+    t.qi = (uint8_t)((t.qi + CFX_TUMBLE_STRIDE) % CFX_TUMBLE_N);
+    cfx_tumbleLoad(t.qi, t.qb);
+  }
+  t.leg = nl;
+}
+
+// Slerp to the current orientation, then that as a matrix TRANSPOSED - what a
+// pixel needs is world -> object, and the transpose of a rotation is its
+// inverse for free.
+static inline void cfx_tumbleMatrix(const CfxTumble &t, float M[3][3]) {
+  float d = t.qa[0]*t.qb[0] + t.qa[1]*t.qb[1] + t.qa[2]*t.qb[2] + t.qa[3]*t.qb[3];
+  float b[4] = { t.qb[0], t.qb[1], t.qb[2], t.qb[3] };
+  // q and -q are the same orientation but opposite ways round the sphere.
+  // Without this half the legs take the long way and the tumble reverses
+  // direction at random.
+  if (d < 0.0f) { d = -d; for (int j = 0; j < 4; j++) b[j] = -b[j]; }
+  const float u = (float)t.leg * (1.0f / 65535.0f);
+  float wa, wb;
+  if (d > 0.9995f) { wa = 1.0f - u; wb = u; }          // sin(Om) -> 0: lerp
+  else {
+    const float om = acosf(d), so = sinf(om);
+    wa = sinf((1.0f - u) * om) / so;
+    wb = sinf(u * om) / so;
+  }
+  float q[4];
+  for (int j = 0; j < 4; j++) q[j] = wa * t.qa[j] + wb * b[j];
+  const float n  = sqrtf(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]);
+  const float in = (n > 1e-6f) ? (1.0f / n) : 1.0f;
+  const float w = q[0]*in, x = q[1]*in, y = q[2]*in, z = q[3]*in;
+  M[0][0] = 1.0f - 2.0f*(y*y + z*z); M[1][0] = 2.0f*(x*y - z*w);         M[2][0] = 2.0f*(x*z + y*w);
+  M[0][1] = 2.0f*(x*y + z*w);        M[1][1] = 1.0f - 2.0f*(x*x + z*z);  M[2][1] = 2.0f*(y*z - x*w);
+  M[0][2] = 2.0f*(x*z - y*w);        M[1][2] = 2.0f*(y*z + x*w);         M[2][2] = 1.0f - 2.0f*(x*x + y*y);
+}
+
 static inline int8_t cfx_clamp8(float v) {
   const int r = (int)(v * 127.0f);
   return (int8_t)((r < -127) ? -127 : (r > 127 ? 127 : r));
