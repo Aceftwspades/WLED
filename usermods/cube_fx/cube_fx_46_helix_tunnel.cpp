@@ -48,6 +48,28 @@
 // mouth of the vortex and the other its throat.
 //
 // ---------------------------------------------------------------------------
+// WHAT THE REFERENCE CHANGED
+// ---------------------------------------------------------------------------
+// The first version lit the coils as solid stripes, one palette colour per
+// ring, with the curve drawn faintly over them. Against the stage-screen
+// reference three things were wrong at once, and they were fixed together:
+//
+//   the ribbon is a MASK, not a light. The coiled tube is dark; what lights it
+//   is the neon carved into it, and the gaps between coils are black. A ribbon
+//   that glowed on its own read as stripes with a texture on them.
+//
+//   the stroke is a neon TUBE - bright walls, dimmer core - the way every
+//   meander in the reference is a hollow outline. At sixteen pixels a face the
+//   core is one pixel and the effect is a texture rather than a shape, but it
+//   is the texture that separates neon from paint.
+//
+//   hue is a SMOOTH FIELD round the axis, one turn of the palette per turn of
+//   the vortex, so a region is red, its neighbour orange, the far side blue,
+//   and the neon takes the colour of the region it sits in. One colour per
+//   ring made the self-similarity legible and made the whole thing a barber
+//   pole; the reference is broad swathes.
+//
+// ---------------------------------------------------------------------------
 // THE SPACE-FILLING CURVE IS A LOOKUP, NOT A TRACE
 // ---------------------------------------------------------------------------
 // A Hilbert curve is carved into each tile of the chart while the helix is
@@ -58,7 +80,10 @@
 // that the curve actually uses, and the pixel measures its distance to those.
 // Five three-iteration integer loops per pixel, on a curve that would have
 // taken 64 segment tests to trace. Order 3, an 8 x 8 tile, is as fine as
-// sixteen pixels to a face will resolve.
+// sixteen pixels to a face will resolve, and the tile is four ring periods
+// tall so a cell is half a ring on each side - square, because the chart is
+// conformal. The stroke is masked by the ribbon, so the pattern is carved INTO
+// the tube rather than floating over the space between its turns.
 //
 // The tiles repeat in theta and in rho, so the carving is self-similar: the
 // same curve, a factor of k smaller, every ring inward, until the pole guard
@@ -93,8 +118,9 @@
 // ===========================================================================
 
 #define HT_TWOPI   6.28318531f
-#define HT_HORDER  2                         // Hilbert order: 2^2 = 4 cells a side
+#define HT_HORDER  3                         // Hilbert order: 2^3 = 8 cells a side
 #define HT_HG      (1 << HT_HORDER)
+#define HT_TILE_RINGS 4.0f                   // a tile spans this many ring periods
 
 struct HtState {
   uint8_t   mode;
@@ -178,8 +204,11 @@ static FX_RET mode_helixtunnel() {
   // measured 80% dark. 0.55 keeps every position on it a picture.
   const float P    = 0.55f + (float)ringI * (0.65f / 255.0f);
   const float invP = 1.0f / P;
-  // Carving tiles round the axis: as many as makes their cells square.
-  int NT = (int)(HT_TWOPI / ((float)HT_HG * P) + 0.5f);
+  // Carving tiles round the axis: as many as makes their cells square. A tile
+  // is HT_TILE_RINGS periods tall and HT_HG cells, so a cell is half a ring,
+  // and the tile is HT_HG cells wide - so its width in theta is HT_HG cells of
+  // half a ring each.
+  int NT = (int)(HT_TWOPI / (P * HT_TILE_RINGS) + 0.5f);
   if (NT < 1) NT = 1;
 
   // --- audio ----------------------------------------------------------------
@@ -231,7 +260,7 @@ static FX_RET mode_helixtunnel() {
 
   // Slope of the loxodrome: stripes per turn, at full helix. Goes to zero with
   // the morph, which is the whole transition.
-  const float slope = 2.0f * helix;
+  const float slope = 1.3f * helix;
   // Shear: theta += sh1 rho + sh2 rho|rho|. Both scale with the helix so the
   // tunnel's rings come out as true circles.
   const float sh1 = (float)twistI * (1.00f / 255.0f) * helix;
@@ -296,17 +325,18 @@ static FX_RET mode_helixtunnel() {
       // --- stripes: helix at slope, rings at zero ----------------------------
       const float a  = r1 * invP + slope * t1 * (1.0f / HT_TWOPI);
       const float fa = a - floorf(a);
-      // A band under half the period wide, BLACK between. Black is a component
-      // here: the tunnel reads as depth because the rings are separated by
-      // nothing, and a triangle wave - the first version - lit the whole
-      // period and measured as a wash at mean 89.
+      // The band is the RIBBON - the coiled tube itself - and it is a mask
+      // more than a light. Seventy percent of the period, a hard-ish edge, a
+      // dark gap between coils. The ribbon's own fill is dim: what lights it
+      // is the neon carved into it, and a ribbon that glowed on its own read
+      // as stripes with a texture rather than as a dark tube with lines on it.
       const float off = ((fa < 0.5f) ? (0.5f - fa) : (fa - 0.5f)) * 2.0f;  // 0 mid, 1 edge
-      float band = (0.52f - off) * (1.0f / 0.30f);
+      float band = (0.72f - off) * (1.0f / 0.16f);
       if (band < 0.0f) band = 0.0f; else if (band > 1.0f) band = 1.0f;
       band = band * band * (3.0f - 2.0f * band);
-      // The stripes are the body of the tunnel; in the helix phase the carving
-      // is the surface and the stripes sit behind it.
-      float bodyL = (0.40f + 0.32f * morph) * band;
+      // With Carve off the ribbon IS the light - a solid coiled band - so the
+      // checkbox swaps between two pictures rather than switching one off.
+      float bodyL = (carve ? (0.09f + 0.10f * morph) : (0.58f + 0.14f * morph)) * band;
 
       // --- the carving -------------------------------------------------------
       // The tile is HT_HG rings tall and NT tiles go round, so a cell is about
@@ -315,19 +345,31 @@ static FX_RET mode_helixtunnel() {
       // version, had cells sixteen pixels wide and under two tall, and the
       // curve came out as a row of dots. The v coordinate is the SLOPED one, so
       // the grid leans with the helix and the carving follows the coil.
+      //
+      // The stroke is a NEON TUBE, not a line: bright walls and a dimmer core,
+      // the way a bent glass tube reads - and the way the meander in the
+      // reference does, every stroke a hollow outline. At sixteen pixels a
+      // face the core is a pixel wide and the effect is a texture rather than
+      // a shape, but it is the texture that separates neon from paint. It is
+      // masked by the ribbon, so the gaps between coils stay black and the
+      // pattern is carved INTO the tube rather than floating over the space
+      // between its turns.
       float carveL = 0.0f;
-      if (carve && helix > 0.02f) {
-        float tu = t1 * (1.0f / HT_TWOPI) * (float)NT; tu -= floorf(tu);
-        float tv = a * (1.0f / (float)HT_HG);          tv -= floorf(tv);
+      if (carve && band > 0.01f) {
+        float tu = t1 * (1.0f / HT_TWOPI) * (float)NT;  tu -= floorf(tu);
+        float tv = a * (1.0f / HT_TILE_RINGS);           tv -= floorf(tv);
         const float gu = tu * (float)HT_HG, gv = tv * (float)HT_HG;
         const int   cx = (int)gu, cy = (int)gv;
         const float dd = ht_carve(cx, cy, gu - (float)cx, gv - (float)cy);
         // Width in cells, widened as the guard closes so the line does not
         // shatter into dots before it fades.
-        const float lw = 0.24f + 0.10f * (1.0f - guard);
+        const float lw = 0.30f + 0.12f * (1.0f - guard);
         if (dd < lw) {
-          float g = 1.0f - dd / lw;
-          carveL = g * g * helix;
+          float g = 1.0f - dd / lw;                      // 1 at the centreline
+          g = g * (2.0f - g);                            // fast rise, soft edge
+          float k = dd / (lw * 0.45f); if (k > 1.0f) k = 1.0f;
+          const float core = 0.62f + 0.38f * k;          // the dimmer middle
+          carveL = g * core * band;
         }
       }
 
@@ -354,7 +396,7 @@ static FX_RET mode_helixtunnel() {
         const float lw = 0.11f * (1.0f + ez * ez) * GZ;
         if (gm < lw) {
           float g = 1.0f - gm / lw;
-          arcL = g * g * morph;
+          arcL = g * g * morph * 0.75f;
         }
       }
 
@@ -372,12 +414,16 @@ static FX_RET mode_helixtunnel() {
       int lum = (int)((float)fill * lumF);
       if (lum < 0) lum = 0; else if (lum > 255) lum = 255;
 
-      // Hue: one colour per ring so the self-similarity is visible as a
-      // repeating sequence into the pole; the carving and the arcs sit a
-      // third of the wheel away so they read as drawn ON the surface.
-      uint8_t idx = (uint8_t)(hueOff + (int)floorf(a) * 23);
-      if (carveB > bodyL && carveB >= arcB)  idx = (uint8_t)(idx + 85);
-      else if (arcB > bodyL)                 idx = (uint8_t)(idx + 170);
+      // Hue is a SMOOTH FIELD round the axis - one turn of the palette per turn
+      // of the vortex, drifting - so a region is red, its neighbour orange, the
+      // far side blue, and the neon takes the colour of the region it is in.
+      // It was one colour per ring, which made the self-similarity legible and
+      // made the whole thing a barber pole; the reference is broad swathes.
+      // A little of rho so the swathes lean into the throat. The arcs alone sit
+      // half a wheel away, because they are drawn over everything.
+      const float hueT = theta + spinF * 0.35f + r1 * 0.35f;
+      uint8_t idx = (uint8_t)(hueOff + (int)(hueT * (256.0f / HT_TWOPI)));
+      if (arcB > bodyL && arcB > carveB) idx = (uint8_t)(idx + 128);
 
       uint32_t c = 0;
       if (lum) {
@@ -391,7 +437,7 @@ static FX_RET mode_helixtunnel() {
 }
 
 static const char _data_FX_MODE_HELIXTUNNEL[] PROGMEM =
-  "Ace 3-D Helix Tunnel@Speed,Fill,Rings,Twist,Dwell,Beat surge,Carve,Flat mode;;!;2f;sx=100,ix=128,c1=110,c2=128,c3=16,o1=1,o2=1,pal=11";
+  "Ace 3-D Helix Tunnel@Speed,Fill,Rings,Twist,Dwell,Beat surge,Carve,Flat mode;;!;2f;sx=100,ix=128,c1=150,c2=128,c3=22,o1=1,o2=1,pal=11";
 
 
 // ---------------------------------------------------------------------------
