@@ -64,10 +64,10 @@
 // The thin lines that run along the tubes in the reference - a red one, a
 // green one, riding the crest - are the Seam: a stripe a few degrees wide
 // where the tube's normal points along the knot's axis, drawn a half-wheel
-// off the tube's hue, running inside the pastel bands and stopping at the
-// black ones. It is a cheap thing that adds a great deal, because it is the
-// only line in the picture that follows the tube's LENGTH, and the eye uses
-// it to read which way each tube is going.
+// off the tube's hue, running the length of the tube UNDER the bands and
+// showing only through the black ones. It is a cheap thing that adds a great
+// deal, because it is the only line in the picture that follows the tube's
+// LENGTH, and the eye uses it to read which way each tube is going.
 // ===========================================================================
 
 #define CK_R       1.00f        // torus major radius
@@ -259,11 +259,12 @@ static FX_RET mode_candyknot() {
 
         // --- the seam ------------------------------------------------------
         // A thin stripe where the normal points along the knot's axis: the
-        // crest of the tube, drawn half a wheel away. It runs INSIDE the
-        // pastel bands and stops at the black ones - it is a mark on the
-        // band, not a line over the tube.
+        // crest of the tube, drawn half a wheel away. It shows in the BLACK
+        // bands and is covered by the pastel ones - a line that runs the
+        // length of the tube underneath the bands and is only visible through
+        // the gaps, which is how the reference's thin lines read.
         bool onSeam = false;
-        if (seam && on > 0.5f) {
+        if (seam && on < 0.5f) {
           const float c = Nz;                            // cos of angle to axis
           if (c > 0.90f) onSeam = true;
         }
@@ -274,7 +275,8 @@ static FX_RET mode_candyknot() {
         // black bands to grey and the picture went from half dark to a third.
         // A black band should stay black except where the light actually
         // catches it.
-        const float lit  = 0.05f + 0.95f * on;
+        float lit = 0.05f + 0.95f * on;
+        if (onSeam) lit = 0.80f;                         // the seam through the gap
         const float glos = spec * (on + (1.0f - on) * spec);
         lum = (int)((float)fill * (shade * lit + 0.60f * glos));
 
