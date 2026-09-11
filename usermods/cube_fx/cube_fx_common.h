@@ -167,6 +167,27 @@ static inline float cfx_cosf16(float rad) {
 }
 
 // ---------------------------------------------------------------------------
+// Torus knots - the (p,q) table
+// ---------------------------------------------------------------------------
+// p windings round the main axis to q round the tube. gcd(p,q) = 1 or the
+// curve closes early and stops being a knot. p is the per-pixel loop count in
+// the meridian construction both knot effects use, so it is capped at 7. Index
+// 0 is the trefoil. A 5-bit custom3 indexes it directly.
+#define CFX_NKNOT 32
+static const uint8_t CFX_KNOT_PQ[CFX_NKNOT][2] PROGMEM = {
+  { 2,  3 }, { 3,  2 }, { 2,  5 }, { 5,  2 }, { 3,  4 }, { 4,  3 }, { 2,  7 },
+  { 7,  2 }, { 3,  5 }, { 5,  3 }, { 2,  9 }, { 5,  4 }, { 3,  7 }, { 7,  3 },
+  { 2, 11 }, { 3,  8 }, { 4,  7 }, { 3, 10 }, { 5,  6 }, { 6,  5 }, { 3, 11 },
+  { 5,  7 }, { 7,  5 }, { 5,  8 }, { 6,  7 }, { 7,  6 }, { 4, 11 }, { 5,  9 },
+  { 5, 11 }, { 7,  9 }, { 6, 11 }, { 7, 11 },
+};
+static inline void cfx_knotPQ(uint8_t pick, int &P, int &Q) {
+  if (pick >= CFX_NKNOT) pick = CFX_NKNOT - 1;
+  P = (int)pgm_read_byte(&CFX_KNOT_PQ[pick][0]);
+  Q = (int)pgm_read_byte(&CFX_KNOT_PQ[pick][1]);
+}
+
+// ---------------------------------------------------------------------------
 // Quaternion tumble - a slow, gimbal-free wander through orientations
 // ---------------------------------------------------------------------------
 // For effects whose whole identity is an AXIS - a ring, a vortex, a pair of

@@ -64,21 +64,9 @@
 // than to space, so the bands ride the tube instead of cutting through it.
 // ===========================================================================
 
-#define TK_NKNOT   32
 #define TK_R       1.00f        // torus major radius
 #define TK_r       0.68f        // minor radius - see the header
 #define TK_TWOPI   6.28318531f
-
-// p windings round the main axis to q round the tube. gcd(p,q) = 1 or the
-// curve closes early and stops being a knot. p is the per-pixel loop count,
-// so it is capped at 7. Index 0 is the trefoil.
-static const uint8_t TK_PQ[TK_NKNOT][2] PROGMEM = {
-  { 2,  3 }, { 3,  2 }, { 2,  5 }, { 5,  2 }, { 3,  4 }, { 4,  3 }, { 2,  7 },
-  { 7,  2 }, { 3,  5 }, { 5,  3 }, { 2,  9 }, { 5,  4 }, { 3,  7 }, { 7,  3 },
-  { 2, 11 }, { 3,  8 }, { 4,  7 }, { 3, 10 }, { 5,  6 }, { 6,  5 }, { 3, 11 },
-  { 5,  7 }, { 7,  5 }, { 5,  8 }, { 6,  7 }, { 7,  6 }, { 4, 11 }, { 5,  9 },
-  { 5, 11 }, { 7,  9 }, { 6, 11 }, { 7, 11 },
-};
 
 struct TkState {
   uint8_t  mode;
@@ -121,10 +109,7 @@ static FX_RET mode_torusknot() {
   const int  thickI = (int)SEGMENT.custom1;
   const int  ringI  = (int)SEGMENT.custom2;
   const bool chrome = SEGMENT.check2;
-  uint8_t pick = SEGMENT.custom3;
-  if (pick >= TK_NKNOT) pick = TK_NKNOT - 1;
-  const int P = (int)pgm_read_byte(&TK_PQ[pick][0]);
-  const int Q = (int)pgm_read_byte(&TK_PQ[pick][1]);
+  int P, Q; cfx_knotPQ(SEGMENT.custom3, P, Q);   // the table is in common.h
 
   // --- audio ----------------------------------------------------------------
   um_data_t     *um   = cfx_getAudioData();
