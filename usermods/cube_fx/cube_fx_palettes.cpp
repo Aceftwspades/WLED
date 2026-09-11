@@ -37,6 +37,8 @@
 //   Ladder  stop i is source position i, brightness is band i's level
 //   Arc     every musical feature at once, each owning a bounded slice of
 //           palette travel - see below
+//   Sweep   the source, unchanged in brightness, rotated one stop per KICK -
+//           sixteen kicks bring it back round. Hue only; see below
 //
 // The source is set in Usermods settings ("source"), and it is an ordinary WLED
 // palette id:
@@ -88,6 +90,22 @@
 // thing here that operates on a musical timescale longer than a beat.
 //
 // ---------------------------------------------------------------------------
+// SWEEP
+// ---------------------------------------------------------------------------
+// The whole source, all sixteen stops at full brightness, rotated by one stop
+// on every kick. Sixteen kicks is one full turn, so on a 4/4 bar the palette
+// comes back round every four bars. Nothing else moves it: no loudness, no
+// tempo prediction, no build or drop - a kick, and only a kick, and the same
+// amount every time. Brightness is untouched; this is a hue rotation and
+// nothing more, which is the point of it.
+//
+// The step is delivered as a slew rather than a snap - the debt is paid off at
+// about a third a frame, the same way the effects deliver a beat - so the
+// colours are seen to SWEEP through one stop over ~140 ms rather than cut to
+// the next. Silence holds the palette where it got to; the pass-through does
+// not reset it.
+//
+// ---------------------------------------------------------------------------
 // CALLING THE SHARED ANALYSERS FROM A USERMOD IS SAFE, BUT NOT OBVIOUSLY SO
 // ---------------------------------------------------------------------------
 // cfx_tempo() and cfx_drop() sit on fx_lowBeat(), which is a ONE-SHOT: it
@@ -119,7 +137,7 @@
 // ===========================================================================
 
 #ifndef CFX_PAL_COUNT
-  #define CFX_PAL_COUNT 5
+  #define CFX_PAL_COUNT 6
 #endif
 #ifndef CFX_PAL_SOURCE_DEFAULT
   #define CFX_PAL_SOURCE_DEFAULT 11    // Rainbow: wide, so the movement shows
@@ -135,6 +153,7 @@ static const char _cfxPal1[]    PROGMEM = "Tilt";
 static const char _cfxPal2[]    PROGMEM = "Bloom";
 static const char _cfxPal3[]    PROGMEM = "Ladder";
 static const char _cfxPal4[]    PROGMEM = "Arc";
+static const char _cfxPal5[]    PROGMEM = "Sweep";
 static const char _cfxSrcKey[]  PROGMEM = "source";
 
 class CfxPalettes : public Usermod {
@@ -151,6 +170,8 @@ class CfxPalettes : public Usermod {
     uint8_t  tilt       = 128;           // smoothed bass/treble balance
     uint8_t  loud       = 0;
     uint8_t  bass = 0, treb = 0;
+    uint16_t sweepPos = 0;               // Sweep's rotation, in 1/16ths of a stop
+    uint16_t sweepOwed = 0;              // rotation owed to it, same units
     uint32_t lastMs     = 0;
     CfxTempoState tempo = {0, 0, 0, 0, 0, 0};
     CfxDropState  drop  = {0, 0, 0, 0, 256, false};
@@ -241,14 +262,18 @@ class CfxPalettes : public Usermod {
         // blends by the low nibble, so i*16 lands exactly ON entry i and
         // reproduces the source stop for stop. i*17 walks a sixteenth of an
         // entry further each step and skews the whole ramp.
-        for (int i = 0; i < 16; i++) p.palette.entries[i] = pick((uint8_t)(i * 16), 255);
+        //
+        // Sweep keeps its rotation through silence - it is where the kicks
+        // left it, and it should still be there when they come back.
+        const uint8_t off = (p.palIndex == 5) ? (uint8_t)(sweepPos >> 4) : 0;
+        for (int i = 0; i < 16; i++) p.palette.entries[i] = pick((uint8_t)(i * 16 + off), 255);
       }
     }
 
   public:
     void setup() override {
       static const char *const names[CFX_PAL_COUNT] PROGMEM =
-        { _cfxPal0, _cfxPal1, _cfxPal2, _cfxPal3, _cfxPal4 };
+        { _cfxPal0, _cfxPal1, _cfxPal2, _cfxPal3, _cfxPal4, _cfxPal5 };
       for (int i = 0; i < CFX_PAL_COUNT; i++) {
         if (usermodPalettes.size() >= WLED_MAX_USERMOD_PALETTES) break;
         usermodPalettes.push_back({ CRGBPalette16(CRGB::Black), _cfxPalName,
@@ -307,6 +332,20 @@ class CfxPalettes : public Usermod {
           const uint8_t s = tempo.hit ? tempo.hit : 160;
           if (s > pulse) pulse = s;
         }
+      }
+
+      // --- Sweep's step ---------------------------------------------------
+      // One stop per KICK - tempo.hit is the actual low-band hit this frame,
+      // not the predicted beat, so a bar with no kick in it does not turn the
+      // palette. Owed and paid at a third a frame: 16 positions per stop, in
+      // sixteenths so the slew has something to divide.
+      if (tempo.hit) sweepOwed = (uint16_t)(sweepOwed + 256u);   // 16 positions
+      if (sweepOwed) {
+        uint32_t give = ((uint32_t)sweepOwed * dt) / 70u;
+        if (!give) give = 1;
+        if (give > sweepOwed) give = sweepOwed;
+        sweepPos  = (uint16_t)(sweepPos + give);
+        sweepOwed = (uint16_t)(sweepOwed - give);
       }
 
       // --- Kick's own step ------------------------------------------------
@@ -391,6 +430,11 @@ class CfxPalettes : public Usermod {
             // up the spectrum: the palette's SHAPE is the sound while its
             // colours stay the ones that were chosen.
             for (int i = 0; i < 16; i++) e[i] = pick((uint8_t)(i * 16), fft[i]);
+            break; }
+
+          case 5: {   // Sweep - the source, rotated. Hue only, full brightness.
+            const uint8_t off = (uint8_t)(sweepPos >> 4);
+            for (int i = 0; i < 16; i++) e[i] = pick((uint8_t)(i * 16 + off), 255);
             break; }
 
           default: {  // Arc - the whole budget, through the split
