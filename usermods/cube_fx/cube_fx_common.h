@@ -950,6 +950,164 @@ static inline uint8_t cfx_lerp8(uint8_t A, uint8_t Bv, uint8_t f) {
   return (uint8_t)(((int)A * (255 - (int)f) + (int)Bv * (int)f + 127) / 255);
 }
 
+// ---------------------------------------------------------------------------
+// MilkDrop waveforms - a rebuilt waveform, and the closed-curve wave modes
+// ---------------------------------------------------------------------------
+// Every MilkDrop wave mode draws the time-domain PCM waveform, and WLED's
+// audioreactive publishes no such thing - sixteen FFT bins, volume, a peak
+// flag. cfx_waveRebuild() makes one from the bins: sixteen sines at one to
+// sixteen cycles across the window, each at its bin's level, each with a phase
+// the caller drifts at its own rate. It is not the audio. It moves like it -
+// bass makes slow wide swings, treble puts fine wiggle on them, silence is a
+// flat line - and the closed-curve modes, which only ever wanted a wiggly loop
+// modulated by the music, do not know the difference. The scope-line modes,
+// which depend on the waveform's actual shape, are deliberately not here.
+//
+// cfx_waveShape() is the point generator for seven modes, ported from
+// BeatDrop's vis_milk2/milkdropfs.cpp (3-clause BSD; MilkDrop 2 by Ryan Geiss
+// / Nullsoft): Circle (mode 0), Spiral (1), Spiro (2), Star (13), Flower (14),
+// Lasso (15) and Triangle (16). Coordinates come out in MilkDrop's +/-1 plane;
+// the caller charts them onto whatever it is drawing on. Warp and Scope share
+// all of this.
+#define CFX_WAVE_MODES 7
+
+static inline void cfx_waveRebuild(const uint8_t *fft, const uint16_t *ph16, float *W, int NS) {
+  float amp[16], ph[16], tot = 0.0f;
+  for (int b = 0; b < 16; b++) {
+    amp[b] = ((float)fft[b] / 255.0f) / (1.0f + 0.25f * (float)b);
+    tot += amp[b];
+    ph[b] = (float)ph16[b] * (6.28318531f / 65536.0f);
+  }
+  const float norm = 1.0f / (0.35f + tot);
+  for (int i = 0; i < NS; i++) {
+    float v = 0.0f;
+    const float u = (float)i * (6.28318531f / (float)NS);
+    for (int b = 0; b < 16; b++) {
+      if (amp[b] < 0.004f) continue;
+      v += amp[b] * cfx_sinf16(u * (float)(b + 1) + ph[b]);
+    }
+    W[i] = v * norm;
+  }
+}
+
+// Advance the sixteen phases: bin b turns at (b+1) times the base rate.
+static inline void cfx_wavePhases(uint16_t *ph16, uint16_t dt) {
+  for (int b = 0; b < 16; b++)
+    ph16[b] = (uint16_t)(ph16[b] + (uint32_t)dt * (uint32_t)(9 + 6 * b));
+}
+
+static inline void cfx_waveShape(int mode, int i, int NS, const float *W, float T,
+                                 float &x, float &y) {
+  const float TWOPI = 6.28318531f;
+  const float wl = W[i], wr = W[(i + NS / 4) % NS];
+  const float ang0 = T * 0.2f;
+  switch (mode) {
+    default:
+    case 0: {   // Circle
+      float rad = 0.5f + 0.4f * (wl + wr) * 0.5f;
+      const float ang = (float)i * (TWOPI / (float)(NS - 1)) + ang0;
+      if (i < NS / 10) {
+        float mix = (float)i / (NS * 0.1f);
+        mix = 0.5f - 0.5f * cosf(mix * 3.1416f);
+        const float rad2 = 0.5f + 0.4f * W[(i + NS - 1) % NS];
+        rad = rad2 * (1.0f - mix) + rad * mix;
+      }
+      x = rad * cosf(ang); y = rad * sinf(ang);
+      break; }
+    case 1: {   // Spiral: the x-y oscilloscope that goes round in time
+      const float rad = 0.53f + 0.43f * wr;
+      const float ang = W[(i + 32) % NS] * 1.57f + T * 2.3f;
+      x = rad * cosf(ang); y = rad * sinf(ang);
+      break; }
+    case 2: {   // Spiro: the same, scaled up (the caller draws it faint)
+      const float rad = 1.1f * (0.53f + 0.43f * wr);
+      const float ang = W[(i + 32) % NS] * 1.57f + T * 2.3f;
+      x = rad * cosf(ang); y = rad * sinf(ang);
+      break; }
+    case 3: {   // Star (MilkDrop2077)
+      float rad = 0.7f + 0.4f * (wl + wr) * 0.5f;
+      const float ang = (float)i * (TWOPI / (float)(NS - 1)) + ang0;
+      if ((float)i < (float)NS / rad) {
+        float mix = (float)i / (NS * 0.1f);
+        mix = 0.5f - 0.5f * cosf(mix * 3.1416f);
+        const float rad2 = 0.5f + 0.4f * W[(i + NS - 1) % NS];
+        rad = rad2 * (1.0f - mix) + rad * mix;
+      }
+      x = rad * cosf(ang); y = rad * sinf(ang);
+      break; }
+    case 4: {   // Flower (MilkDrop2077)
+      float rad = 0.7f + 0.7f * (wl + wr) * 0.5f;
+      const float ang = (float)i * (TWOPI / (float)(NS - 1)) + ang0;
+      if ((float)i < (float)NS / rad) {
+        float mix = (float)i / (NS * 0.1f);
+        mix = 0.7f - 0.7f * cosf(mix * 3.1416f);
+        const float rad2 = 0.7f + 0.7f * W[(i + NS - 1) % NS];
+        rad = rad2 * (1.0f - mix) + rad * (mix * 2.0f) / 8.0f;
+      }
+      x = rad * cosf(ang * 3.1416f) / 1.5f;
+      y = rad * sinf(ang - T / 3.0f) / 1.5f;
+      break; }
+    case 5: {   // Lasso (MilkDrop2077)
+      float ang = 0.5f * (W[(i + 32) % NS] + W[(i + 56) % NS]) * 1.57f + T * 2.0f;
+      if (fabsf(ang) < 0.001f) ang = (ang < 0.0f) ? -0.001f : 0.001f;
+      float tt = T / ang;
+      tt -= floorf(tt / 3.14159f) * 3.14159f;                  // keep tan sane
+      x = (cosf(T) * 0.5f + cosf(ang * 2.0f + tanf(tt))) * 0.6f;
+      y = (sinf(T) * 2.0f * sinf(ang * 3.14f) / 2.8f) * 0.6f;
+      break; }
+    case 6: {   // Triangle (CodAv)
+      const float progress = (float)i / (float)NS;
+      const float phi0 = (floorf(progress * 3.0f) + 0.5f) / 3.0f * 6.28f + ang0;
+      const float angle = progress * 6.28f + ang0;
+      float ed = cosf(angle - phi0);
+      if (fabsf(ed) < 0.02f) ed = (ed < 0.0f) ? -0.02f : 0.02f;
+      float radius = (0.7f + ed * (wl + wr) * 0.5f) / (2.0f * ed);
+      if (radius > 2.0f) radius = 2.0f; else if (radius < -2.0f) radius = -2.0f;
+      x = radius * cosf(angle); y = radius * sinf(angle);
+      break; }
+  }
+  if (x >  1.9f) x =  1.9f; else if (x < -1.9f) x = -1.9f;
+  if (y >  1.9f) y =  1.9f; else if (y < -1.9f) y = -1.9f;
+}
+
+// A point of MilkDrop's plane, charted onto the solid about a tumbled pole -
+// azimuthal equidistant, `chart` radians of polar angle per unit - and looked
+// up in a rev table. 0xFFFF where nothing is lit. M is world->object.
+static inline uint16_t cfx_plotPole(float x, float y, float chart, const float M[3][3],
+                                    const uint16_t *rev, int Bq) {
+  const float r = sqrtf(x * x + y * y);
+  float al = r * chart;
+  if (al > 3.05f) al = 3.05f;
+  const float ir = (r > 1e-6f) ? (1.0f / r) : 0.0f;
+  const float sa = sinf(al), ca = cosf(al);
+  const float dx = sa * x * ir, dy = sa * y * ir, dz = ca;
+  const float cx = M[0][0]*dx + M[1][0]*dy + M[2][0]*dz;
+  const float cy = M[0][1]*dx + M[1][1]*dy + M[2][1]*dz;
+  const float cz = M[0][2]*dx + M[1][2]*dy + M[2][2]*dz;
+  int f, a, b;
+  cfx_face((int)(cx * 300.0f), (int)(cy * 300.0f), (int)(cz * 300.0f), f, a, b);
+  int ai = ((a + 128) * Bq) >> 8, bi = ((b + 128) * Bq) >> 8;
+  if (ai < 0) ai = 0; else if (ai >= Bq) ai = Bq - 1;
+  if (bi < 0) bi = 0; else if (bi >= Bq) bi = Bq - 1;
+  return rev[((size_t)f * Bq + bi) * Bq + ai];
+}
+
+// Build the [6][Bq][Bq] reverse table of compact indices for a cube net.
+static inline void cfx_buildRev(uint16_t *rev, int cols, int rows, int B) {
+  const int Bq = B;
+  for (size_t k = 0; k < (size_t)6 * Bq * Bq; k++) rev[k] = 0xFFFF;
+  for (int y = 0; y < rows; y++)
+    for (int x = 0; x < cols; x++) {
+      if ((x / B) != 1 && (y / B) != 1) continue;
+      float X, Y, Z; cfx_pos(x, y, cols, rows, B, true, X, Y, Z);
+      int f, a, b; cfx_face(cfx_clamp8(X), cfx_clamp8(Y), cfx_clamp8(Z), f, a, b);
+      int ai = ((a + 128) * Bq) >> 8, bi = ((b + 128) * Bq) >> 8;
+      if (ai < 0) ai = 0; else if (ai >= Bq) ai = Bq - 1;
+      if (bi < 0) bi = 0; else if (bi >= Bq) bi = Bq - 1;
+      rev[((size_t)f * Bq + bi) * Bq + ai] = (uint16_t)cfx_cidx(x, y, cols, B, true);
+    }
+}
+
 // Waveform selector for the edge ripple. 0 = off.
 static inline uint8_t cfx_wave(uint8_t shape, uint8_t t) {
   switch (shape) {
