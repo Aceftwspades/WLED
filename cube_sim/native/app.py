@@ -1141,7 +1141,14 @@ def service_command(app):
                 app.gp._menu_pos = tuple(c["graph_menu"])
                 dpg.configure_item("graph_menu", show=True); dpg.set_item_pos("graph_menu", list(c["graph_menu"]))
             if c.get("graph_menu_hide"):
-                dpg.configure_item("graph_menu", show=False)
+                dpg.configure_item("graph_menu", show=False); dpg.configure_item("graph_ctx", show=False)
+            if "graph_ctx" in c:                        # test hook: context menu for a pin or node
+                kind, nid, name, x, y = c["graph_ctx"]
+                app.gp._ctx = (kind, int(nid), name); app.gp._fill_ctx_menu()
+                dpg.configure_item("graph_ctx", show=True); dpg.set_item_pos("graph_ctx", [x, y])
+            if "graph_wire" in c:                       # test hook: colour the wire into (node, input)
+                nid, name, col = c["graph_wire"]
+                app.gp._set_wire([(int(nid), name)], tuple(col) if col else None)
             if c.get("graph_release"):
                 app.gp.on_release()
             if "graph_press" in c:                      # test hook: a drag from an output pin type

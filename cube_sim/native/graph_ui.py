@@ -18,6 +18,10 @@ DIM = (139, 147, 163)
 PIN_COL = {"float": (110, 190, 250), "color": (250, 170, 90), "bool": (170, 230, 120)}
 GREY = (70, 74, 84)
 NODE_W = 150            # inner width every node is laid out to
+WIRE_COLOURS = [("type colour", None), ("white", (235, 235, 235)), ("red", (235, 80, 70)),
+                ("orange", (250, 160, 60)), ("yellow", (240, 220, 80)), ("green", (120, 220, 110)),
+                ("cyan", (90, 220, 230)), ("blue", (100, 150, 250)), ("magenta", (230, 100, 220)),
+                ("grey", (130, 135, 145))]
 CHAR_W = 7.2            # the default font at 13 px, near enough to right-align by
 
 
@@ -72,6 +76,8 @@ class GraphPanel:
         self._ptype = {}         # attribute tag -> pin type
         self._add_count = 0
         self._themes = None      # PinThemes, built lazily (needs a context)
+        self._wire_themes = {}   # (r,g,b) -> a link theme in that colour
+        self._ctx = None         # what the context menu is about: ("in"|"out"|"node", ...)
         self._drag_type = None   # type of the output being dragged, if any
         self._menu_pos = (60, 60)
 
@@ -244,9 +250,22 @@ class GraphPanel:
         if not ta or not tb:
             return
         lid = dpg.add_node_link(ta, tb, parent="node_editor")
-        dpg.bind_item_theme(lid, self.themes().link[self._ptype.get(ta, "float")])
+        meta = self.graph.link_meta.get((b, inp)) or {}
+        col = meta.get("color")
+        dpg.bind_item_theme(lid, self._wire_theme(tuple(col)) if col else self.themes().link[self._ptype.get(ta, "float")])
         self.links[lid] = (b, inp)
         self._show_input(b, inp, True)
+
+    def _wire_theme(self, col):
+        th = self._wire_themes.get(col)
+        if th is None:
+            with dpg.theme() as th:
+                with dpg.theme_component(dpg.mvNodeLink):
+                    dpg.add_theme_color(dpg.mvNodeCol_Link, col, category=dpg.mvThemeCat_Nodes)
+                    dpg.add_theme_color(dpg.mvNodeCol_LinkHovered, (255, 255, 255), category=dpg.mvThemeCat_Nodes)
+                    dpg.add_theme_color(dpg.mvNodeCol_LinkSelected, (255, 255, 255), category=dpg.mvThemeCat_Nodes)
+            self._wire_themes[col] = th
+        return th
 
     # --- editing callbacks ------------------------------------------------------------
     def on_link(self, sender, app_data):
@@ -300,16 +319,147 @@ class GraphPanel:
             if kind == "in" and dpg.does_item_exist(tag):
                 dpg.bind_item_theme(tag, th.pin[self._ptype.get(tag, "float")])
 
-    # --- the right-click menu -------------------------------------------------------------
+    # --- the right-click menus -------------------------------------------------------------
     def open_menu(self):
-        """Remember where the pointer is, so the node lands there."""
+        """Right click: over a pin, the pin's menu; over a node, the node's;
+        over empty editor, the add-node menu at the pointer."""
         if not dpg.does_item_exist("node_editor") or not dpg.is_item_hovered("node_editor"):
             return
         mx, my = dpg.get_mouse_pos(local=False)
+        for (nid, kind, name), tag in self._pins.items():
+            if dpg.does_item_exist(tag) and dpg.is_item_hovered(tag):
+                self._ctx = (kind, nid, name)
+                self._fill_ctx_menu()
+                dpg.configure_item("graph_ctx", show=True); dpg.set_item_pos("graph_ctx", [mx, my])
+                return
+        for nid in list(self.graph.nodes) if self.graph else []:
+            tag = f"gnode_{nid}"
+            if dpg.does_item_exist(tag) and dpg.is_item_hovered(tag):
+                self._ctx = ("node", nid, None)
+                self._fill_ctx_menu()
+                dpg.configure_item("graph_ctx", show=True); dpg.set_item_pos("graph_ctx", [mx, my])
+                return
         ex, ey = dpg.get_item_rect_min("node_editor")
         self._menu_pos = (max(0, mx - ex - 20), max(0, my - ey - 10))
         dpg.configure_item("graph_menu", show=True)
         dpg.set_item_pos("graph_menu", [mx, my])
+
+    def _fill_ctx_menu(self):
+        """The context menu's rows, for whatever was right-clicked."""
+        dpg.delete_item("graph_ctx", children_only=True)
+        kind, nid, name = self._ctx
+        n = self.graph.nodes[nid]
+        d = self.lib[n["type"]]
+        P = "graph_ctx"
+        close = lambda: dpg.configure_item(P, show=False)
+
+        def row(label, fn):
+            dpg.add_selectable(label=label, parent=P, callback=lambda s, a, u=fn: (close(), u()))
+
+        if kind == "in":
+            linked = any(l[2] == nid and l[3] == name for l in self.graph.links)
+            dpg.add_text(f"{n['type']} . {name}", parent=P, color=DIM)
+            if linked:
+                row("disconnect", lambda: self._disconnect_in(nid, name))
+                self._colour_rows(P, [(nid, name)])
+            i = next(x for x in d["inputs"] if x["name"] == name)
+            row("reset to default", lambda: self._reset_input(nid, name, i))
+            # expose this input as a control: a slider or checkbox node, wired in
+            ctrls = ["Speed", "Intensity", "Custom 1", "Custom 2", "Custom 3"] if i["type"] != "bool" \
+                    else ["Check 1", "Check 2", "Check 3"]
+            if i["type"] != "color":
+                dpg.add_text("drive with", parent=P, color=DIM)
+                for c in ctrls:
+                    row(f"  {c}", lambda c=c: self._drive_with(nid, name, c))
+        elif kind == "out":
+            outs = [l for l in self.graph.links if l[0] == nid and l[1] == name]
+            dpg.add_text(f"{n['type']} . {name}", parent=P, color=DIM)
+            if outs:
+                row(f"disconnect all ({len(outs)})", lambda: self._disconnect_out(nid, name))
+                self._colour_rows(P, [(l[2], l[3]) for l in outs])
+            o = next(x for x in d["outputs"] if x["name"] == name)
+            dpg.add_text("connect to new", parent=P, color=DIM)
+            for t in self._consumers(o["type"]):
+                row(f"  {t}", lambda t=t: self._connect_new(nid, name, o["type"], t))
+        else:
+            dpg.add_text(n["type"], parent=P, color=DIM)
+            row("duplicate", lambda: self._dup(nid))
+            row("disconnect all", lambda: self._disconnect_node(nid))
+            row("delete", lambda: self._delete_node(nid))
+
+    def _colour_rows(self, P, keys):
+        dpg.add_text("wire colour", parent=P, color=DIM)
+        # two rows of five, so the swatches never run past the menu's edge
+        for chunk in (WIRE_COLOURS[:5], WIRE_COLOURS[5:]):
+            with dpg.group(parent=P, horizontal=True):
+                for label, col in chunk:
+                    if col is None:
+                        dpg.add_button(label="auto", small=True,
+                                       callback=lambda s, a, k=keys: (dpg.configure_item(P, show=False), self._set_wire(k, None)))
+                    else:
+                        dpg.add_color_button(default_value=list(col) + [255], width=18, height=18, no_border=True,
+                                             callback=lambda s, a, k=keys, c=col: (dpg.configure_item(P, show=False), self._set_wire(k, c)))
+
+    def _set_wire(self, keys, col):
+        for k in keys:
+            if col is None:
+                self.graph.link_meta.pop(k, None)
+            else:
+                self.graph.link_meta[k] = {"color": list(col)}
+        self.rebuild()
+
+    def _disconnect_in(self, nid, name):
+        self.graph.unlink(nid, name); self.rebuild()
+
+    def _disconnect_out(self, nid, name):
+        self.graph.unlink_out(nid, name); self.rebuild()
+
+    def _disconnect_node(self, nid):
+        for l in [l for l in self.graph.links if l[0] == nid or l[2] == nid]:
+            self.graph.unlink(l[2], l[3])
+        self.rebuild()
+
+    def _reset_input(self, nid, name, i):
+        self.graph.nodes[nid].setdefault("inputs", {}).pop(name, None)
+        self.rebuild()
+
+    def _drive_with(self, nid, name, ctrl):
+        """A control node feeding this input - reuse one already in the graph,
+        else add one just to the left."""
+        existing = next((m["id"] for m in self.graph.nodes.values() if m["type"] == ctrl), None)
+        if existing is None:
+            pos = self.graph.nodes[nid]["pos"]
+            existing = self.graph.add(ctrl, (max(0, pos[0] - 220), pos[1]))
+        out = self.lib[ctrl]["outputs"][0]["name"]
+        self.graph.link(existing, out, nid, name)
+        self.rebuild()
+
+    def _consumers(self, t):
+        """Node types with a first input this output can feed, most useful first."""
+        prefer = ["Palette", "Blend", "Mask", "Scale", "HSV", "Add", "Multiply", "Mix", "Remap",
+                  "Smoothstep", "Wave", "Noise", "Select", "Threshold", "Output", "Split", "Fade"]
+        out = []
+        for name in prefer + sorted(self.lib):
+            d = self.lib.get(name)
+            if not d or name in out or not d["inputs"]:
+                continue
+            if any(compatible(t, i["type"]) for i in d["inputs"]):
+                out.append(name)
+        return out[:14]
+
+    def _connect_new(self, nid, out_name, t, new_type):
+        d = self.lib[new_type]
+        inp = next(i["name"] for i in d["inputs"] if compatible(t, i["type"]))
+        pos = self.graph.nodes[nid]["pos"]
+        new = self.graph.add(new_type, (pos[0] + 230, pos[1]))
+        self.graph.link(nid, out_name, new, inp)
+        self.rebuild()
+
+    def _dup(self, nid):
+        self.graph.duplicate(nid); self.rebuild()
+
+    def _delete_node(self, nid):
+        self.graph.remove(nid); self.rebuild()
 
     def add_node_at_menu(self, type_):
         dpg.configure_item("graph_menu", show=False)
@@ -403,6 +553,9 @@ def build_panel(app, panel):
     for name in panel.type_names():
         c, n = name.split(" / ", 1)
         cats.setdefault(c, []).append(n)
+    with dpg.window(tag="graph_ctx", show=False, no_title_bar=True, no_resize=True, no_move=True,
+                    autosize=True, popup=True):
+        pass
     with dpg.window(tag="graph_menu", show=False, no_title_bar=True, no_resize=True, no_move=True,
                     autosize=True, popup=True):
         dpg.add_text("add node", color=DIM)

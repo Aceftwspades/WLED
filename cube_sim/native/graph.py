@@ -86,7 +86,9 @@ class Graph:
         d = d or {}
         self.name = d.get("name", "Untitled")
         self.nodes = {int(n["id"]): dict(n, id=int(n["id"])) for n in d.get("nodes", [])}
-        self.links = [tuple(l) for l in d.get("links", [])]
+        self.links = [tuple(l[:4]) for l in d.get("links", [])]
+        # per-link decoration, keyed by the input it lands on: {"color": [r,g,b]}
+        self.link_meta = {(int(l[2]), l[3]): dict(l[4]) for l in d.get("links", []) if len(l) > 4 and l[4]}
         self._next = max(self.nodes.keys(), default=0) + 1
 
     # --- editing -----------------------------------------------------------
@@ -104,6 +106,7 @@ class Graph:
     def remove(self, nid):
         self.nodes.pop(nid, None)
         self.links = [l for l in self.links if l[0] != nid and l[2] != nid]
+        self.link_meta = {k: v for k, v in self.link_meta.items() if k[0] != nid}
 
     def link(self, a, out, b, inp):
         # one link per input
@@ -112,11 +115,29 @@ class Graph:
 
     def unlink(self, b, inp):
         self.links = [l for l in self.links if not (l[2] == b and l[3] == inp)]
+        self.link_meta.pop((b, inp), None)
+
+    def unlink_out(self, a, out):
+        """Every link leaving this output."""
+        for l in [l for l in self.links if l[0] == a and l[1] == out]:
+            self.unlink(l[2], l[3])
+
+    def duplicate(self, nid, offset=(40, 40)):
+        n = self.nodes.get(nid)
+        if not n:
+            return None
+        import copy
+        pos = (n["pos"][0] + offset[0], n["pos"][1] + offset[1])
+        return self.add(n["type"], pos, copy.deepcopy(n.get("params", {}))) if True else None
 
     def to_json(self):
+        links = []
+        for l in self.links:
+            m = self.link_meta.get((l[2], l[3]))
+            links.append(list(l) + ([m] if m else []))
         return {"name": self.name,
                 "nodes": [dict(n) for n in self.nodes.values()],
-                "links": [list(l) for l in self.links]}
+                "links": links}
 
     # --- compile -------------------------------------------------------------
     def _order(self):
