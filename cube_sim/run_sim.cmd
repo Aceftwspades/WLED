@@ -1,6 +1,6 @@
 @echo off
 REM ===========================================================================
-REM  Cube FX Simulator - launcher for the desktop shortcut
+REM  WLED Effect Studio - launcher for the desktop shortcut
 REM ===========================================================================
 REM  Runs from its own folder rather than wherever the shortcut was invoked
 REM  from, builds the native DLL if it is missing, and holds the window open on
@@ -10,11 +10,14 @@ REM  a package is missing, the reason stays on screen.
 REM ===========================================================================
 cd /d "%~dp0"
 
-if not exist "cubefx.dll" (
-  echo cubefx.dll not found - building it once, this takes a minute...
+REM The engine lives in build\ as versioned DLLs, build\latest naming the one
+REM to load (native	oolchain.py). The legacy cubefx.dll beside this file is
+REM accepted too. Neither present: build once.
+if not exist "build\latest" if not exist "cubefx.dll" (
+  echo no engine built yet - building it once, this takes a minute...
   python build.py --native-only
   if errorlevel 1 goto failed
-  if not exist "cubefx.dll" goto failed
+  if not exist "build\latest" if not exist "cubefx.dll" goto failed
   echo.
 )
 
@@ -25,12 +28,12 @@ exit /b 0
 :failed
 echo.
 echo ---------------------------------------------------------------
-echo  The simulator did not start. The error is above.
+echo  The studio did not start. The error is above.
 echo.
 echo  Common causes:
 echo    - the native DLL will not build: needs MSVC Build Tools and the
 echo      clang inside emsdk. Run  python build.py --native-only
-echo    - missing packages:  pip install numpy pyaudiowpatch dearpygui
+echo    - missing packages:  pip install numpy dearpygui pyaudiowpatch sounddevice
 echo ---------------------------------------------------------------
 echo.
 pause
