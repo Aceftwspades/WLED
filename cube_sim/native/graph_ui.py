@@ -170,6 +170,7 @@ class GraphPanel:
         dpg.set_value("graph_file", fname if not sub else "")
         dpg.configure_item("graph_back", show=bool(self.stack))
         self.status(("sub-graph " if sub else "") + fname)
+        self.app.refresh_import_buttons()
 
     def save(self):
         if not self.graph:
@@ -182,6 +183,54 @@ class GraphPanel:
         self.status(f"{self.file} saved")
         if self.cur_dir == self.sub_dir:
             self._subs.pop(self.file[:-5], None)     # its pins may have changed
+
+    def effect_file(self):
+        """The effect file this graph generates, or None with no graph open."""
+        return os.path.splitext(self.file)[0] + ".cpp" if self.file else None
+
+    def rename(self, name):
+        """The graph, its file and its generated effect take a new name. A
+        sub-graph's name is also its node type, so every graph that uses it
+        is rewritten to the new one."""
+        name = (name or "").strip()
+        if not name or not self.graph:
+            self.status("type the new name in the box first")
+            return
+        self.save()
+        old_stem = os.path.splitext(self.file)[0]
+        new_stem = G._ident(name)
+        d = self.cur_dir or self.dir
+        n = 2
+        while new_stem != old_stem and os.path.exists(os.path.join(d, new_stem + ".json")):
+            new_stem = f"{G._ident(name)}_{n}"; n += 1
+        self.graph.name = name
+        if new_stem != old_stem:
+            os.remove(os.path.join(d, self.file))
+            self.file = new_stem + ".json"
+        G.save(self.graph, os.path.join(d, self.file))
+        proj = self.app.project
+        old_cpp, new_cpp = old_stem + ".cpp", new_stem + ".cpp"
+        if old_cpp in proj.effect_files():
+            if new_cpp != old_cpp and new_cpp in proj.effect_files():
+                os.remove(proj.effect_path(new_cpp))
+            proj.rename_effect(old_cpp, name)      # keeps the list entry, regenerated below anyway
+        if d == self.sub_dir and new_stem != old_stem:
+            # the node type changed: rewrite every graph that uses this sub-graph
+            for gd in (self.dir, self.sub_dir):
+                for f in os.listdir(gd):
+                    if not f.endswith(".json") or (gd == d and f == self.file):
+                        continue
+                    p = os.path.join(gd, f)
+                    txt = open(p, encoding="utf-8").read()
+                    if f'"{G.SUB}{old_stem}"' in txt:
+                        open(p, "w", encoding="utf-8").write(txt.replace(f'"{G.SUB}{old_stem}"', f'"{G.SUB}{new_stem}"'))
+        self.refresh_lib()
+        self.open(self.file, sub=(d == self.sub_dir))
+        dpg.set_value("graph_new_name", "")
+        self.status(f"renamed to {name}")
+        if self.app.edit_file == old_cpp:
+            self.app.edit_file = new_cpp if new_cpp in proj.effect_files() else None
+        self.compile()
 
     # --- sub-graphs: in and out --------------------------------------------------------
     def enter_sub(self, nid):
@@ -731,6 +780,17 @@ class GraphPanel:
             self.app.edit_build()
         return fname
 
+    def import_effect(self):
+        """The graph's effect joins the list - generated first if it has not
+        been - or leaves it."""
+        f = self.effect_file()
+        if not f:
+            return
+        if f not in self.app.project.effect_files() and not self.app.project.is_imported(f):
+            if self.compile(and_build=False) is None:
+                return
+        self.app.toggle_import(f)
+
     def type_names(self):
         cats = {}
         for n, d in self.lib.items():
@@ -755,9 +815,13 @@ def build_panel(app, panel):
                          callback=lambda s, v: panel.set_auto(v))
         dpg.add_button(label="open as code", callback=lambda: app.open_graph_code())
     with dpg.group(horizontal=True):
-        dpg.add_input_text(tag="graph_new_name", hint="new graph name", width=170,
+        dpg.add_input_text(tag="graph_new_name", hint="new / renamed graph name", width=170,
                            on_enter=True, callback=lambda s, v: panel.new(v))
         dpg.add_button(label="new", callback=lambda: panel.new(dpg.get_value("graph_new_name")))
+        dpg.add_button(label="rename", callback=lambda: panel.rename(dpg.get_value("graph_new_name")))
+        dpg.add_button(label="import to list", tag="graph_import",
+                       callback=lambda: panel.import_effect())
+    with dpg.group(horizontal=True):
         dpg.add_combo(panel.type_names(), tag="graph_add_type", width=190, default_value="generate / Noise",
                       callback=lambda s, v: dpg.set_value("graph_status",
                                                           panel.lib.get(v.split(" / ", 1)[1], {}).get("doc", "")))

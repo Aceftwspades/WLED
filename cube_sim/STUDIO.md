@@ -64,6 +64,13 @@ the geometry hands it; the effect code never knows the difference.
    folder's own effect skeleton.
 5. **Project files.** A folder with `geometry.json`, `effects/`, `recipes/`, and
    an `export/` that receives the usermod folder and the ledmap.
+6. **Drafts and the effects list.** A file in `effects/` is a draft: it is
+   built, and shows in the roster, only while it is the one being edited, so
+   trying things does not pile effects into the list. "import to list" (code
+   or graph pane) makes it a project effect — always built, in the roster,
+   exported; the same button removes it again. "rename" gives the current
+   effect (or graph) a new title, file name and identifiers; a renamed
+   sub-graph is rewritten in every graph that uses it.
 
 ### Phase 2 — the node graph (done, first pass)
 

@@ -441,6 +441,48 @@ class App:
         dpg.set_value("edit_status", f"{fname}")
         dpg.configure_item("edit_file", items=self.project.effect_files())
         dpg.set_value("edit_file", fname)
+        self.refresh_import_buttons()
+
+    def refresh_import_buttons(self):
+        """The import buttons say what pressing them does to the current file."""
+        for tag, fname in (("edit_import", self.edit_file), ("graph_import", self.gp.effect_file())):
+            if dpg.does_item_exist(tag):
+                on = bool(fname) and self.project.is_imported(fname)
+                dpg.configure_item(tag, label="remove from list" if on else "import to list",
+                                   enabled=bool(fname))
+
+    def toggle_import(self, fname):
+        """A draft joins the effects list, or leaves it. Either way the engine
+        is rebuilt so the roster shows the list as it now is."""
+        if not fname or fname not in self.project.effect_files():
+            return
+        on = not self.project.is_imported(fname)
+        self.project.set_imported(fname, on)
+        self.refresh_import_buttons()
+        title = self.project.effect_title(fname)
+        msg = f"{title} added to the effects list" if on else f"{title} removed from the effects list"
+        dpg.set_value("edit_status", msg); self.gp.status(msg)
+        self.edit_build()
+
+    def ensure_built(self):
+        """The file just opened for editing is previewed: if the engine does
+        not have it - a draft that was not the last one built - build now."""
+        if self.edit_file and self.project.effect_title(self.edit_file) not in self.eng.names:
+            self.edit_build()
+
+    def edit_rename(self):
+        """The current effect takes the name typed in the new-name box."""
+        title = (dpg.get_value("new_name") or "").strip()
+        if not title or not self.edit_file:
+            dpg.set_value("edit_status", "type the new name in the box first")
+            return
+        if self.edit_dirty:
+            self.edit_save()
+        new = self.project.rename_effect(self.edit_file, title)
+        dpg.set_value("new_name", "")
+        self.edit_open(new)
+        dpg.set_value("edit_status", f"renamed to {title} ({new})")
+        self.edit_build()
 
     def edit_new(self):
         title = (dpg.get_value("new_name") or "").strip() or "New Effect"
@@ -485,7 +527,8 @@ class App:
             buf = _io.StringIO()
             try:
                 with contextlib.redirect_stdout(buf):
-                    srcs = B.engine_sources([self.project.effect_path(f) for f in self.project.effect_files()])
+                    srcs = B.engine_sources([self.project.effect_path(f)
+                                             for f in self.project.build_files(self.edit_file)])
                 inc = [os.path.join(B.HERE, "shim"), os.path.join(B.ROOT, "usermods", "cube_fx"), B.GEN]
                 rep = build_engine(srcs, inc, log=lambda *a: None)
             except Exception as e:
@@ -915,13 +958,16 @@ def build(app):
                 with dpg.group(horizontal=True):
                     dpg.add_combo(app.project.effect_files(), tag="edit_file", width=180,
                                   default_value=app.edit_file or "",
-                                  callback=lambda s, v: app.edit_open(v))
+                                  callback=lambda s, v: (app.edit_open(v), app.ensure_built()))
                     dpg.add_button(label="save", callback=lambda: app.edit_save())
                     dpg.add_button(label="compile + reload", callback=lambda: app.edit_build())
                 with dpg.group(horizontal=True):
-                    dpg.add_input_text(tag="new_name", hint="new effect name", width=180,
+                    dpg.add_input_text(tag="new_name", hint="new / renamed effect name", width=180,
                                        on_enter=True, callback=lambda s, v: app.edit_new())
                     dpg.add_button(label="new", callback=lambda: app.edit_new())
+                    dpg.add_button(label="rename", callback=lambda: app.edit_rename())
+                    dpg.add_button(label="import to list", tag="edit_import",
+                                   callback=lambda: app.toggle_import(app.edit_file))
                     dpg.add_button(label="export", callback=lambda: dpg.set_value(
                         "edit_status", "exported to " + app.project.export()))
                 dpg.add_text("", tag="edit_status", color=(139, 147, 163))
@@ -1137,6 +1183,12 @@ def service_command(app):
                 app.gp.graph.nodes[int(nid)]["params"][name] = val; app.gp.rebuild()
             if c.get("graph_build"):
                 app.gp.compile()
+            if "import" in c:                           # test hook: toggle the current file's import
+                app.toggle_import(c["import"] or app.edit_file)
+            if "rename" in c:
+                dpg.set_value("new_name", c["rename"]); app.edit_rename()
+            if "graph_rename" in c:
+                app.gp.rename(c["graph_rename"])
             if "graph_auto" in c:
                 app.gp.set_auto(c["graph_auto"]); dpg.set_value("graph_auto", bool(c["graph_auto"]))
             if "graph_menu" in c:                       # test hook: the right-click menu at x, y

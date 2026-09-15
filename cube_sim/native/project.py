@@ -99,6 +99,11 @@ class Project:
         self.geometry = Geometry("cube", B=16)
         self.selected = ""              # name of the last-used effect
         self.options = {}
+        # Effect files that are part of the project's effects list. Every
+        # other file in effects/ is a draft: it is built - and appears in the
+        # roster - only while it is the one being edited, and it is not
+        # exported. "import" moves a draft onto the list.
+        self.imported = []
         os.makedirs(os.path.join(self.path, "effects"), exist_ok=True)
         os.makedirs(os.path.join(self.path, "recipes"), exist_ok=True)
         os.makedirs(os.path.join(self.path, "export"), exist_ok=True)
@@ -123,10 +128,12 @@ class Project:
             self.geometry = Geometry("cube", B=16)
         self.selected = d.get("selected", "")
         self.options = d.get("options", {})
+        self.imported = [f for f in d.get("imported", []) if isinstance(f, str)]
 
     def save(self):
         d = {"geometry": self.geometry.to_json(), "selected": self.selected,
-             "options": self.options, "saved": time.strftime("%Y-%m-%d %H:%M:%S")}
+             "options": self.options, "imported": self.imported,
+             "saved": time.strftime("%Y-%m-%d %H:%M:%S")}
         with open(self.file, "w", encoding="utf-8") as f:
             json.dump(d, f, indent=1)
 
@@ -162,6 +169,58 @@ class Project:
         with open(self.effect_path(fname), "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
 
+    # --- the effects list -----------------------------------------------------------
+    def is_imported(self, fname):
+        return fname in self.imported
+
+    def set_imported(self, fname, on):
+        if on and fname not in self.imported:
+            self.imported.append(fname)
+        if not on:
+            self.imported = [f for f in self.imported if f != fname]
+        self.save()
+
+    def build_files(self, current=None):
+        """The effect files a build compiles: the list, plus the one being
+        edited so it can be previewed before it is imported."""
+        have = set(self.effect_files())
+        out = [f for f in self.imported if f in have]
+        if current and current in have and current not in out:
+            out.append(current)
+        return out
+
+    def rename_effect(self, fname, title):
+        """Give an effect a new title and a file name to match. The metadata
+        title is what the roster shows; the identifiers derived from the old
+        file name are renamed too, so two effects never define the same
+        function. Returns the new file name."""
+        title = (title or "").strip()
+        if not title or fname not in self.effect_files():
+            return fname
+        old = _ident(fname[:-4])
+        ident = _ident(title)
+        new = ident + ".cpp"
+        n = 2
+        while new != fname and os.path.exists(self.effect_path(new)):
+            new = f"{ident}_{n}.cpp"; n += 1
+        ident = new[:-4]
+        src = self.read_effect(fname)
+        old_title = self.effect_title(fname)
+        src = re.sub(r'(PROGMEM\s*=\s*")[^@"]*', lambda m: m.group(1) + title.replace('"', "'"), src, count=1)
+        src = src.replace(f"// {old_title}\n", f"// {title}\n", 1)      # the banner
+        if old != ident:
+            # inside identifiers too: mode_<old>, _data_FX_MODE_<OLD>
+            edge = lambda w: r"(?<![A-Za-z0-9])" + re.escape(w) + r"(?![A-Za-z0-9])"
+            src = re.sub(edge(old), ident, src)
+            src = re.sub(edge(old.upper()), ident.upper(), src)
+        if new != fname:
+            os.remove(self.effect_path(fname))
+            if fname in self.imported:
+                self.imported = [new if f == fname else f for f in self.imported]
+                self.save()
+        self.write_effect(new, src)
+        return new
+
     def effect_title(self, fname):
         """The name the effect registers, from its metadata string."""
         try:
@@ -179,7 +238,7 @@ class Project:
             json.dump(self.geometry.ledmap(), f)
         um = os.path.join(out, "usermod_studio")
         os.makedirs(um, exist_ok=True)
-        for fname in self.effect_files():
+        for fname in self.build_files():
             shutil.copyfile(self.effect_path(fname), os.path.join(um, fname))
         # the two headers the effects include, so the folder builds on its own
         for h in ("cube_fx_common.h", "cube_fx_bank.h"):
