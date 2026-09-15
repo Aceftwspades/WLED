@@ -45,7 +45,7 @@ IS_MAC = sys.platform == "darwin"
 # settings-page code that reaches into FX_fcn.cpp.
 COMMON_FLAGS = ["-std=gnu++17", "-O2",
                 "-D_USE_MATH_DEFINES", "-DWLED_PS_DONT_REPLACE_2D_FX",
-                "-DCFX_BANK_MAX_FX=128", "-DCFX_SIM",
+                "-DCFX_BANK_MAX_FX=256", "-DCFX_SIM",
                 "-Wno-vla-cxx-extension", "-Wno-unknown-attributes",
                 "-Wno-deprecated-declarations", "-Wno-unused-value"]
 

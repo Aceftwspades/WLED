@@ -214,6 +214,7 @@ static inline float mapf(float x, float a, float b, float c, float d) {
 }
 static inline uint16_t sqrt32_bw(uint32_t v) { return (uint16_t)sqrtf((float)v); }
 static inline uint8_t  gamma8inv(uint8_t v)  { return v; }   // sim renders linear
+static inline uint8_t  gamma8(uint8_t v)     { return v; }   // likewise: no gamma, no inverse
 static inline uint8_t  inoise8(uint16_t x)                       { return perlin8(x); }
 static inline uint8_t  inoise8(uint16_t x, uint16_t y)           { return perlin8(x, y); }
 static inline uint8_t  inoise8(uint16_t x, uint16_t y, uint16_t z) { return perlin8(x, y, z); }
@@ -334,17 +335,40 @@ int    simPaletteCount();
 class Segment;
 extern Segment *_segPtr;
 
+// How a 1-D effect is laid onto a 2-D segment. FX.h's mapping1D2D_t.
+enum mapping1D2D_t : uint8_t {
+  M12_Pixels = 0, M12_pBar = 1, M12_pArc = 2, M12_pCorner = 3, M12_sPinwheel = 4
+};
+
 class Segment {
  public:
   static int _vw, _vh;
-  static int vWidth()  { return _vw; }
-  static int vLength() { return _vw * _vh; }
-  static int vHeight() { return _vh; }
+  // The segment is 1-D when the host set it up with a height of 1 - the
+  // same test FX.h makes: is2D() is width() > 1 && height() > 1. Everything
+  // that used to assume 2-D now asks.
+  static int  vWidth()  { return _vw; }
+  static int  vHeight() { return _vh; }
+  static bool is2Ds()   { return _vw > 1 && _vh > 1; }
   int virtualWidth()  const { return _vw; }
   int virtualHeight() const { return _vh; }
   int width()  const { return _vw; }          // stock WLED effects use these
   int height() const { return _vh; }
-  bool is2D() const { return true; }
+  bool is2D() const { return is2Ds(); }
+  static uint8_t map1D2D;                     // mapping1D2D_t, host-set
+
+  // Transcribed from Segment::virtualLength(), FX_fcn.cpp: the length a 1-D
+  // effect sees on a 2-D segment depends on how it is being expanded.
+  static int vLength() {
+    if (is2Ds()) {
+      switch (map1D2D) {
+        case M12_pBar:    return _vh;
+        case M12_pCorner: return _vw > _vh ? _vw : _vh;
+        case M12_pArc:    return (int)sqrtf((float)(_vh * _vh + _vw * _vw));
+        default:          return _vw * _vh;
+      }
+    }
+    return _vw * _vh;
+  }
 
   // Built from the same 16-stop tables color_from_palette() uses, so a stock
   // effect and one of ours put side by side are drawing from the same colours.
@@ -391,6 +415,13 @@ class Segment {
   size_t    _dataLen = 0;
   uint32_t  call = 0, step = 0;
   uint16_t  aux0 = 0, aux1 = 0;
+  // Segment options the 1-D effects read. One segment covering everything,
+  // never reversed or mirrored - the front end has no such controls yet.
+  bool     reverse = false, mirror = false, reverse_y = false, mirror_y = false;
+  uint16_t start = 0, stop = 0, offset = 0;
+  // FX.h: number of virtual vertical strips a 1-D effect is expanded onto -
+  // the width in bar mode, one otherwise.
+  unsigned nrOfVStrips() const { return (is2D() && map1D2D == M12_pBar) ? (unsigned)_vw : 1u; }
 
   void markForReset() { call = 0; }
 
@@ -468,24 +499,90 @@ class Segment {
   // they do on the device. What is dropped is the segment machinery around
   // them, which the simulator has never modelled and which none of these
   // effects depend on.
-  int length() const { return _vw * _vh; }
+  int length() const { return vLength(); }
+  int virtualLength() const { return vLength(); }
+  int rawLength() const { return _vw * _vh; }
 
-  // The 1-D accessors, in terms of the 2-D buffer. A handful of the 2-D effects
-  // still reach for them for whole-strip operations.
+  // The 1-D accessors. Transcribed from Segment::setPixelColor(int) and
+  // getPixelColor(int) in FX_fcn.cpp: on a 1-D segment they are the raw
+  // buffer; on a 2-D one they EXPAND the 1-D effect according to map1D2D,
+  // which is what lets every stock 1-D effect run on a matrix or a cube the
+  // way it does on the device. Virtual strips (index >> 16) are honoured for
+  // the bar mode, as on the device. Pinwheel falls back to Pixels.
   void setPixelColor(int i, uint32_t c) {
-    if (i >= 0 && i < _vw * _vh) pixels[i] = c;
+    if (i < 0) return;
+    int vStrip = 0;
+    const int vL = vLength();
+    if (i >= vL) { vStrip = i >> 16; i &= 0xFFFF; if (i >= vL) return; }
+    if (is2Ds()) {
+      const int vW = _vw, vH = _vh;
+      switch (map1D2D) {
+        case M12_pBar:
+          if (vStrip > 0) setPixelColorXY(vStrip - 1, vH - i - 1, c);
+          else for (int x = 0; x < vW; x++) setPixelColorXY(x, vH - i - 1, c);
+          break;
+        case M12_pArc:
+          if (i == 0) setPixelColorXY(0, 0, c);
+          else {
+            const float r = (float)i;
+            const float step = 1.57079637f / (2.8284f * r + 4.0f);
+            for (float rad = 0.0f; rad <= 0.78539819f + step * 0.5f; rad += step) {
+              const int x = (int)roundf(sinf(rad) * r), y = (int)roundf(cosf(rad) * r);
+              setPixelColorXY(x, y, c); setPixelColorXY(y, x, c);
+            }
+          }
+          break;
+        case M12_pCorner:
+          for (int x = 0; x <= i; x++) setPixelColorXY(x, i, c);
+          for (int y = 0; y <  i; y++) setPixelColorXY(i, y, c);
+          break;
+        default:
+          setPixelColorXY(i % vW, i / vW, c);
+          break;
+      }
+      return;
+    }
+    pixels[i] = c;
   }
   uint32_t getPixelColor(int i) const {
-    return (i >= 0 && i < _vw * _vh) ? pixels[i] : 0u;
+    if (i < 0) return 0;
+    const int vStrip = i >> 16;
+    i &= 0xFFFF;
+    if (i >= vLength()) return 0;
+    if (is2Ds()) {
+      const int vW = _vw, vH = _vh;
+      int x = 0, y = 0;
+      switch (map1D2D) {
+        case M12_pBar:
+          if (vStrip > 0) { x = vStrip - 1; y = vH - i - 1; } else y = vH - i - 1;
+          break;
+        case M12_pArc:
+          if (i > vW && i > vH) { x = y = (int)sqrtf((float)(i * i / 2)); break; }
+          /* fall through */
+        case M12_pCorner:
+          if (vW > vH) x = i; else y = i;
+          break;
+        default:
+          x = i % vW; y = i / vW;
+          break;
+      }
+      return getPixelColorXY(x, y);
+    }
+    return pixels[i];
   }
   // CRGB's operator uint32_t is EXPLICIT, so passing one where a colour is
   // wanted needs a real overload rather than a conversion.
   void setPixelColor(int i, const CRGB &c) {
     setPixelColor(i, RGBW32(c.r, c.g, c.b, 0));
   }
-  void addPixelColor(int i, uint32_t c, bool = true) {
-    if (i < 0 || i >= _vw * _vh) return;
-    pixels[i] = color_add(pixels[i], c);
+  void addPixelColor(int i, uint32_t c, bool pc = true) {
+    setPixelColor(i, color_add(getPixelColor(i), c, pc));
+  }
+  void fadePixelColor(int i, uint8_t fade) {
+    setPixelColor(i, color_fade(getPixelColor(i), 255 - fade));
+  }
+  void blendPixelColor(int i, uint32_t c, uint8_t blend) {
+    setPixelColor(i, color_blend(getPixelColor(i), c, blend));
   }
 
   // Shift the whole field one step. dir is 0..7 clockwise from up.
@@ -588,6 +685,8 @@ class WS2812FX {
   Segment &getSegment(int)        { return *_currentSegment; }
   unsigned getSegmentsNum() const { return 1; }
   unsigned getMainSegmentId() const { return 0; }
+  unsigned getCurrSegmentId() const { return 0; }
+  unsigned getActiveSegmentsNum() const { return 1; }
   uint8_t  getModeCount() const   { return 1; }
   const char *getModeData(unsigned = 0) const { return ""; }
   uint8_t  addEffect(uint8_t, void (*)(), const char *) { return 0; }
@@ -626,6 +725,12 @@ static inline uint8_t beatsin8_t(uint16_t bpm, uint8_t lo = 0, uint8_t hi = 255,
 static inline uint32_t millis() { return strip.now; }
 static inline uint32_t micros() { return strip.now * 1000u; }
 
+// The FX_MODE_* ids, lifted from FX.h by build.py so an effect that compares
+// SEGMENT.mode against one - mode_android does - sees the device's numbers.
+#if __has_include("../gen/fx_modes.h")
+  #include "../gen/fx_modes.h"
+#endif
+
 #define SEGMENT      (*strip._currentSegment)
 #define SEGENV       (*strip._currentSegment)
 #define SEG_W        Segment::vWidth()
@@ -633,8 +738,43 @@ static inline uint32_t micros() { return strip.now * 1000u; }
 #define SEGCOLOR(x)  (SEGMENT.colors[x])
 #define SEGPALETTE   (SEGMENT.currentPalette())
 #define FRAMETIME    23
+#define WLED_FPS     42
+#define FRAMETIME_FIXED (1000/WLED_FPS)
 #define MIN(a,b)     ((a)<(b)?(a):(b))
 #define MAX(a,b)     ((a)>(b)?(a):(b))
+#ifndef M_TWOPI
+  #define M_TWOPI 6.283185307179586
+#endif
+
+// --- what the stock 1-D effects reach for --------------------------------------
+// paletteBlend is the global palette-blend setting (0 wrap when moving, 1 wrap,
+// 2 never, 3 always). WLED's default is 0.
+static uint8_t paletteBlend = 0;
+
+// beatsin88_t, wled_math.cpp: bpm in 8.8 fixed point.
+static inline uint16_t beatsin88_t(uint16_t bpm88, uint16_t lo = 0, uint16_t hi = 65535,
+                                   uint32_t tb = 0, uint16_t phase = 0) {
+  const uint16_t b = (uint16_t)(sin16_t((uint16_t)(beat88(bpm88, tb) + phase)) + 32768);
+  return (uint16_t)(lo + scale16(b, (uint16_t)(hi - lo)));
+}
+
+// util.cpp, verbatim: a colour-wheel index at least 42 away from the last.
+static inline uint8_t get_random_wheel_index(uint8_t pos) {
+  uint8_t r = 0, x = 0, y = 0, d = 0;
+  while (d < 42) {
+    r = hw_random8();
+    x = (uint8_t)abs((int)pos - (int)r);
+    y = (uint8_t)(255 - x);
+    d = MIN(x, y);
+  }
+  return r;
+}
+
+// The traffic light asks for its pre-16.0 colours through the inverse gamma.
+// The simulator applies no gamma at all, so the inverse is the identity here -
+// which is the honest reading: with no gamma applied, nothing is there to
+// invert.
+static inline uint32_t gamma32inv(uint32_t c) { return c; }
 
 // Usermod base + registration, stubbed: the effect files each declare a
 // CfxBankReg, and that static registration is exactly the effect list the

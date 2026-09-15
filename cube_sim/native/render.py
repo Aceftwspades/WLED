@@ -149,3 +149,44 @@ def render(net_rgb, B, size, yaw, pitch, dist, fov=38.0, bg=(0, 0, 0)):
                         fc["bx"] * B:(fc["bx"] + 1) * B]
         out[y0:y1, x0:x1][inside] = block[vi, ui]
     return out
+
+
+def render_points(pos, rgb, size, yaw, pitch, dist, fov=38.0, bg=(0, 0, 0), led=0.42):
+    """Draw any geometry as a cloud of LEDs.
+
+    pos : (n, 3) float, Z up, in the units Geometry uses (a cube of B pixels a
+          face spans +/- B/2); NaN rows are skipped
+    rgb : (n, 3) uint8
+    Each LED is a square whose screen size follows its depth, painted far to
+    near so nearer ones cover. No lighting, no smoothing: the point of the view
+    is to see the LEDs, and an LED is a hard-edged square of one colour.
+    """
+    out = np.zeros((size, size, 3), np.uint8)
+    out[:] = bg
+    n = len(pos)
+    if n == 0:
+        return out
+    # scale so a shape of any pixel count fills the same frame as the cube
+    ext = float(np.nanmax(np.abs(pos))) or 1.0
+    P = pos * (1.0 / ext)                       # -1..1
+    eye, R = _camera(yaw, pitch, dist)
+    cam = (P - eye) @ R.T
+    depth = -cam[:, 2]
+    ok = np.isfinite(depth) & (depth > 0.05)
+    f = (size * 0.5) / np.tan(np.radians(fov) * 0.5)
+    sx = size * 0.5 + f * cam[:, 0] / np.where(ok, depth, 1.0)
+    sy = size * 0.5 - f * cam[:, 1] / np.where(ok, depth, 1.0)
+    # LED half-size on screen: the LED pitch in world units (1/ext per pixel),
+    # times led (fraction of the pitch the emitter covers), projected
+    half = (f * (led / ext)) / np.where(ok, depth, 1.0)
+    order = np.argsort(-depth)                  # far first
+    for i in order:
+        if not ok[i]:
+            continue
+        h = max(1, int(round(half[i])))
+        x0 = int(sx[i]) - h; x1 = int(sx[i]) + h
+        y0 = int(sy[i]) - h; y1 = int(sy[i]) + h
+        if x1 <= 0 or y1 <= 0 or x0 >= size or y0 >= size:
+            continue
+        out[max(0, y0):min(size, y1), max(0, x0):min(size, x1)] = rgb[i]
+    return out

@@ -71,6 +71,8 @@ class Engine:
         self.fx = {}
         self.sim_ms = 0
         self.B = 16
+        self.geom = None
+        self.map1d2d = 0
         self.lib = None
         self.library = None
         self._colors = (0xFFA000, 0, 0)
@@ -101,12 +103,18 @@ class Engine:
         L.simPalColor.restype   = C.c_uint32; L.simPalColor.argtypes = [C.c_int, C.c_int]
         L.simSetPalSource.argtypes = [C.c_int]
         L.simGetPalSource.restype  = C.c_int
+        L.simSetMap1D2D.argtypes = [C.c_int]
+        L.simWidth.restype = C.c_int
+        L.simHeight.restype = C.c_int
 
         self.count = L.simEffectCount()
         self.meta = [parse_meta(L.simEffectMeta(i).decode("utf-8", "replace"))
                      for i in range(self.count)]
         self.names = [m["name"] for m in self.meta]
-        self.resize(self.B)
+        if self.geom is not None:
+            self.set_geometry(self.geom)
+        else:
+            self.resize(self.B)
 
     def reload(self, dll=None):
         """Swap to a newer build, keeping the selected effect (by NAME, since
@@ -126,13 +134,32 @@ class Engine:
 
     # --- geometry ------------------------------------------------------------
     def resize(self, B):
-        self.B = B
-        self.cols = self.rows = 3 * B
+        """The cube net at B pixels a face - the shape this started with."""
+        from native.geometry import Geometry
+        self.set_geometry(Geometry("cube", B=B))
+
+    def set_geometry(self, geom):
+        """Any Geometry: the engine hears only its logical (w, h); positions
+        stay on the Python side for the renderer and the ledmap."""
+        self.geom = geom
+        self.cols, self.rows = geom.w, geom.h
+        self.B = geom.params.get("B", self.B) if geom.kind == "cube" else self.B
         self.lib.simInit(self.cols, self.rows)
+        self.lib.simSetMap1D2D(self.map1d2d)
         self._px = self.lib.simPixels()
         self._fft = self.lib.simFftPtr()
         self.sim_ms = 0
         self.select(self.idx)
+
+    def set_map1d2d(self, mode):
+        """How a 1-D effect is expanded on a 2-D geometry: 0 strip, 1 bars,
+        2 arcs, 3 corner - WLED's own segment setting."""
+        self.map1d2d = int(mode)
+        self.lib.simSetMap1D2D(self.map1d2d)
+
+    @property
+    def is_cube(self):
+        return self.geom is not None and self.geom.kind == "cube"
 
     def find(self, needle):
         n = needle.lower()

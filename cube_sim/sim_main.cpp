@@ -32,6 +32,7 @@ WS2812FX strip;
 Segment *_segPtr = nullptr;
 int Segment::_vw = 48;
 int Segment::_vh = 48;
+uint8_t Segment::map1D2D = 0;
 
 static Segment  gSeg;
 static uint32_t gPixels[192 * 192];
@@ -160,12 +161,14 @@ static void simUsermodFrame() {
 // the extraction so the two cannot fall out of step, and so nothing has to be
 // maintained here when WLED gains or loses an effect.
 void simRegisterStock();
+void simRegisterStock1D();     // gen/wled_fx1d.cpp, written by native/stock1d.py
 
 static void registerStock() {
   static bool done = false;
   if (done) return;
   done = true;
   simRegisterStock();
+  simRegisterStock1D();
 }
 
 // --- the C surface the page calls -------------------------------------------
@@ -194,17 +197,33 @@ SIM_API const char *simEffectMeta(int i) {
   return cfxBankRoster()[i].data;
 }
 
+// A segment of w x h logical pixels. h == 1 is a 1-D strip: is2D() says no,
+// SEGLEN is w, and effects that need a matrix fall back exactly as they do on
+// a device with no 2-D configured. The buffer is bounded by the static
+// gPixels; a request past it is clamped rather than overrun.
 SIM_API void simInit(int w, int h) {
+  if (w < 1) w = 1;
+  if (h < 1) h = 1;
+  if ((size_t)w * h > sizeof(gPixels) / sizeof(gPixels[0])) { w = 192; h = 192; }
   Segment::_vw = w; Segment::_vh = h;
   gSeg.pixels = gPixels;
   gSeg.data = nullptr; gSeg._dataLen = 0;
   gSeg.call = 0; gSeg.step = 0; gSeg.aux0 = 0; gSeg.aux1 = 0;
   _segPtr = &gSeg;
   strip._currentSegment = &gSeg;
-  strip.isMatrix = true;
+  strip.isMatrix = (h > 1);
   strip.now = 0;
   memset(gPixels, 0, sizeof(uint32_t) * (size_t)w * h);
 }
+
+// How a 1-D effect is expanded onto a 2-D segment: 0 strip, 1 bars, 2 arcs,
+// 3 corner - WLED's map1D2D, set per segment in its UI.
+SIM_API void simSetMap1D2D(int m) {
+  Segment::map1D2D = (uint8_t)(m < 0 ? 0 : (m > 4 ? 4 : m));
+}
+
+SIM_API int simWidth()  { return Segment::_vw; }
+SIM_API int simHeight() { return Segment::_vh; }
 
 // Selecting an effect must look like WLED selecting one: the scratch buffer is
 // released, so the incoming effect initialises from nothing rather than reading
