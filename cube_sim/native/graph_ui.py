@@ -17,6 +17,15 @@ from native.nodedefs import library
 DIM = (139, 147, 163)
 PIN_COL = {"float": (110, 190, 250), "color": (250, 170, 90), "bool": (170, 230, 120)}
 GREY = (70, 74, 84)
+NODE_W = 150            # inner width every node is laid out to
+CHAR_W = 7.2            # the default font at 13 px, near enough to right-align by
+
+
+def _right(text):
+    """Indent that puts `text` against the node's right edge, so an output's
+    name sits beside its pin on the right the way an input's sits beside its
+    pin on the left. Inputs left, outputs right, on every node."""
+    return max(0, int(NODE_W - len(text) * CHAR_W))
 
 
 def compatible(a, b):
@@ -148,6 +157,8 @@ class GraphPanel:
         n.setdefault("inputs", {})
         with dpg.node(label=n["type"], parent="node_editor", pos=n.get("pos", [0, 0]), tag=f"gnode_{nid}",
                       user_data=nid):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                dpg.add_spacer(width=NODE_W, height=1)
             for i in d["inputs"]:
                 tag = f"gin_{nid}_{i['name']}"
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input, tag=tag,
@@ -168,7 +179,7 @@ class GraphPanel:
                 tag = f"gout_{nid}_{o['name']}"
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output, tag=tag,
                                         user_data=(nid, o["name"]), shape=dpg.mvNode_PinShape_CircleFilled):
-                    dpg.add_text(o["name"])
+                    dpg.add_text(o["name"], indent=_right(o["name"]))
                 dpg.bind_item_theme(tag, th.pin[o["type"]])
                 self._pins[(nid, "out", o["name"])] = tag
                 self._ptype[tag] = o["type"]
@@ -178,7 +189,7 @@ class GraphPanel:
         v = n["inputs"].get(i["name"], i.get("default", 0))
         ud = (nid, i["name"])
         if i["type"] == "float":
-            dpg.add_input_float(label=i["name"], tag=tag, width=72, default_value=float(v), step=0,
+            dpg.add_input_float(label=i["name"], tag=tag, width=78, default_value=float(v), step=0,
                                 format="%.3g", user_data=ud, callback=self._on_input, show=show)
         elif i["type"] == "bool":
             dpg.add_checkbox(label=i["name"], tag=tag, default_value=bool(v), user_data=ud,
@@ -205,22 +216,22 @@ class GraphPanel:
         ud = (nid, p["name"])
         cb = self._on_param
         if p["type"] == "float":
-            dpg.add_input_float(label=p["name"], width=90, default_value=float(v), step=0,
+            dpg.add_input_float(label=p["name"], width=78, default_value=float(v), step=0,
                                 format="%.3f", user_data=ud, callback=cb)
         elif p["type"] == "int":
-            dpg.add_input_int(label=p["name"], width=90, default_value=int(v), step=0,
+            dpg.add_input_int(label=p["name"], width=78, default_value=int(v), step=0,
                               min_value=int(p.get("min", -1 << 30)), max_value=int(p.get("max", 1 << 30)),
                               min_clamped="min" in p, max_clamped="max" in p, user_data=ud, callback=cb)
         elif p["type"] == "bool":
             dpg.add_checkbox(label=p["name"], default_value=bool(v), user_data=ud, callback=cb)
         elif p["type"] == "choice":
-            dpg.add_combo(p["choices"], label=p["name"], width=100, default_value=str(v), user_data=ud, callback=cb)
+            dpg.add_combo(p["choices"], label=p["name"], width=90, default_value=str(v), user_data=ud, callback=cb)
         elif p["type"] == "color":
             rgb = list(v)[:3] if isinstance(v, (list, tuple)) else [255, 255, 255]
             dpg.add_color_edit([int(c) for c in rgb] + [255], label=p["name"], width=110, no_alpha=True,
                                user_data=ud, callback=cb)
         elif p["type"] == "text":
-            dpg.add_input_text(label=p["name"], width=110, default_value=str(v), user_data=ud, callback=cb)
+            dpg.add_input_text(label=p["name"], width=100, default_value=str(v), user_data=ud, callback=cb)
 
     def _on_param(self, sender, val):
         nid, name = dpg.get_item_user_data(sender)
