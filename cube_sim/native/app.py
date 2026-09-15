@@ -853,6 +853,23 @@ class App:
         # this, typing into a box would also be driving the layout.
         if any(dpg.does_item_exist(t) and dpg.is_item_active(t) for t in self._inputs):
             return
+        if self.layout == "graph" and self.gp.typing():
+            return
+        ctrl = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
+        if ctrl and self.layout == "graph":
+            if app_data == dpg.mvKey_Z:
+                self.gp.undo()
+            elif app_data == dpg.mvKey_Y:
+                self.gp.redo()
+            elif app_data == dpg.mvKey_C:
+                self.gp.copy()
+            elif app_data == dpg.mvKey_X:
+                self.gp.cut()
+            elif app_data == dpg.mvKey_V:
+                self.gp.paste()
+            return
+        if ctrl:
+            return
         if app_data == dpg.mvKey_F11:
             dpg.toggle_viewport_fullscreen()
         elif app_data == dpg.mvKey_Spacebar:
@@ -1177,10 +1194,10 @@ def service_command(app):
                 app.gp.add_node(c["graph_add"])
             if "graph_link" in c:
                 a, out, b, inp = c["graph_link"]
-                app.gp.graph.link(a, out, b, inp); app.gp.rebuild()
+                app.gp.snapshot(); app.gp.graph.link(a, out, b, inp); app.gp.rebuild()
             if "graph_param" in c:
                 nid, name, val = c["graph_param"]
-                app.gp.graph.nodes[int(nid)]["params"][name] = val; app.gp.rebuild()
+                app.gp.snapshot(); app.gp.graph.nodes[int(nid)]["params"][name] = val; app.gp.rebuild()
             if c.get("graph_build"):
                 app.gp.compile()
             if "import" in c:                           # test hook: toggle the current file's import
@@ -1189,6 +1206,21 @@ def service_command(app):
                 dpg.set_value("new_name", c["rename"]); app.edit_rename()
             if "graph_rename" in c:
                 app.gp.rename(c["graph_rename"])
+            if "graph_undo" in c:
+                app.gp.undo()
+            if "graph_redo" in c:
+                app.gp.redo()
+            if "graph_copy" in c:
+                sel = [int(x) for x in c["graph_copy"]]
+                import dearpygui.dearpygui as _d
+                _orig = _d.get_selected_nodes
+                _d.get_selected_nodes = lambda ed: [f"gnode_{i}" for i in sel if _d.does_item_exist(f"gnode_{i}")]
+                try:
+                    app.gp.copy()
+                finally:
+                    _d.get_selected_nodes = _orig
+            if "graph_paste" in c:
+                app.gp.paste()
             if "graph_auto" in c:
                 app.gp.set_auto(c["graph_auto"]); dpg.set_value("graph_auto", bool(c["graph_auto"]))
             if "graph_menu" in c:                       # test hook: the right-click menu at x, y

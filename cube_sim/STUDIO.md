@@ -123,6 +123,59 @@ A small interpreter usermod so an effect built in the editor can be sent to a
 device over the network and run without a firmware build. Designed after the
 composer exists, because the composer's recipe is the natural thing to ship.
 
+## Features remaining
+
+Measured against ComfyUI and Blender's node editor, and an ordinary code
+editor. Ticked when done; the order within a group is the order to do them.
+
+### Node editor
+
+- [x] **Undo / redo.** Every mutation pushes a JSON snapshot; Ctrl+Z /
+      Ctrl+Y, also in the right-click menu. Drags of one slider or keystrokes
+      in one box within a second share a step. History is per open graph.
+- [x] **Copy / cut / paste** (Ctrl+C/X/V; "paste here" in the right-click
+      menu, copy/cut in a node's). The clipboard is graph JSON held on the
+      app, so it works across graphs and into sub-graphs.
+- [ ] **Search in the add menu** — a typed filter at the top of the
+      right-click menu; the library is past fifty types plus sub-graphs.
+- [ ] **Drop a wire on empty space → add a node** wired to it.
+- [ ] **Insert on wire**: drop a node onto a wire and it splices in.
+- [ ] **Reroute knots** for long wires.
+- [ ] **Frames** (titled, coloured group boxes) and **comment notes**.
+- [ ] **Collapse a node** to its title bar; **node colour**.
+- [ ] **On-node / pin preview**: "preview this output" builds the graph with
+      the pin routed to Output — one click, not continuous.
+- [ ] **Validation on the node**: unconnected required inputs, cycles and a
+      missing Output highlighted in red, not only in the status line.
+- [ ] **Keyboard**: arrow-nudge, Ctrl+A, Home to centre.
+- [ ] **Zoom / fit-to-view.** DearPyGui's node editor cannot zoom. The fix is
+      a custom-drawn canvas, which would also allow wire styling and
+      thumbnails. A structural decision: not now, but before the node UI
+      accumulates much more that would have to be rewritten.
+
+### Code editor
+
+- [ ] **Open in external editor** with reload on file change — the cheap
+      route to highlighting, line numbers and bracket matching.
+- [ ] **Click an error to jump to its line.**
+- [ ] **Find / replace.**
+- [ ] **API side panel**: `SEGMENT.*` / `cfx_*` helpers, insert on click.
+- [ ] A real editor widget in-app (drawlist-based) — a project in itself;
+      only if the external hand-off proves insufficient.
+
+### Project and workflow
+
+- [ ] **Multiple projects**: new / open / recent, not just `projects/default`.
+- [ ] **Palette source node**, and palette-index nodes for the audio-reactive
+      palettes.
+- [ ] **Effect metadata in the UI**: default slider values, default palette,
+      the flags string — hand-edited in the generated file today.
+- [ ] **Graph import / export** as one JSON carrying the sub-graphs it uses,
+      so graphs can be traded.
+- [ ] **Export as a deliverable**: zip of the usermod folder, ledmap and a
+      README of build flags; **send ledmap to device** over the JSON API.
+- [ ] **Record GIF / MP4** from the graph pane; screenshot to the project.
+
 ### Alongside
 
 - Cross-platform audio (done): WASAPI loopback on Windows, and any input
@@ -144,7 +197,8 @@ python -m native.app
 ```
 
 Keys: **G** node graph, **C** code pane, **Q** logical view, **E** 3-D, **W** both,
-**H** hide the controls, **space** pause, **Delete** removes selected nodes. Projects live in `cube_sim/projects/<name>/`;
+**H** hide the controls, **space** pause. In the graph: **Delete** removes selected nodes,
+**Ctrl+Z / Ctrl+Y** undo / redo, **Ctrl+C / X / V** copy, cut, paste. Projects live in `cube_sim/projects/<name>/`;
 the default one is created on first run.
 
 ## Compatibility rules for this branch

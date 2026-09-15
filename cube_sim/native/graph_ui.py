@@ -7,6 +7,7 @@ tags. The Graph object is the truth; the widgets are a view of it, rebuilt
 whole on open and edited in place otherwise. Positions are read back from the
 editor on save.
 """
+import json
 import os
 import time
 
@@ -82,6 +83,10 @@ class GraphPanel:
         self._themes = None      # PinThemes, built lazily (needs a context)
         self._wire_themes = {}   # (r,g,b) -> a link theme in that colour
         self._ctx = None         # what the context menu is about: ("in"|"out"|"node", ...)
+        self._undo = []          # JSON snapshots of the graph before each edit
+        self._redo = []
+        self._last_snap = None   # (key, time) of the last snapshot, to coalesce slider drags
+        self._widgets = set()    # every value widget on a node, so keys know when one is typed in
         self.auto = False        # live preview: rebuild after every edit
         self._dirty = 0.0        # time of the last edit not yet built, 0 when clean
         self._queued = False     # an edit landed while a build was running
@@ -165,6 +170,7 @@ class GraphPanel:
         self.graph = G.load(os.path.join(d, fname), lib=self.lib, resolver=self.resolve_sub)
         self.file = fname
         self.cur_dir = d
+        self._undo.clear(); self._redo.clear(); self._last_snap = None
         self.rebuild()
         dpg.configure_item("graph_file", items=self.files())
         dpg.set_value("graph_file", fname if not sub else "")
@@ -262,6 +268,7 @@ class GraphPanel:
         if not sel:
             self.status("select the nodes to fold first")
             return
+        self.snapshot()
         self.save()                                   # positions
         g = self.graph
         S = set(sel)
@@ -338,6 +345,126 @@ class GraphPanel:
             self._themes = PinThemes()
         return self._themes
 
+    # --- undo / redo -----------------------------------------------------------------
+    # Every edit first pushes the graph as JSON. Cheap - a graph is a few KB -
+    # and it makes every mutation, however it was reached, undoable with one
+    # line at the top of it. A slider or text param being dragged or typed
+    # would push a snapshot per tick; edits to the same key within a second
+    # share one, so undo steps back over the drag, not each pixel of it.
+    UNDO_MAX = 200
+
+    def _sync_pos(self):
+        if not self.graph:
+            return
+        for nid, n in self.graph.nodes.items():
+            tag = f"gnode_{nid}"
+            if dpg.does_item_exist(tag):
+                n["pos"] = list(dpg.get_item_pos(tag))
+
+    def snapshot(self, key=None):
+        """Call before changing the graph. `key` names a continuous edit."""
+        if not self.graph:
+            return
+        now = time.time()
+        if key is not None and self._last_snap and self._last_snap[0] == key and now - self._last_snap[1] < 1.0:
+            self._last_snap = (key, now)
+            return
+        self._last_snap = (key, now)
+        self._sync_pos()
+        self._undo.append(json.dumps(self.graph.to_json()))
+        del self._undo[:-self.UNDO_MAX]
+        self._redo.clear()
+
+    def _restore(self, snap):
+        self.graph = G.Graph(json.loads(snap), lib=self.lib, resolver=self.resolve_sub)
+        self._last_snap = None
+        self.rebuild()
+
+    def undo(self):
+        if not self._undo:
+            self.status("nothing to undo"); return
+        self._sync_pos()
+        self._redo.append(json.dumps(self.graph.to_json()))
+        self._restore(self._undo.pop())
+        self.status(f"undo ({len(self._undo)} more)")
+
+    def redo(self):
+        if not self._redo:
+            self.status("nothing to redo"); return
+        self._sync_pos()
+        self._undo.append(json.dumps(self.graph.to_json()))
+        self._restore(self._redo.pop())
+        self.status("redo")
+
+    def typing(self):
+        """True while a value box on a node has the keyboard."""
+        return any(dpg.does_item_exist(w) and dpg.is_item_active(w) for w in self._widgets)
+
+    # --- copy / cut / paste ----------------------------------------------------------
+    # The clipboard is the selected nodes and the wires between them, as
+    # graph JSON, held on the app so it survives switching graphs and going
+    # into a sub-graph. Pasting gives fresh ids and nudges the copies so they
+    # do not land exactly on the originals.
+    def _selected(self):
+        if not self.graph:
+            return []
+        out = []
+        for tag in dpg.get_selected_nodes("node_editor"):
+            nid = dpg.get_item_user_data(tag)
+            if nid in self.graph.nodes:
+                out.append(nid)
+        return out
+
+    def copy(self):
+        sel = self._selected()
+        if not sel:
+            self.status("select nodes to copy"); return
+        self._sync_pos()
+        S = set(sel)
+        nodes = [json.loads(json.dumps(self.graph.nodes[n])) for n in sel]
+        links = [list(l) for l in self.graph.links if l[0] in S and l[2] in S]
+        meta = {f"{b}:{i}": m for (b, i), m in self.graph.link_meta.items() if b in S}
+        self.app.clipboard = {"nodes": nodes, "links": links, "meta": meta}
+        self.status(f"copied {len(nodes)} node(s)")
+
+    def cut(self):
+        sel = self._selected()
+        if not sel:
+            return
+        self.copy()
+        self.snapshot()
+        for nid in sel:
+            self.graph.remove(nid)
+        self.rebuild()
+        self.status(f"cut {len(sel)} node(s)")
+
+    def paste(self, at=None):
+        clip = getattr(self.app, "clipboard", None)
+        if not clip or not self.graph:
+            self.status("nothing to paste"); return
+        self.snapshot()
+        ids = {}
+        xs = [n["pos"][0] for n in clip["nodes"]]; ys = [n["pos"][1] for n in clip["nodes"]]
+        if at is not None:
+            dx, dy = at[0] - min(xs), at[1] - min(ys)
+        else:
+            dx = dy = 40
+        for n in clip["nodes"]:
+            t = n["type"]
+            if t not in self.lib and not t.startswith(G.SUB):
+                continue
+            new = self.graph.add(t, (n["pos"][0] + dx, n["pos"][1] + dy), dict(n.get("params", {})))
+            self.graph.nodes[new]["inputs"] = dict(n.get("inputs", {}))
+            ids[n["id"]] = new
+        for a, o, b, i in clip["links"]:
+            if a in ids and b in ids:
+                self.graph.link(ids[a], o, ids[b], i)
+                m = clip["meta"].get(f"{b}:{i}")
+                if m:
+                    self.graph.link_meta[(ids[b], i)] = dict(m)
+        self.rebuild()
+        self.status(f"pasted {len(ids)} node(s)")
+
     # --- live preview ------------------------------------------------------------------
     # Every edit marks the graph dirty; poll() - called each frame from the
     # main loop - waits until the edits pause for a moment, then compiles and
@@ -367,6 +494,7 @@ class GraphPanel:
 
     def rebuild(self):
         self.touch()
+        self._widgets.clear()
         dpg.delete_item("node_editor", children_only=True)
         self.links.clear(); self._pins.clear(); self._ptype.clear()
         if not self.graph:
@@ -428,19 +556,21 @@ class GraphPanel:
         v = n["inputs"].get(i["name"], i.get("default", 0))
         ud = (nid, i["name"])
         if i["type"] == "float":
-            dpg.add_input_float(label=i["name"], tag=tag, width=78, default_value=float(v), step=0,
+            w = dpg.add_input_float(label=i["name"], tag=tag, width=78, default_value=float(v), step=0,
                                 format="%.3g", user_data=ud, callback=self._on_input, show=show)
         elif i["type"] == "bool":
-            dpg.add_checkbox(label=i["name"], tag=tag, default_value=bool(v), user_data=ud,
+            w = dpg.add_checkbox(label=i["name"], tag=tag, default_value=bool(v), user_data=ud,
                              callback=self._on_input, show=show)
         else:
             rgb = list(v)[:3] if isinstance(v, (list, tuple)) else [0, 0, 0]
-            dpg.add_color_edit([int(c) for c in rgb] + [255], label=i["name"], tag=tag, width=90,
+            w = dpg.add_color_edit([int(c) for c in rgb] + [255], label=i["name"], tag=tag, width=90,
                                no_alpha=True, no_inputs=True, user_data=ud, callback=self._on_input, show=show)
+        self._widgets.add(w)
 
     def _on_input(self, sender, val):
         self.touch()
         nid, name = dpg.get_item_user_data(sender)
+        self.snapshot(("in", nid, name))
         if isinstance(val, (list, tuple)) and len(val) >= 3 and all(isinstance(x, float) for x in val):
             val = [int(round(x * 255)) if x <= 1.0 else int(x) for x in val[:3]]
         self.graph.nodes[nid].setdefault("inputs", {})[name] = val
@@ -456,26 +586,30 @@ class GraphPanel:
         ud = (nid, p["name"])
         cb = self._on_param
         if p["type"] == "float":
-            dpg.add_input_float(label=p["name"], width=78, default_value=float(v), step=0,
+            w = dpg.add_input_float(label=p["name"], width=78, default_value=float(v), step=0,
                                 format="%.3f", user_data=ud, callback=cb)
         elif p["type"] == "int":
-            dpg.add_input_int(label=p["name"], width=78, default_value=int(v), step=0,
+            w = dpg.add_input_int(label=p["name"], width=78, default_value=int(v), step=0,
                               min_value=int(p.get("min", -1 << 30)), max_value=int(p.get("max", 1 << 30)),
                               min_clamped="min" in p, max_clamped="max" in p, user_data=ud, callback=cb)
         elif p["type"] == "bool":
-            dpg.add_checkbox(label=p["name"], default_value=bool(v), user_data=ud, callback=cb)
+            w = dpg.add_checkbox(label=p["name"], default_value=bool(v), user_data=ud, callback=cb)
         elif p["type"] == "choice":
-            dpg.add_combo(p["choices"], label=p["name"], width=90, default_value=str(v), user_data=ud, callback=cb)
+            w = dpg.add_combo(p["choices"], label=p["name"], width=90, default_value=str(v), user_data=ud, callback=cb)
         elif p["type"] == "color":
             rgb = list(v)[:3] if isinstance(v, (list, tuple)) else [255, 255, 255]
-            dpg.add_color_edit([int(c) for c in rgb] + [255], label=p["name"], width=110, no_alpha=True,
+            w = dpg.add_color_edit([int(c) for c in rgb] + [255], label=p["name"], width=110, no_alpha=True,
                                user_data=ud, callback=cb)
         elif p["type"] == "text":
-            dpg.add_input_text(label=p["name"], width=100, default_value=str(v), user_data=ud, callback=cb)
+            w = dpg.add_input_text(label=p["name"], width=100, default_value=str(v), user_data=ud, callback=cb)
+        else:
+            return
+        self._widgets.add(w)
 
     def _on_param(self, sender, val):
         self.touch()
         nid, name = dpg.get_item_user_data(sender)
+        self.snapshot(("param", nid, name))
         if isinstance(val, (list, tuple)) and len(val) >= 3 and all(isinstance(x, float) for x in val):
             val = [int(round(x * 255)) if x <= 1.0 else int(x) for x in val[:3]]
         self.graph.nodes[nid]["params"][name] = val
@@ -517,6 +651,7 @@ class GraphPanel:
         if ta and tb and not compatible(ta, tb):
             self.status(f"cannot connect {ta} to {tb}")
             return
+        self.snapshot()
         # replace whatever fed this input
         for lid, (bb, ii) in list(self.links.items()):
             if bb == b and ii == inp:
@@ -526,6 +661,7 @@ class GraphPanel:
 
     def on_delink(self, sender, app_data):
         self.touch()
+        self.snapshot()
         lid = app_data
         b, inp = self.links.pop(lid, (None, None))
         if b is not None:
@@ -629,6 +765,8 @@ class GraphPanel:
                 row("edit sub-graph", lambda: self.enter_sub(nid))
             if dpg.get_selected_nodes("node_editor"):
                 row("fold selection into a sub-graph", lambda: self.make_sub_from_selection(dpg.get_value("graph_new_name")))
+                row("copy selection", self.copy)
+                row("cut selection", self.cut)
             row("duplicate", lambda: self._dup(nid))
             row("disconnect all", lambda: self._disconnect_node(nid))
             row("delete", lambda: self._delete_node(nid))
@@ -647,6 +785,7 @@ class GraphPanel:
                                              callback=lambda s, a, k=keys, c=col: (dpg.configure_item(P, show=False), self._set_wire(k, c)))
 
     def _set_wire(self, keys, col):
+        self.snapshot()
         for k in keys:
             if col is None:
                 self.graph.link_meta.pop(k, None)
@@ -655,23 +794,26 @@ class GraphPanel:
         self.rebuild()
 
     def _disconnect_in(self, nid, name):
-        self.graph.unlink(nid, name); self.rebuild()
+        self.snapshot(); self.graph.unlink(nid, name); self.rebuild()
 
     def _disconnect_out(self, nid, name):
-        self.graph.unlink_out(nid, name); self.rebuild()
+        self.snapshot(); self.graph.unlink_out(nid, name); self.rebuild()
 
     def _disconnect_node(self, nid):
+        self.snapshot()
         for l in [l for l in self.graph.links if l[0] == nid or l[2] == nid]:
             self.graph.unlink(l[2], l[3])
         self.rebuild()
 
     def _reset_input(self, nid, name, i):
+        self.snapshot()
         self.graph.nodes[nid].setdefault("inputs", {}).pop(name, None)
         self.rebuild()
 
     def _drive_with(self, nid, name, ctrl):
         """A control node feeding this input - reuse one already in the graph,
         else add one just to the left."""
+        self.snapshot()
         existing = next((m["id"] for m in self.graph.nodes.values() if m["type"] == ctrl), None)
         if existing is None:
             pos = self.graph.nodes[nid]["pos"]
@@ -694,6 +836,7 @@ class GraphPanel:
         return out[:14]
 
     def _connect_new(self, nid, out_name, t, new_type):
+        self.snapshot()
         d = self.lib[new_type]
         inp = next(i["name"] for i in d["inputs"] if compatible(t, i["type"]))
         pos = self.graph.nodes[nid]["pos"]
@@ -702,10 +845,10 @@ class GraphPanel:
         self.rebuild()
 
     def _dup(self, nid):
-        self.graph.duplicate(nid); self.rebuild()
+        self.snapshot(); self.graph.duplicate(nid); self.rebuild()
 
     def _delete_node(self, nid):
-        self.graph.remove(nid); self.rebuild()
+        self.snapshot(); self.graph.remove(nid); self.rebuild()
 
     def fill_add_menu(self):
         """The right-click add menu, rebuilt whenever the library changes so
@@ -717,6 +860,11 @@ class GraphPanel:
         for name in self.type_names():
             c, n = name.split(" / ", 1)
             cats.setdefault(c, []).append(n)
+        with dpg.group(horizontal=True, parent="graph_menu"):
+            dpg.add_button(label="undo", small=True, callback=lambda: (self._hide_menus(), self.undo()))
+            dpg.add_button(label="redo", small=True, callback=lambda: (self._hide_menus(), self.redo()))
+            dpg.add_button(label="paste here", small=True,
+                           callback=lambda: (self._hide_menus(), self.paste(self._menu_pos)))
         dpg.add_text("add node", parent="graph_menu", color=DIM)
         for c, names in cats.items():
             with dpg.collapsing_header(label=c, parent="graph_menu", default_open=(c in ("generate", "colour", "subgraphs"))):
@@ -725,11 +873,17 @@ class GraphPanel:
                     dpg.add_selectable(label=lbl, user_data=n,
                                        callback=lambda s, a, u: self.add_node_at_menu(u))
 
+    def _hide_menus(self):
+        for t in ("graph_menu", "graph_ctx"):
+            if dpg.does_item_exist(t):
+                dpg.configure_item(t, show=False)
+
     def add_node_at_menu(self, type_):
         self.touch()
         dpg.configure_item("graph_menu", show=False)
         if not self.graph or type_ not in self.lib:
             return
+        self.snapshot()
         nid = self.graph.add(type_, self._menu_pos)
         self._make_node(nid, self.graph.nodes[nid])
 
@@ -737,14 +891,16 @@ class GraphPanel:
         self.touch()
         if not self.graph or type_ not in self.lib:
             return
+        self.snapshot()
         self._add_count += 1
         pos = (60 + 30 * (self._add_count % 8), 60 + 30 * (self._add_count % 8))
         nid = self.graph.add(type_, pos)
         self._make_node(nid, self.graph.nodes[nid])
 
     def delete_selected(self):
-        if not self.graph:
+        if not self.graph or not dpg.get_selected_nodes("node_editor"):
             return
+        self.snapshot()
         for tag in dpg.get_selected_nodes("node_editor"):
             nid = dpg.get_item_user_data(tag)
             self.graph.remove(nid)
