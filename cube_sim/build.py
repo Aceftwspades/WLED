@@ -353,75 +353,29 @@ def find_vcvarsall():
     return None
 
 
-def build_native(srcs):
-    """Compile the same sources into a DLL the native front end loads by ctypes.
+def build_native(srcs, force=False):
+    """Compile the same sources into a shared library the native front end loads.
 
-    Native is the more faithful of the two targets, not the less: the same C++
-    with one fewer translation layer under it. The extraction above is shared,
-    so neither target can drift from the firmware sources or from each other.
-
-    Built with the clang that ships inside emsdk, NOT with MSVC, and that choice
-    is load-bearing. CFX_NET_PREP declares `uint8_t _outCol[cols]` - a
-    variable-length array, a GCC/clang extension MSVC has never supported and
-    rejects outright in every effect that renders. The choice was to change
-    firmware to suit a host compiler, or to pick a host compiler that takes the
-    firmware as written; the second is obviously right for a tool whose whole
-    value is compiling the real sources unmodified. emsdk's clang already
-    defaults to x86_64-pc-windows-msvc, so it emits ordinary Windows binaries
-    and needs nothing installed that is not here already.
-
-    MSVC still supplies the headers and import libraries, so vcvarsall is
-    sourced for its INCLUDE/LIB - clang honours both when targeting the MSVC ABI.
+    Delegated to native/toolchain.py, which compiles one object per translation
+    unit with a cache and links a VERSIONED library - build/cubefx_<n>.dll -
+    that the app can load while an older one is still open. The reasons for
+    clang-not-MSVC (the VLA in CFX_NET_PREP) and for every flag are recorded
+    there. cubefx.dll beside this script is still refreshed when it is not
+    locked, so the CLI and older scripts keep working unchanged.
     """
-    vc = find_vcvarsall()
-    if not vc:
-        print("  native: SKIPPED - no MSVC found. clang needs its headers and "
-              "import libraries; install VS Build Tools with the C++ workload.")
+    from native.toolchain import build_engine, lib_ext, ToolchainError
+    inc = [os.path.join(HERE, "shim"), os.path.join(ROOT, "usermods", "cube_fx"),
+           os.path.join(HERE, "gen")]
+    rep = build_engine(srcs, inc, force=force, log=print)
+    if not rep.ok:
+        print("  native: FAILED")
         return False
-    clang = os.environ.get("SIM_CLANG", os.path.join(
-        os.path.expanduser("~"), "emsdk", "upstream", "bin", "clang++.exe"))
-    if not os.path.exists(clang):
-        print(f"  native: SKIPPED - no clang++ at {clang} (set SIM_CLANG to override)")
-        return False
-
-    fs = lambda p: p.replace("\\", "/")
-    out = fs(os.path.join(HERE, "cubefx.dll"))
-    cmd = [f'"{fs(clang)}"', "-std=gnu++17", "-O2", "-shared",
-           "-I", f'"{fs(os.path.join(HERE, "shim"))}"',
-           # MSVC's headers keep M_PI and friends behind this, where the glibc
-           # and Emscripten headers hand them over unconditionally. wled_math.cpp
-           # uses them and quite reasonably does not ask.
-           "-D_USE_MATH_DEFINES",
-           # Selects the LEGACY implementations of the effects WLED otherwise
-           # replaces with particle-system versions. The particle system is a
-           # whole subsystem this shim has no business hosting, and the legacy
-           # effects are self-contained - so the flag that keeps them is the
-           # flag this build wants.
-           "-DWLED_PS_DONT_REPLACE_2D_FX",
-           # The roster is sized for the DEVICE, where it caps how many
-           # effects can be compiled in. The simulator has no such
-           # constraint, and with every WLED 2-D effect pulled in as well
-           # the default 64 silently dropped the last ten - cfxBankAdd
-           # returns quietly when the roster is full.
-           "-DCFX_BANK_MAX_FX=128",
-           # Skips the bits that only make sense against the firmware's
-           # settings page - the palette usermod's appendConfigData() reaches
-           # for extractModeName() and JSON_palette_names, which live in
-           # FX_fcn.cpp and have no place in a shim.
-           "-DCFX_SIM",
-           "-Wno-vla-cxx-extension", "-Wno-unknown-attributes",
-           "-Wno-deprecated-declarations"] + \
-          [f'"{fs(s)}"' for s in srcs] + ["-o", f'"{out}"']
-    line = " ".join(cmd)
-    r = subprocess.run(f'"{vc}" x64 >nul && {line}', shell=True, cwd=HERE,
-                       capture_output=True, text=True)
-    txt = (r.stdout or "") + (r.stderr or "")
-    if r.returncode != 0:
-        errs = [l for l in txt.splitlines() if "error:" in l or " error " in l]
-        print("\n".join(errs[:25]) or txt[:3000])
-        print(f"  native: FAILED ({r.returncode})")
-        return False
-    print(f"  cubefx.dll: {os.path.getsize(out):,} bytes")
+    legacy = os.path.join(HERE, "cubefx" + lib_ext())
+    try:
+        import shutil
+        shutil.copyfile(rep.library, legacy)
+    except OSError:
+        print("  cubefx.dll is open in another process; build/latest points at the new one")
     return True
 
 
@@ -456,7 +410,7 @@ def main():
         # left the PREVIOUS cubefx.dll in place - which then gets measured as
         # though it were the new code. The usual cause is the simulator app
         # holding the DLL open, so this is a routine failure, not a rare one.
-        if not build_native(srcs):
+        if not build_native(srcs, force=("--force" in sys.argv)):
             sys.exit("build FAILED - the dll was not replaced")
     if "--wasm" not in want:
         print("build OK")

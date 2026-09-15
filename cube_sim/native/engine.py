@@ -15,7 +15,28 @@ import os
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DLL = os.path.join(os.path.dirname(HERE), "cubefx.dll")
+
+
+def default_library():
+    """The library to load: the newest versioned build, else the legacy
+    cubefx.dll beside build.py. See native/toolchain.py."""
+    from native.toolchain import latest_library
+    return latest_library() or os.path.join(os.path.dirname(HERE), "cubefx.dll")
+
+
+def _unload(lib):
+    """Drop a ctypes library so its file can be replaced. Best effort; a
+    library that refuses to unload is simply left until the process exits."""
+    try:
+        if os.name == "nt":
+            import ctypes.wintypes
+            k32 = C.windll.kernel32
+            k32.FreeLibrary.argtypes = [ctypes.wintypes.HMODULE]
+            k32.FreeLibrary(lib._handle)
+        else:
+            C.CDLL(None).dlclose(lib._handle)
+    except Exception:
+        pass
 
 
 def parse_meta(s):
@@ -44,11 +65,25 @@ def parse_meta(s):
 class Engine:
     KEYS = ("sx", "ix", "c1", "c2", "c3", "o1", "o2", "o3")
 
-    def __init__(self, dll=DLL):
+    def __init__(self, dll=None):
+        self.idx = 0
+        self.pal = 1
+        self.fx = {}
+        self.sim_ms = 0
+        self.B = 16
+        self.lib = None
+        self.library = None
+        self._colors = (0xFFA000, 0, 0)
+        self.load(dll or default_library())
+
+    def load(self, dll):
+        """Bind a library. Called once from the constructor and again by
+        reload() when the editor has produced a new build."""
         if not os.path.exists(dll):
             raise FileNotFoundError(
                 f"{dll} not found - build it with:  python build.py --native-only")
         self.lib = C.CDLL(dll)
+        self.library = dll
         L = self.lib
         L.simEffectCount.restype = C.c_int
         L.simEffectName.restype = C.c_char_p;  L.simEffectName.argtypes = [C.c_int]
@@ -71,13 +106,23 @@ class Engine:
         self.meta = [parse_meta(L.simEffectMeta(i).decode("utf-8", "replace"))
                      for i in range(self.count)]
         self.names = [m["name"] for m in self.meta]
+        self.resize(self.B)
 
-        self.idx = 0
-        self.pal = 1
-        self.fx = {}
-        self.sim_ms = 0
-        self.B = 16
-        self.resize(16)
+    def reload(self, dll=None):
+        """Swap to a newer build, keeping the selected effect (by NAME, since
+        indices move when effects are added), its parameters, palette, colours
+        and geometry. The effect restarts from nothing, which is what an edit
+        to it means anyway."""
+        dll = dll or default_library()
+        want = self.names[self.idx] if self.names else None
+        fx, pal, cols = dict(self.fx), self.pal, self._colors
+        old = self.lib
+        self.load(dll)
+        if old is not None and old is not self.lib:
+            _unload(old)
+        if want in self.names:
+            self.select(self.names.index(want), params=dict(fx, pal=pal))
+        self.colors(*cols)
 
     # --- geometry ------------------------------------------------------------
     def resize(self, B):
@@ -174,7 +219,8 @@ class Engine:
 
     def colors(self, c0, c1=0, c2=0):
         """Segment colours. WLED's DEFAULT_COLOR is 0xFFA000."""
-        self.lib.simColors(int(c0) & 0xFFFFFF, int(c1) & 0xFFFFFF, int(c2) & 0xFFFFFF)
+        self._colors = (int(c0) & 0xFFFFFF, int(c1) & 0xFFFFFF, int(c2) & 0xFFFFFF)
+        self.lib.simColors(*self._colors)
 
     def audio(self, vol, peak):
         self.lib.simAudioSet(C.c_float(vol), int(peak))
