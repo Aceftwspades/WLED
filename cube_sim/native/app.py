@@ -37,6 +37,7 @@ from native.engine import Engine, stats
 from native.synth import Synth
 from native.geometry import Geometry, KINDS
 from native.project import default_project
+from native.graph_ui import GraphPanel, build_panel
 from native import render, gif
 
 STEP = 23
@@ -147,6 +148,7 @@ class App:
         self.build_q = queue.Queue()  # worker -> main thread: BuildReport
         self.building = False
         self.build_msg = ""
+        self.gp = GraphPanel(self)    # the node editor
         global PALETTES
         if not PALETTES:
             PALETTES = self.eng.palette_list()
@@ -456,6 +458,14 @@ class App:
     def on_code_edit(self, s, v):
         self.edit_dirty = True
 
+    def open_graph_code(self):
+        """Generate the graph's C++ and show it in the code pane - the hand-off
+        for the cases the nodes cannot reach. From here it is a code effect."""
+        fname = self.gp.compile(and_build=False)
+        if fname:
+            self.layout = "edit"; self.ui = True; self.request_layout()
+            self.edit_open(fname)
+
     def edit_build(self):
         """Save, then compile on a worker; the result is applied on the main
         thread by poll_build(), because reloading the engine while a frame is
@@ -628,7 +638,7 @@ class App:
         # What is on screen decides what there is room for. With the control
         # column hidden its 340 px come back, with one view hidden the other
         # gets the whole width, and the pane captions stop reserving a line.
-        nview = 2 if self.layout in ("both", "edit") else 1
+        nview = 2 if self.layout in ("both", "edit", "graph") else 1
         if self.ui:
             pane_h = max(VIEW_MIN, vh - 108)
             avail  = vw - SIDE_W - (22 * nview + 24)
@@ -640,10 +650,15 @@ class App:
             avail  = vw - (16 if nview == 2 else 0)
         per = max(VIEW_MIN, avail // nview)
         side = max(VIEW_MIN, min(per, pane_h))
+        # In the graph layout the 3-D view gives up room to the nodes: it is
+        # a monitor there, not the subject.
+        if self.layout == "graph":
+            side = max(VIEW_MIN, min(side, 360))
 
         dpg.configure_item("net_win",  show=self.layout in ("both", "net"))
-        dpg.configure_item("cube_win", show=self.layout in ("both", "cube", "edit"))
+        dpg.configure_item("cube_win", show=self.layout in ("both", "cube", "edit", "graph"))
         dpg.configure_item("edit_win", show=self.layout == "edit")
+        dpg.configure_item("graph_win", show=self.layout == "graph")
         dpg.configure_item("side_win", show=self.ui)
 
         th = self._themes.get("present" if not self.ui else "normal")
@@ -678,6 +693,10 @@ class App:
                 dpg.configure_item(tag, width=side + 22, height=pane_h + 34)
             dpg.configure_item("edit_win", width=side + 22, height=pane_h + 34)
             dpg.configure_item("code", width=side + 4, height=pane_h - 150)
+            # the graph pane takes the room the logical view would - and more,
+            # when the window is wide: nodes want space, the 3-D view does not
+            gw = max(side + 22, vw - SIDE_W - side - 60) if self.layout == "graph" else side + 22
+            dpg.configure_item("graph_win", width=gw, height=pane_h + 34)
             dpg.configure_item("side_win", height=pane_h + 34)
         # Centre what is left, rather than letting it sit against the corner.
         # In presentation mode the panes are exactly the size of their pictures
@@ -703,7 +722,7 @@ class App:
         # again, so the texture is there by the time anything draws into it.
         if self.layout in ("both", "net"):
             self.remake_net_texture()
-        if self.layout in ("both", "cube", "edit"):
+        if self.layout in ("both", "cube", "edit", "graph"):
             self.remake_cube_texture()
 
     def remake_net_texture(self):
@@ -800,6 +819,12 @@ class App:
             self.layout = "both" if self.layout == "edit" else "edit"
             self.ui = True
             self.request_layout()
+        elif app_data == dpg.mvKey_G:
+            self.layout = "both" if self.layout == "graph" else "graph"
+            self.ui = True
+            self.request_layout()
+        elif app_data == dpg.mvKey_Delete and self.layout == "graph":
+            self.gp.delete_selected()
 
     def set_layout(self, which):
         """Q, E and W go straight to a full-frame picture, every time.
@@ -839,7 +864,7 @@ class App:
         if self.layout in ("both", "net"):
             big = net.repeat(self.net_scale, 0).repeat(self.net_scale, 1)
             dpg.set_value("net_tex", self._rgba("net", big))
-        if self.layout in ("both", "cube", "edit"):
+        if self.layout in ("both", "cube", "edit", "graph"):
             img = self.view_image(net, self.cube_px)
             dpg.set_value("cube_tex", self._rgba("cube", img))
         # Records whatever is being SHOWN, so Q, E and W frame the clip too.
@@ -894,6 +919,8 @@ def build(app):
                 dpg.add_input_text(tag="code", multiline=True, width=400, height=300,
                                    tab_input=True, callback=app.on_code_edit)
                 dpg.add_group(tag="edit_errors")
+            with dpg.child_window(tag="graph_win", width=420, height=470, show=False):
+                build_panel(app, app.gp)
             with dpg.child_window(tag="cube_win", width=420, height=470):
                 dpg.add_text("3-D - drag to rotate, wheel to zoom",
                              tag="cube_cap", color=(139, 147, 163))
@@ -1001,7 +1028,7 @@ def build(app):
                            callback=lambda: app.start_rec(15.0))
             dpg.add_text("", tag="rec_msg", color=(139, 147, 163))
         dpg.add_text("", tag="stat_txt")
-        dpg.add_text("Q net    E 3-D    W both    C code    H hide UI", tag="hint1",
+        dpg.add_text("Q net    E 3-D    W both    C code    G graph    H hide UI", tag="hint1",
                      color=(130, 140, 155))
         dpg.add_text("space = play/pause    F11 = fullscreen window", tag="hint2",
                      color=(130, 140, 155))
@@ -1013,6 +1040,9 @@ def build(app):
     files = app.project.effect_files()
     if files:
         app.edit_open(files[0])
+    gfiles = app.gp.files()
+    if gfiles:
+        app.gp.open(gfiles[0])
     dpg.set_primary_window("root", True)
     dpg.setup_dearpygui()
     app.relayout()
@@ -1084,6 +1114,20 @@ def service_command(app):
                 app.on_map1d2d(None, c["map1d2d"]); dpg.set_value("map1d2d", c["map1d2d"])
             if "view" in c:
                 app.yaw, app.pitch, app.dist = c["view"]
+            if "graph_open" in c:
+                app.gp.open(c["graph_open"])
+            if "graph_new" in c:
+                app.gp.new(c["graph_new"])
+            if "graph_add" in c:
+                app.gp.add_node(c["graph_add"])
+            if "graph_link" in c:
+                a, out, b, inp = c["graph_link"]
+                app.gp.graph.link(a, out, b, inp); app.gp.rebuild()
+            if "graph_param" in c:
+                nid, name, val = c["graph_param"]
+                app.gp.graph.nodes[int(nid)]["params"][name] = val; app.gp.rebuild()
+            if c.get("graph_build"):
+                app.gp.compile()
         except Exception as e:
             print(f"command {c}: {e}")
 

@@ -16,7 +16,7 @@ fallback so a dropped patch degrades rather than breaks.
 | question | decision |
 |---|---|
 | how effects are authored | **C++ first**, compiled with the clang already in use, hot-reloaded. A scripted runtime that runs the same effect on a device without reflashing is a later phase. |
-| what the layer composer produces | **one generated C++ effect** — a recipe of layers compiles to a single `mode_*()` function, exportable as a usermod file |
+| what the composer produces | **one generated C++ effect** — a node graph compiles to a single `mode_*()` function, exportable as a usermod file. (Decided as a layer stack at first; changed to a ComfyUI-style graph, since a stack is a graph with one edge per node.) |
 | geometries | 1-D strip, 2-D matrix with WLED's own orientation options, 3-D parametric shapes (cube net, sphere, cylinder, torus), and custom 3-D from an XYZ file |
 | platform | desktop, cross-platform from the start — the Python / DearPyGui app, with audio capture and toolchain detection per OS |
 
@@ -29,7 +29,7 @@ fallback so a dropped patch degrades rather than breaks.
   or XYZ list)  │   2-D: w x h (+ lit mask)
                 │
  effects/*.cpp ─┼─► clang: one object per TU, cached ─► link ─► engine_N.dll ─► app loads it
- recipes/*.json ┘   (a recipe is generated to .cpp first)          (old one unloaded)
+ graphs/*.json  ┘   (a graph is generated to .cpp first)           (old one unloaded)
 ```
 
 WLED itself has no idea of 3-D. An effect sees a 1-D segment or a 2-D matrix,
@@ -65,16 +65,25 @@ the geometry hands it; the effect code never knows the difference.
 5. **Project files.** A folder with `geometry.json`, `effects/`, `recipes/`, and
    an `export/` that receives the usermod folder and the ledmap.
 
-### Phase 2 — the layer composer
+### Phase 2 — the node graph (done, first pass)
 
-A recipe is a list of layers, each a primitive with parameters — gradient,
-noise field, plane wave, ripple, sparkle, audio bars, meter, mask — and a blend
-mode into the layer below (over, add, multiply, screen, max). Any parameter can
-be a constant or bound to speed / intensity / custom 1-3 / check 1-3, with a
-range, so the exported effect has real sliders with real names. The composer
-writes a `.cpp` through the same pipeline as a hand-written one, and "open as
-code" hands the generated file to the editor for the cases the layers cannot
-reach.
+Not a layer stack: a node graph, ComfyUI-style, because layering is just one
+node feeding another. `native/nodedefs.py` is the library — controls (the
+five sliders, three checkboxes, three colours, each slider node carrying the
+label the exported effect will show), signals (time, audio bands, the beat,
+a beat-kick that lurches and settles, constants), coordinates (u/v, centred,
+polar, the cube's seamless direction), generators (noise, wave, ripple,
+sparkle, stripes), maths, colour (palette, HSV, blend with six modes, mask,
+Previous for feedback, split/combine), two Expression nodes that take a line
+of C++ so a node you have not got can be written on the spot, and Output.
+
+Every node is data: inputs, outputs, params, and a C++ template. A user node
+is the same JSON in `<project>/nodes/`. `native/graph.py` compiles a graph to
+one ordinary effect file — a topological sort, frame-scope nodes hoisted out
+of the pixel loop (a Multiply of two sliders is not 1,280 multiplies), types
+checked, defaults for unconnected pins — and it goes through the same build
+and reload as a hand-written one. "Open as code" hands the generated file to
+the code pane for anything the nodes cannot reach.
 
 ### Phase 3 — wiring and export
 
@@ -109,8 +118,8 @@ python build.py --native-only                          # once; the app rebuilds 
 python -m native.app
 ```
 
-Keys: **C** code pane, **Q** logical view, **E** 3-D, **W** both, **H** hide
-the controls, **space** pause. Projects live in `cube_sim/projects/<name>/`;
+Keys: **G** node graph, **C** code pane, **Q** logical view, **E** 3-D, **W** both,
+**H** hide the controls, **space** pause, **Delete** removes selected nodes. Projects live in `cube_sim/projects/<name>/`;
 the default one is created on first run.
 
 ## Compatibility rules for this branch
