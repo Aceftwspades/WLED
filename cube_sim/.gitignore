@@ -9,3 +9,4 @@ __pycache__/
 cubefx.lib
 cubefx.exp
 build/
+projects/

@@ -1,10 +1,14 @@
 """
-Cube FX Simulator - native front end.
+WLED Effect Studio - the native front end.
 
     python -m native.app
 
-Phase 2. Same engine and the same numbers as the headless tool; this adds the
-window, the controls and live audio driving the effects in real time.
+Started life as the Cube FX Simulator's window: the same engine and the same
+numbers as the headless tool, plus controls and live audio. It is now an
+editor as well - a project holds a geometry and the effects being written for
+it, the code pane compiles an effect into the engine in about a second and
+swaps it in without leaving the window, and the views draw whatever the
+geometry is: a strip, a matrix, the cube, a sphere, a coordinate list.
 
 Two things here are deliberate and easy to undo by accident:
 
@@ -26,8 +30,13 @@ import time
 import numpy as np
 import dearpygui.dearpygui as dpg
 
+import queue
+import threading
+
 from native.engine import Engine, stats
 from native.synth import Synth
+from native.geometry import Geometry, KINDS
+from native.project import default_project
 from native import render, gif
 
 STEP = 23
@@ -129,7 +138,15 @@ PALETTES = []
 
 class App:
     def __init__(self):
+        self.project = default_project()
         self.eng = Engine()
+        self.eng.set_geometry(self.project.geometry)
+        # --- the editor ------------------------------------------------------
+        self.edit_file = None       # file name in the project's effects/
+        self.edit_dirty = False
+        self.build_q = queue.Queue()  # worker -> main thread: BuildReport
+        self.building = False
+        self.build_msg = ""
         global PALETTES
         if not PALETTES:
             PALETTES = self.eng.palette_list()
@@ -164,7 +181,9 @@ class App:
         self._inputs = set()
         self._dragging = False
         self._yaw0, self._pitch0 = self.yaw, self.pitch
-        self.eng.select(0)
+        # the project remembers the last effect by NAME - indices move
+        idx = self.eng.names.index(self.project.selected) if self.project.selected in self.eng.names else 0
+        self.eng.select(idx)
 
     # --- textures ------------------------------------------------------------
     def _rgba(self, key, img):
@@ -184,12 +203,29 @@ class App:
         return buf.reshape(-1)
 
     def net_image(self):
+        """The logical view: the segment as the effect sees it. A 1-D strip is
+        one row, drawn tall enough to look at."""
         rgb = self.eng.rgb().copy()
         if not self.eng.fx.get("o3"):
             # Cube mode: the gap corners are not pixels and effects skip them,
             # so without this they keep whatever flat mode last left there.
             rgb[~self.eng.lit_mask()] = 0
+        if rgb.shape[0] == 1:
+            rows = max(4, rgb.shape[1] // 12)
+            rgb = np.repeat(rgb, rows, axis=0)
         return rgb
+
+    def view_image(self, net, px):
+        """The 3-D view: the face-warp renderer for the cube (faster, and
+        exact for flat faces), the point cloud for everything else."""
+        g = self.eng.geom
+        if g is not None and g.kind == "cube" and not self.eng.fx.get("o3"):
+            return render.render(net if net.shape[0] == self.eng.rows else self.eng.rgb(),
+                                 self.eng.B, px, self.yaw, self.pitch, self.dist)
+        rgb = self.eng.rgb().reshape(-1, 3)
+        if g is None:
+            return np.zeros((px, px, 3), np.uint8)
+        return render.render_points(g.pos, rgb, px, self.yaw, self.pitch, self.dist)
 
     # --- audio ---------------------------------------------------------------
     def audio_push(self):
@@ -285,6 +321,8 @@ class App:
         self.eng.select(self.eng.names.index(val))
         self.rebuild_params()
         self.sync_palette_combo()
+        self.project.selected = val
+        self.project.save()
 
     def on_palette(self, s, val):
         self.eng.pal = dict(PALETTES)[val]
@@ -308,13 +346,174 @@ class App:
         except Exception:
             pass
 
-    def on_faceB(self, s, val):
-        self.eng.resize(int(val))
-        # resize() re-selects the effect, which resets every parameter to the
-        # metadata defaults - so the sliders have to be rebuilt or they show
-        # values the engine no longer holds.
+    # --- geometry --------------------------------------------------------------
+    GEOM_FIELDS = {
+        "strip":    [("n", "LEDs", 1, 2000), ("ring", "ring", None, None)],
+        "matrix":   [("w", "width", 1, 256), ("h", "height", 1, 256),
+                     ("serpentine", "serpentine", None, None), ("vertical", "vertical", None, None),
+                     ("start_right", "start right", None, None), ("start_bottom", "start bottom", None, None)],
+        "cube":     [("B", "pixels per face", 4, 64)],
+        "cylinder": [("w", "around", 3, 256), ("h", "tall", 1, 256)],
+        "sphere":   [("w", "around", 3, 256), ("h", "rows", 2, 128)],
+        "torus":    [("w", "around", 3, 256), ("h", "tube", 3, 64)],
+        "xyz":      [],
+    }
+
+    def apply_geometry(self, geom):
+        """A new geometry: into the engine, into the project, views resized.
+        The effect restarts, so its sliders are rebuilt from the engine."""
+        self.project.geometry = geom
+        self.project.save()
+        self.eng.set_geometry(geom)
         self.rebuild_params()
         self.request_layout()
+        try:
+            dpg.set_value("geom_desc", geom.describe())
+            dpg.configure_item("map1d2d", show=geom.is2d)
+        except Exception:
+            pass
+
+    def on_geom_kind(self, s, val):
+        if val == "xyz":
+            dpg.show_item("xyz_dialog")
+            return
+        params = dict(self.project.geometry.params) if self.project.geometry.kind == val else {}
+        self.apply_geometry(Geometry(val, **params))
+        self.rebuild_geom_fields()
+
+    def on_geom_field(self, sender, val):
+        key = dpg.get_item_user_data(sender)
+        g = self.project.geometry
+        params = dict(g.params); params[key] = val
+        self.apply_geometry(Geometry(g.kind, **params))
+
+    def on_xyz_file(self, s, app_data):
+        path = app_data.get("file_path_name") if isinstance(app_data, dict) else None
+        if not path:
+            return
+        try:
+            g = Geometry.from_xyz_file(path)
+        except Exception as e:
+            dpg.set_value("geom_desc", f"could not read {os.path.basename(path)}: {e}")
+            return
+        self.apply_geometry(g)
+        dpg.set_value("geom_kind", "xyz")
+        self.rebuild_geom_fields()
+
+    def rebuild_geom_fields(self):
+        if not dpg.does_item_exist("geom_fields"):
+            return
+        dpg.delete_item("geom_fields", children_only=True)
+        g = self.project.geometry
+        for key, label, lo, hi in self.GEOM_FIELDS.get(g.kind, []):
+            if lo is None:
+                dpg.add_checkbox(label=label, parent="geom_fields", user_data=key,
+                                 default_value=bool(g.params.get(key, key == "serpentine")),
+                                 callback=self.on_geom_field)
+            else:
+                dpg.add_input_int(label=label, parent="geom_fields", user_data=key, width=90,
+                                  default_value=int(g.params.get(key, {"n": 60, "w": 16, "h": 16, "B": 16}.get(key, 16))),
+                                  min_value=lo, max_value=hi, min_clamped=True, max_clamped=True,
+                                  on_enter=True, callback=self.on_geom_field)
+        if g.kind == "xyz":
+            dpg.add_text(f"{g.count} points from {g.params.get('source', 'file')}",
+                         parent="geom_fields", color=(139, 147, 163))
+
+    def on_map1d2d(self, s, val):
+        self.eng.set_map1d2d(["strip", "bars", "arcs", "corner"].index(val))
+
+    # --- the editor ------------------------------------------------------------
+    def edit_open(self, fname):
+        if not fname:
+            return
+        self.edit_file = fname
+        self.edit_dirty = False
+        dpg.set_value("code", self.project.read_effect(fname))
+        dpg.set_value("edit_status", f"{fname}")
+        dpg.configure_item("edit_file", items=self.project.effect_files())
+        dpg.set_value("edit_file", fname)
+
+    def edit_new(self):
+        title = (dpg.get_value("new_name") or "").strip() or "New Effect"
+        fname = self.project.new_effect(title)
+        self.edit_open(fname)
+        dpg.set_value("new_name", "")
+
+    def edit_save(self):
+        if not self.edit_file:
+            return
+        self.project.write_effect(self.edit_file, dpg.get_value("code"))
+        self.edit_dirty = False
+        dpg.set_value("edit_status", f"{self.edit_file} saved")
+
+    def on_code_edit(self, s, v):
+        self.edit_dirty = True
+
+    def edit_build(self):
+        """Save, then compile on a worker; the result is applied on the main
+        thread by poll_build(), because reloading the engine while a frame is
+        being drawn from it is not something to do from another thread."""
+        if self.building:
+            return
+        self.edit_save()
+        self.building = True
+        self.build_msg = "compiling..."
+        dpg.set_value("edit_status", self.build_msg)
+        dpg.delete_item("edit_errors", children_only=True)
+
+        def work():
+            import build as B
+            from native.toolchain import build_engine
+            import contextlib, io as _io
+            buf = _io.StringIO()
+            try:
+                with contextlib.redirect_stdout(buf):
+                    srcs = B.engine_sources([self.project.effect_path(f) for f in self.project.effect_files()])
+                inc = [os.path.join(B.HERE, "shim"), os.path.join(B.ROOT, "usermods", "cube_fx"), B.GEN]
+                rep = build_engine(srcs, inc, log=lambda *a: None)
+            except Exception as e:
+                rep = None
+                self.build_q.put(("exception", str(e)))
+                return
+            self.build_q.put(("report", rep))
+        threading.Thread(target=work, daemon=True).start()
+
+    def poll_build(self):
+        try:
+            kind, payload = self.build_q.get_nowait()
+        except queue.Empty:
+            return
+        self.building = False
+        if kind == "exception":
+            dpg.set_value("edit_status", f"build failed: {payload}")
+            return
+        rep = payload
+        if not rep.ok:
+            # Errors first; warnings only from the project's own files - a
+            # warning inside a shared header is not the user's to fix.
+            mine = set(self.project.effect_files())
+            errs = [e for e in rep.error_lines()
+                    if e[2].startswith("error") or os.path.basename(e[0]) in mine]
+            errs.sort(key=lambda e: 0 if e[2].startswith("error") else 1)
+            dpg.set_value("edit_status", f"{len(errs)} problem(s)")
+            for path, line, msg in errs[:30]:
+                fn = os.path.basename(path)
+                dpg.add_text(f"{fn}:{line}  {msg}"[:140], parent="edit_errors",
+                             color=(235, 120, 110) if msg.startswith("error") else (200, 190, 120),
+                             wrap=0)
+            if not errs and rep.link_output:
+                dpg.add_text(rep.link_output[-600:], parent="edit_errors", color=(235, 120, 110), wrap=0)
+            return
+        # success: swap the engine, keep everything the user had
+        want = self.project.effect_title(self.edit_file) if self.edit_file else None
+        self.eng.reload(rep.library)
+        dpg.configure_item("fx_combo", items=self.eng.names)
+        if want in self.eng.names:
+            self.eng.select(self.eng.names.index(want))
+        dpg.set_value("fx_combo", self.eng.names[self.eng.idx])
+        self.rebuild_params()
+        self.sync_palette_combo()
+        dpg.set_value("edit_status", f"loaded {os.path.basename(rep.library)}  ({self.eng.count} effects)")
 
     def on_color(self, sender, val):
         r, g, b = (int(c * 255) if c <= 1.0 else int(c) for c in val[:3])
@@ -422,7 +621,7 @@ class App:
         # What is on screen decides what there is room for. With the control
         # column hidden its 340 px come back, with one view hidden the other
         # gets the whole width, and the pane captions stop reserving a line.
-        nview = 2 if self.layout == "both" else 1
+        nview = 2 if self.layout in ("both", "edit") else 1
         if self.ui:
             pane_h = max(VIEW_MIN, vh - 108)
             avail  = vw - SIDE_W - (22 * nview + 24)
@@ -436,7 +635,8 @@ class App:
         side = max(VIEW_MIN, min(per, pane_h))
 
         dpg.configure_item("net_win",  show=self.layout in ("both", "net"))
-        dpg.configure_item("cube_win", show=self.layout in ("both", "cube"))
+        dpg.configure_item("cube_win", show=self.layout in ("both", "cube", "edit"))
+        dpg.configure_item("edit_win", show=self.layout == "edit")
         dpg.configure_item("side_win", show=self.ui)
 
         th = self._themes.get("present" if not self.ui else "normal")
@@ -455,7 +655,7 @@ class App:
         # The net is upscaled by a WHOLE number so the LED grid stays hard;
         # bilinear scaling of a 48-pixel image looks like a photograph of a cube
         # rather than a cube.
-        self.net_scale = max(1, side // self.eng.cols)
+        self.net_scale = max(1, side // max(self.eng.cols, self.net_image().shape[0]))
         # The cube render is capped whatever the pane size, and the image is
         # scaled up to fill. Measured, the renderer costs 28 ms a frame at 620
         # and 64 ms at 900 - it is quadratic in the size, and it is already the
@@ -469,6 +669,8 @@ class App:
         if self.ui:
             for tag in ("net_win", "cube_win"):
                 dpg.configure_item(tag, width=side + 22, height=pane_h + 34)
+            dpg.configure_item("edit_win", width=side + 22, height=pane_h + 34)
+            dpg.configure_item("code", width=side + 4, height=pane_h - 150)
             dpg.configure_item("side_win", height=pane_h + 34)
         # Centre what is left, rather than letting it sit against the corner.
         # In presentation mode the panes are exactly the size of their pictures
@@ -494,12 +696,13 @@ class App:
         # again, so the texture is there by the time anything draws into it.
         if self.layout in ("both", "net"):
             self.remake_net_texture()
-        if self.layout in ("both", "cube"):
+        if self.layout in ("both", "cube", "edit"):
             self.remake_cube_texture()
 
     def remake_net_texture(self):
-        w = self.eng.cols * self.net_scale
-        h = self.eng.rows * self.net_scale
+        img = self.net_image()
+        w = img.shape[1] * self.net_scale
+        h = img.shape[0] * self.net_scale
         if dpg.does_item_exist("net_img"):
             dpg.delete_item("net_img")
         if dpg.does_item_exist("net_tex"):
@@ -586,6 +789,10 @@ class App:
         elif app_data == dpg.mvKey_H:
             self.ui = not self.ui
             self.request_layout()
+        elif app_data == dpg.mvKey_C:
+            self.layout = "both" if self.layout == "edit" else "edit"
+            self.ui = True
+            self.request_layout()
 
     def set_layout(self, which):
         """Q, E and W go straight to a full-frame picture, every time.
@@ -625,16 +832,16 @@ class App:
         if self.layout in ("both", "net"):
             big = net.repeat(self.net_scale, 0).repeat(self.net_scale, 1)
             dpg.set_value("net_tex", self._rgba("net", big))
-        if self.layout in ("both", "cube"):
-            img = render.render(net, self.eng.B, self.cube_px,
-                                self.yaw, self.pitch, self.dist)
+        if self.layout in ("both", "cube", "edit"):
+            img = self.view_image(net, self.cube_px)
             dpg.set_value("cube_tex", self._rgba("cube", img))
         # Records whatever is being SHOWN, so Q, E and W frame the clip too.
         self.rec_frame(big, img)
         if self.rec_msg:
             dpg.set_value("rec_msg", self.rec_msg)
 
-        s = stats(net, self.eng.lit_mask(flat=bool(self.eng.fx.get("o3"))))
+        raw = self.eng.rgb()
+        s = stats(raw, self.eng.lit_mask(flat=bool(self.eng.fx.get("o3"))))
         dpg.set_value("stat_txt",
                       f"mean {s['mean']:5.1f}   sigma {s['sigma']:5.1f}   "
                       f"dark {s['dark']:4.1f}%   sat {s['sat']:3d}")
@@ -648,7 +855,7 @@ class App:
 
 def build(app):
     dpg.create_context()
-    dpg.create_viewport(title="Cube FX Simulator (native)", width=1180, height=780)
+    dpg.create_viewport(title="WLED Effect Studio", width=1280, height=800)
 
     with dpg.handler_registry():
         dpg.add_mouse_drag_handler(button=dpg.mvMouseButton_Left, callback=app.on_drag)
@@ -662,13 +869,30 @@ def build(app):
     with dpg.window(tag="root"):
         with dpg.group(horizontal=True):
             with dpg.child_window(tag="net_win", width=420, height=470):
-                dpg.add_text("Unfolded net", tag="net_cap", color=(139, 147, 163))
+                dpg.add_text("Logical view - what the effect draws", tag="net_cap", color=(139, 147, 163))
+            with dpg.child_window(tag="edit_win", width=420, height=470, show=False):
+                with dpg.group(horizontal=True):
+                    dpg.add_combo(app.project.effect_files(), tag="edit_file", width=180,
+                                  default_value=app.edit_file or "",
+                                  callback=lambda s, v: app.edit_open(v))
+                    dpg.add_button(label="save", callback=lambda: app.edit_save())
+                    dpg.add_button(label="compile + reload", callback=lambda: app.edit_build())
+                with dpg.group(horizontal=True):
+                    dpg.add_input_text(tag="new_name", hint="new effect name", width=180,
+                                       on_enter=True, callback=lambda s, v: app.edit_new())
+                    dpg.add_button(label="new", callback=lambda: app.edit_new())
+                    dpg.add_button(label="export", callback=lambda: dpg.set_value(
+                        "edit_status", "exported to " + app.project.export()))
+                dpg.add_text("", tag="edit_status", color=(139, 147, 163))
+                dpg.add_input_text(tag="code", multiline=True, width=400, height=300,
+                                   tab_input=True, callback=app.on_code_edit)
+                dpg.add_group(tag="edit_errors")
             with dpg.child_window(tag="cube_win", width=420, height=470):
-                dpg.add_text("Cube - drag to rotate, wheel to zoom",
+                dpg.add_text("3-D - drag to rotate, wheel to zoom",
                              tag="cube_cap", color=(139, 147, 163))
             with dpg.child_window(tag="side_win", width=SIDE_W - 10, height=470):
-                dpg.add_combo(app.eng.names, label="effect",
-                              default_value=app.eng.names[0], width=200,
+                dpg.add_combo(app.eng.names, label="effect", tag="fx_combo",
+                              default_value=app.eng.names[app.eng.idx], width=200,
                               callback=app.on_effect)
                 dpg.add_combo([p[0] for p in PALETTES], label="palette",
                               default_value=app.palette_name_for(app.eng.pal),
@@ -680,8 +904,24 @@ def build(app):
                               label="pal source", width=200, tag="pal_src",
                               default_value=app.palette_name_for(app.eng.pal_source),
                               callback=app.on_pal_source)
-                dpg.add_combo(["4", "8", "16", "32"], label="face B", default_value="16",
-                              width=80, callback=app.on_faceB)
+                dpg.add_separator()
+                dpg.add_text("Geometry")
+                dpg.add_combo(list(KINDS), label="shape", tag="geom_kind", width=120,
+                              default_value=app.project.geometry.kind, callback=app.on_geom_kind)
+                dpg.add_group(tag="geom_fields")
+                dpg.add_combo(["strip", "bars", "arcs", "corner"], label="1-D effects as",
+                              tag="map1d2d", width=100, default_value="strip",
+                              show=app.project.geometry.is2d, callback=app.on_map1d2d)
+                dpg.add_text(app.project.geometry.describe(), tag="geom_desc",
+                             color=(139, 147, 163), wrap=300)
+                with dpg.file_dialog(directory_selector=False, show=False, tag="xyz_dialog",
+                                     width=620, height=420, callback=app.on_xyz_file,
+                                     cancel_callback=lambda s, a: dpg.set_value("geom_kind", app.project.geometry.kind)):
+                    dpg.add_file_extension(".csv", color=(120, 200, 120))
+                    dpg.add_file_extension(".txt", color=(120, 200, 120))
+                    dpg.add_file_extension(".json", color=(120, 200, 120))
+                    dpg.add_file_extension(".*")
+                dpg.add_separator()
                 # Several effects paint with SEGCOLOR(0), and the CubeFX audio
                 # palettes read all THREE when their source is one of WLED's
                 # segment-colour palettes - "* Color 1" takes the primary,
@@ -747,7 +987,7 @@ def build(app):
                            callback=lambda: app.start_rec(15.0))
             dpg.add_text("", tag="rec_msg", color=(139, 147, 163))
         dpg.add_text("", tag="stat_txt")
-        dpg.add_text("Q net    E cube    W both    H hide UI", tag="hint1",
+        dpg.add_text("Q net    E 3-D    W both    C code    H hide UI", tag="hint1",
                      color=(130, 140, 155))
         dpg.add_text("space = play/pause    F11 = fullscreen window", tag="hint2",
                      color=(130, 140, 155))
@@ -755,6 +995,10 @@ def build(app):
     app._themes['normal'] = apply_theme()
     app._themes['present'] = present_theme()
     app.rebuild_params()
+    app.rebuild_geom_fields()
+    files = app.project.effect_files()
+    if files:
+        app.edit_open(files[0])
     dpg.set_primary_window("root", True)
     dpg.setup_dearpygui()
     app.relayout()
@@ -771,6 +1015,63 @@ def build(app):
 SHOT_DIR = os.path.join(tempfile.gettempdir(), "cubefx")
 SHOT_REQ = os.path.join(SHOT_DIR, "capture.request")
 SHOT_PNG = os.path.join(SHOT_DIR, "capture.png")
+CMD_FILE = os.path.join(SHOT_DIR, "command.json")
+
+
+def service_command(app):
+    """Drive the running app from outside, the same way a capture is asked
+    for: a JSON file of commands, applied on the next tick and removed.
+
+        [{"geometry": {"kind": "sphere", "params": {"w": 32, "h": 16}}},
+         {"effect": "Rainbow"}, {"layout": "edit"}, {"open": "my_effect.cpp"},
+         {"code": "...whole file..."}, {"build": true}, {"param": ["sx", 200]}]
+
+    It exists so the app can be tested without a hand on the mouse - every
+    panel here was checked by writing this file and reading the capture.
+    """
+    try:
+        if not os.path.exists(CMD_FILE):
+            return
+        import json
+        cmds = json.load(open(CMD_FILE, encoding="utf-8"))
+        os.remove(CMD_FILE)
+    except Exception as e:
+        print(f"command file: {e}")
+        try:
+            os.remove(CMD_FILE)
+        except OSError:
+            pass
+        return
+    for c in cmds if isinstance(cmds, list) else [cmds]:
+        try:
+            if "geometry" in c:
+                g = Geometry.from_json(c["geometry"])
+                app.apply_geometry(g)
+                dpg.set_value("geom_kind", g.kind)
+                app.rebuild_geom_fields()
+            if "effect" in c:
+                app.on_effect(None, c["effect"])
+                dpg.set_value("fx_combo", c["effect"])
+            if "layout" in c:
+                app.layout = c["layout"]; app.ui = True; app.request_layout()
+            if "open" in c:
+                app.edit_open(c["open"])
+            if "new" in c:
+                dpg.set_value("new_name", c["new"]); app.edit_new()
+            if "code" in c:
+                dpg.set_value("code", c["code"]); app.edit_dirty = True
+            if c.get("build"):
+                app.edit_build()
+            if "param" in c:
+                k, v = c["param"]
+                app.eng.fx[k] = int(v); app.eng.push()
+                app.rebuild_params()
+            if "map1d2d" in c:
+                app.on_map1d2d(None, c["map1d2d"]); dpg.set_value("map1d2d", c["map1d2d"])
+            if "view" in c:
+                app.yaw, app.pitch, app.dist = c["view"]
+        except Exception as e:
+            print(f"command {c}: {e}")
 
 # Recordings go in the REPO, not in the temp directory the IPC lives in. The two
 # are different kinds of file: capture.request and crash.txt are scratch that
@@ -814,12 +1115,14 @@ def main():
     os.makedirs(GIF_DIR, exist_ok=True)
     print(f"if a frame throws, the traceback lands in {os.path.join(SHOT_DIR, 'crash.txt')}")
     print(f"frame capture: create {SHOT_REQ} to get a PNG at {SHOT_PNG}")
+    print(f"remote control: write a JSON list of commands to {CMD_FILE}")
     try:
         while dpg.is_dearpygui_running():
             if app._need_layout:
                 app._need_layout = False
                 app.relayout()
             try:
+                app.poll_build()
                 app.step_sim()
                 app.draw()
             except Exception:
@@ -837,6 +1140,7 @@ def main():
                 app.playing = False
             dpg.render_dearpygui_frame()
             service_capture()
+            service_command(app)
     finally:
         app.stop_live()
         dpg.destroy_context()

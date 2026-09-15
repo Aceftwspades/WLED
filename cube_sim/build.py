@@ -394,12 +394,10 @@ def build_native(srcs, force=False):
     return True
 
 
-def main():
-    want = set(sys.argv[1:]) or {"--wasm", "--native"}
-    if "--wasm-only" in want:   want = {"--wasm"}
-    if "--native-only" in want: want = {"--native"}
-
-    print("cube_sim build")
+def engine_sources(extra=(), log=print):
+    """Every translation unit the engine is made of - the extractions run
+    first, so the generated files are current - plus any `extra` sources a
+    project adds (the effects being edited in the studio)."""
     noise = extract_noise()
     extract_fx_modes()
     stock = extract_stock()
@@ -422,6 +420,16 @@ def main():
             # what makes a palette id mean the same thing here as on the device.
             extract_palettes(),
             os.path.join(ROOT, "wled00", "src", "dependencies", "fastled_slim", "fastled_slim.cpp")])
+    return srcs + [os.path.abspath(e) for e in extra]
+
+
+def main():
+    want = set(sys.argv[1:]) or {"--wasm", "--native"}
+    if "--wasm-only" in want:   want = {"--wasm"}
+    if "--native-only" in want: want = {"--native"}
+
+    print("cube_sim build")
+    srcs = engine_sources()
 
     if "--native" in want:
         # The return value is NOT optional. build_native() reports a failure and

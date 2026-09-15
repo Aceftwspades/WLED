@@ -242,17 +242,17 @@ class BuildReport:
 
     def error_lines(self):
         """(file, line, message) triples parsed from clang/gcc output."""
+        import re
         out = []
+        # path:line:col: kind: message - the path may itself contain a drive
+        # colon, so it is matched from the right, not split from the left
+        pat = re.compile(r"^(.*?):(\d+):(\d+):\s*(error|warning|note):\s*(.*)$")
         for src, txt in self.errors.items():
             for line in txt.splitlines():
-                # path:line:col: error: message
-                parts = line.split(":", 4)
-                if len(parts) >= 5 and parts[3].strip() in ("error", "warning", "note"):
-                    try:
-                        out.append((parts[0], int(parts[1]), parts[3].strip() + ":" + parts[4]))
-                    except ValueError:
-                        pass
-                elif len(parts) >= 4 and ":" in line and (" error" in line or "error:" in line):
+                m = pat.match(line.strip())
+                if m:
+                    out.append((m.group(1), int(m.group(2)), m.group(4) + ": " + m.group(5)))
+                elif "error" in line and ":" in line and not line.startswith(" "):
                     out.append((src, 0, line.strip()))
         return out
 

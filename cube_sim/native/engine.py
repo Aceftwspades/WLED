@@ -273,8 +273,9 @@ class Engine:
 
     # --- masks ---------------------------------------------------------------
     def lit_mask(self, flat=False):
-        """True where a pixel exists. On the cube the four gap corners do not."""
-        if flat:
+        """True where a pixel exists. On the cube the four gap corners do not;
+        every other geometry is fully populated."""
+        if flat or self.geom is None or self.geom.kind != "cube":
             return np.ones((self.rows, self.cols), bool)
         B = self.B
         yy, xx = np.mgrid[0:self.rows, 0:self.cols]

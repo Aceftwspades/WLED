@@ -1,0 +1,198 @@
+"""
+A project: a geometry, the effects being written for it, and where the
+results go.
+
+    <dir>/
+      project.json        geometry, the last-selected effect, options
+      effects/*.cpp       effects authored here - compiled into the engine
+      recipes/*.json      layer recipes (phase 2) - generated to effects/
+      export/             what you take to the device: ledmap.json and a
+                          usermod folder with the effects in it
+
+An effect file here is an ordinary cube_fx-style translation unit: it includes
+wled.h and cube_fx_common.h, defines one mode_*() function, and registers it
+with a CfxBankReg. That is deliberately the SAME shape as the effects in
+usermods/cube_fx/, so a file that works in the studio drops into a build with
+no changes, and so the template can be honest about what a WLED effect is
+rather than hiding it behind a friendlier one the device would not accept.
+"""
+import json
+import os
+import re
+import shutil
+import time
+
+from native.geometry import Geometry
+
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(HERE)
+PROJECTS = os.path.join(HERE, "projects")
+
+TEMPLATE = r'''#include "wled.h"
+#include "cube_fx_common.h"
+#include "cube_fx_bank.h"
+
+// ===========================================================================
+// {title}
+// ===========================================================================
+// Written in the WLED Effect Studio. This file is an ordinary WLED effect:
+// drop it into usermods/cube_fx/ (or any usermod folder that includes
+// cube_fx_common.h and cube_fx_bank.h) and it compiles into the firmware
+// unchanged.
+//
+// What an effect has to work with:
+//   SEGMENT.speed, .intensity, .custom1, .custom2   0..255   the sliders
+//   SEGMENT.custom3                                   0..31    (five bits)
+//   SEGMENT.check1, .check2, .check3                  bool     the checkboxes
+//   SEGMENT.color_from_palette(idx, false, true, 0)   a palette colour
+//   SEGCOLOR(0..2)                                    the segment's colours
+//   strip.now                                         the clock, in ms
+//   SEGENV.call / .aux0 / .aux1 / .step               per-effect scratch
+//   SEGENV.allocateData(n) / SEGENV.data              persistent state
+// 2-D:  SEG_W, SEG_H, SEGMENT.setPixelColorXY(x, y, c)
+// 1-D:  SEGLEN, SEGMENT.setPixelColor(i, c)
+// Audio: cfx_getAudioData(), cfx_bands(), fx_lowBeat() - see cube_fx_common.h
+// ===========================================================================
+
+static FX_RET mode_{ident}() {{
+  // A 1-D effect runs on anything: on a matrix WLED expands it according to
+  // the segment's 1-D-to-2-D setting. Ask is2D() to draw a matrix instead.
+  const uint32_t t = strip.now;
+  const uint8_t  sp = SEGMENT.speed;
+
+  if (SEGMENT.is2D()) {{
+    const int W = SEG_W, H = SEG_H;
+    for (int y = 0; y < H; y++)
+      for (int x = 0; x < W; x++) {{
+        const uint8_t idx = (uint8_t)((x * 255) / (W > 1 ? W - 1 : 1) + (t * sp) / 2048);
+        const uint8_t bri = (uint8_t)(SEGMENT.intensity);
+        SEGMENT.setPixelColorXY(x, y, mq_scale(SEGMENT.color_from_palette(idx, false, true, 0), bri));
+      }}
+  }} else {{
+    for (int i = 0; i < SEGLEN; i++) {{
+      const uint8_t idx = (uint8_t)((i * 255) / (SEGLEN > 1 ? SEGLEN - 1 : 1) + (t * sp) / 2048);
+      SEGMENT.setPixelColor(i, mq_scale(SEGMENT.color_from_palette(idx, false, true, 0), SEGMENT.intensity));
+    }}
+  }}
+  FX_DONE;
+}}
+
+// Name@slider labels;colour labels;palette;flags;defaults
+//   flags: 1 = 1-D, 2 = 2-D, 12 = both, f = frequency/audio, v = volume
+static const char _data_FX_MODE_{upper}[] PROGMEM =
+  "{title}@Speed,Brightness,,,,,,;;!;12;sx=120,ix=200,pal=11";
+
+static CfxBankReg {ident}_reg(&mode_{ident}, _data_FX_MODE_{upper});
+'''
+
+
+def _ident(name):
+    s = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").lower()
+    if not s or s[0].isdigit():
+        s = "fx_" + s
+    return s
+
+
+class Project:
+    def __init__(self, path):
+        self.path = os.path.abspath(path)
+        self.geometry = Geometry("cube", B=16)
+        self.selected = ""              # name of the last-used effect
+        self.options = {}
+        os.makedirs(os.path.join(self.path, "effects"), exist_ok=True)
+        os.makedirs(os.path.join(self.path, "recipes"), exist_ok=True)
+        os.makedirs(os.path.join(self.path, "export"), exist_ok=True)
+        self.load()
+
+    # --- persistence ----------------------------------------------------------------
+    @property
+    def file(self):
+        return os.path.join(self.path, "project.json")
+
+    def load(self):
+        if not os.path.exists(self.file):
+            self.save()
+            return
+        try:
+            d = json.load(open(self.file, encoding="utf-8"))
+        except Exception:
+            return
+        try:
+            self.geometry = Geometry.from_json(d.get("geometry", {}))
+        except Exception:
+            self.geometry = Geometry("cube", B=16)
+        self.selected = d.get("selected", "")
+        self.options = d.get("options", {})
+
+    def save(self):
+        d = {"geometry": self.geometry.to_json(), "selected": self.selected,
+             "options": self.options, "saved": time.strftime("%Y-%m-%d %H:%M:%S")}
+        with open(self.file, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=1)
+
+    # --- effects ------------------------------------------------------------------
+    @property
+    def effects_dir(self):
+        return os.path.join(self.path, "effects")
+
+    def effect_files(self):
+        return sorted(f for f in os.listdir(self.effects_dir) if f.endswith(".cpp"))
+
+    def effect_path(self, fname):
+        return os.path.join(self.effects_dir, fname)
+
+    def new_effect(self, title):
+        """Write a fresh effect from the template; returns its file name."""
+        ident = _ident(title)
+        fname = ident + ".cpp"
+        n = 2
+        while os.path.exists(self.effect_path(fname)):
+            fname = f"{ident}_{n}.cpp"; n += 1
+            ident = f"{ident}_{n - 1}" if n > 2 else ident
+        src = TEMPLATE.format(title=title.replace('"', "'"), ident=_ident(fname[:-4]),
+                              upper=_ident(fname[:-4]).upper())
+        with open(self.effect_path(fname), "w", encoding="utf-8", newline="\n") as f:
+            f.write(src)
+        return fname
+
+    def read_effect(self, fname):
+        return open(self.effect_path(fname), encoding="utf-8").read()
+
+    def write_effect(self, fname, text):
+        with open(self.effect_path(fname), "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+
+    def effect_title(self, fname):
+        """The name the effect registers, from its metadata string."""
+        try:
+            m = re.search(r'PROGMEM\s*=\s*"([^@"]+)', self.read_effect(fname))
+            return m.group(1) if m else fname
+        except Exception:
+            return fname
+
+    # --- export ---------------------------------------------------------------------
+    def export(self):
+        """ledmap.json for the geometry and a usermod folder with the effects.
+        Returns the export directory."""
+        out = os.path.join(self.path, "export")
+        with open(os.path.join(out, "ledmap.json"), "w", encoding="utf-8") as f:
+            json.dump(self.geometry.ledmap(), f)
+        um = os.path.join(out, "usermod_studio")
+        os.makedirs(um, exist_ok=True)
+        for fname in self.effect_files():
+            shutil.copyfile(self.effect_path(fname), os.path.join(um, fname))
+        # the two headers the effects include, so the folder builds on its own
+        for h in ("cube_fx_common.h", "cube_fx_bank.h"):
+            src = os.path.join(ROOT, "usermods", "cube_fx", h)
+            if os.path.exists(src):
+                shutil.copyfile(src, os.path.join(um, h))
+        with open(os.path.join(um, "README.md"), "w", encoding="utf-8") as f:
+            f.write("# Studio export\n\nEffects written in the WLED Effect Studio for: "
+                    f"{self.geometry.describe()}.\n\n"
+                    "Copy this folder into `usermods/`, add it to your build's usermod list, "
+                    "and upload `ledmap.json` to the device.\n")
+        return out
+
+
+def default_project():
+    return Project(os.path.join(PROJECTS, "default"))
