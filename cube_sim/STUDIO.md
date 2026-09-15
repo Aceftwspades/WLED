@@ -40,7 +40,7 @@ the geometry hands it; the effect code never knows the difference.
 
 ## Phases
 
-### Phase 1 — foundation (this is where the branch starts)
+### Phase 1 — foundation (done, first pass)
 
 1. **Incremental build.** One object per translation unit, cached on source
    and header mtimes, compiled in parallel; a link step produces a **versioned**
@@ -91,13 +91,27 @@ composer exists, because the composer's recipe is the natural thing to ship.
 
 ### Alongside
 
-- Cross-platform audio: WASAPI loopback on Windows (present), PulseAudio /
-  PipeWire monitor on Linux, an input-device fallback everywhere, and a note
-  that macOS loopback needs a virtual device.
+- Cross-platform audio (done): WASAPI loopback on Windows, and any input
+  device anywhere through sounddevice — a PulseAudio / PipeWire "Monitor of"
+  on Linux, BlackHole on macOS, a microphone anywhere. The source picker is
+  in the Audio section.
 - True PCM into audioreactive: a ninth `u_data` slot fed from the FFT batch,
   double-buffered, with the effects falling back to the rebuilt waveform when
   the slot is absent. The one firmware-side change on the near horizon; small
   and self-contained by design.
+
+## Running it
+
+```bash
+cd cube_sim
+pip install dearpygui numpy pillow sounddevice        # pyaudiowpatch on Windows for loopback
+python build.py --native-only                          # once; the app rebuilds incrementally
+python -m native.app
+```
+
+Keys: **C** code pane, **Q** logical view, **E** 3-D, **W** both, **H** hide
+the controls, **space** pause. Projects live in `cube_sim/projects/<name>/`;
+the default one is created on first run.
 
 ## Compatibility rules for this branch
 

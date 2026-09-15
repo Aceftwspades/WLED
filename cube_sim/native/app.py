@@ -242,9 +242,16 @@ class App:
 
     def start_live(self):
         try:
-            from native.audio import LiveAudio
+            from native.audio import open_live
             # pair() names its widgets sld_/inp_, so read the box.
-            self.live = LiveAudio(gain=float(dpg.get_value("inp_live_gain")))
+            dev = dpg.get_value("live_dev") if dpg.does_item_exist("live_dev") else "system output"
+            index = None
+            if dev and dev != "system output":
+                from native.audio import list_inputs
+                for i, n in list_inputs():
+                    if n == dev:
+                        index = i
+            self.live = open_live(gain=float(dpg.get_value("inp_live_gain")), device=index)
             dpg.set_value("live_msg", f"capturing: {self.live.name}")
             dpg.configure_item("live_btn", label="stop live audio")
         except Exception as e:
@@ -974,6 +981,13 @@ def build(app):
                 dpg.add_color_button(tag="beat_led", default_value=(42, 47, 58, 255),
                                      width=280, height=6, no_border=True)
                 dpg.add_separator()
+                try:
+                    from native.audio import list_inputs
+                    _devs = ["system output"] + [n for _, n in list_inputs()]
+                except Exception:
+                    _devs = ["system output"]
+                dpg.add_combo(_devs, label="source", tag="live_dev", width=200,
+                              default_value=_devs[0])
                 dpg.add_button(label="use live audio", tag="live_btn",
                                callback=lambda: app.toggle_live())
                 dpg.add_group(tag="gain_row")

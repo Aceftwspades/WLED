@@ -1,25 +1,34 @@
 """
-Live system audio, via WASAPI loopback.
+Live audio, three ways, one analyser.
 
-This is the reason the simulator moved off the browser. A page can only reach
-the speakers through getDisplayMedia - a screen-share picker, a permission
-prompt, a checkbox the user has to find, and no guarantee about buffer size or
-latency. WASAPI loopback is the supported Windows path for "capture what is
-being played": no prompt, no picker, and the actual sample stream.
+  LiveAudio   Windows: WASAPI loopback of the default OUTPUT, via
+              pyaudiowpatch - whatever you are listening to is what the LEDs
+              see, no picker, no prompt. This is the reason the simulator
+              moved off the browser, where the only route to the speakers is
+              a screen-share dialog.
+  LiveInput   anywhere: an INPUT device through sounddevice - a microphone,
+              a line-in, or a loopback that the OS exposes as an input: a
+              PulseAudio / PipeWire "Monitor of ..." on Linux, BlackHole or
+              Loopback on macOS, "Stereo Mix" on Windows machines that have it.
+  open_live() picks: loopback where it exists, else the default input, or a
+              named device.
 
-It opens the DEFAULT OUTPUT device's loopback endpoint, so whatever you are
-listening to is what the cube sees. Audio is turned into sixteen band levels and
-discarded; nothing is written to disk or sent anywhere.
-
-Presents the same push(engine) call as synth.Synth, so the two are
-interchangeable everywhere.
+Audio is turned into sixteen band levels and discarded; nothing is written to
+disk or sent anywhere. Both present the same push(engine) call as
+synth.Synth, so the three are interchangeable everywhere.
 """
+import sys
+
 import numpy as np
 
 try:
     import pyaudiowpatch as pyaudio
 except ImportError:                                    # pragma: no cover
     pyaudio = None
+try:
+    import sounddevice as sd
+except ImportError:                                    # pragma: no cover
+    sd = None
 
 
 class LiveAudio:
@@ -71,24 +80,7 @@ class LiveAudio:
             "the device is not exclusive-mode locked by another application.")
 
     def _band_edges(self):
-        """Log-spaced, and forced strictly increasing.
-
-        A log spacing packs the low bands close together, and down there the
-        bins are wider than the bands are: at 48 kHz with a 1024 chunk the first
-        two edges both landed on bin 1, so bands 0 and 1 read identical values
-        and the bottom of the spectrum was a duplicate rather than a reading.
-        Nudging each edge past the last costs a little accuracy in band centres
-        and buys every band its own data.
-        """
-        n = self.chunk // 2 + 1
-        e, prev = [], -1
-        for i in range(self.BANDS + 1):
-            f = self.LO * (self.HI / self.LO) ** (i / self.BANDS)
-            b = int(round(f / (self.rate / 2.0) * n))
-            b = max(b, prev + 1)
-            e.append(min(n - 1, b))
-            prev = e[-1]
-        return e
+        return _band_edges(self.chunk, self.rate, self.LO, self.HI, self.BANDS)
 
     def _cb(self, data, frames, time_info, status):
         a = np.frombuffer(data, np.float32)
@@ -99,58 +91,151 @@ class LiveAudio:
         return (None, pyaudio.paContinue)
 
     def push(self, eng):
-        """Fill the engine's FFT bins from the most recent audio, and detect onsets."""
-        spec = np.abs(np.fft.rfft(self._buf * self._win))
-        raw = np.empty(self.BANDS, np.float32)
-        for i in range(self.BANDS):
-            a, b = self._edges[i], max(self._edges[i] + 1, self._edges[i + 1])
-            raw[i] = spec[a:b].mean()
-
-        # Automatic gain, because a fixed multiplier cannot serve real music.
-        #
-        # This was a flat x40, and at that ordinary programme material clipped
-        # 18% of all band samples flat against 255. A clipped band is a
-        # CONSTANT, so anything watching for onsets sees nothing at all in
-        # exactly the bands carrying the music. Dropping it to x10 fixed the
-        # passage it was measured on and then clipped 16% on the next one, four
-        # minutes later - the dynamic range between a quiet verse and a chorus
-        # is far wider than any one number can straddle.
-        #
-        # So: track the loudest band with a fast attack and a slow release, and
-        # normalise against it. The loudest band lands near 200, leaving real
-        # headroom for a transient, and quiet passages come up instead of
-        # disappearing. gain stays as a trim on top.
-        peak = float(raw.max())
-        if peak > self._agc:
-            self._agc = peak                                  # instant attack
-        else:
-            self._agc += (peak - self._agc) * 0.010           # ~2 s release
-        ref = max(self._agc, 0.35)                            # floor: silence stays silent
-        scaled = np.clip(raw * (200.0 / ref) * self.gain, 0.0, 255.0)
-
-        arr = eng.fft
-        for i in range(self.BANDS):
-            arr[i] = int(scaled[i])
-        self.level = float(scaled.mean())
-
-        # Onset by spectral flux on the low bands - the transient shape
-        # fx_lowBeat is looking for. The floor attacks fast and decays slowly,
-        # so sustained bass stops triggering while a kick over it still does.
-        low = (int(arr[0]) + int(arr[1]) + int(arr[2])) / 3.0
-        if not self._primed:                    # nothing to difference against yet
-            self._primed = True
-            self._prev_low = low
-            eng.audio(min(255.0, self.level * 1.6), 0)
-            return 0
-        flux = max(0.0, low - self._prev_low)
-        self._prev_low = low
-        self._floor = max(flux, self._floor * 0.92)
-        hit = 1 if (flux > 8 and flux >= self._floor * 0.85 and low > 40) else 0
-        eng.audio(min(255.0, self.level * 1.6), hit)
-        return hit
+        return _push(self, eng)
 
     def close(self):
         try:
             self.stream.stop_stream(); self.stream.close()
         finally:
             self.p.terminate()
+
+
+# --- the analyser, shared -------------------------------------------------------
+def _band_edges(chunk, rate, LO, HI, BANDS):
+    """Log-spaced, and forced strictly increasing.
+
+    A log spacing packs the low bands close together, and down there the bins
+    are wider than the bands are: at 48 kHz with a 1024 chunk the first two
+    edges both landed on bin 1, so bands 0 and 1 read identical values and the
+    bottom of the spectrum was a duplicate rather than a reading. Nudging each
+    edge past the last costs a little accuracy in band centres and buys every
+    band its own data.
+    """
+    n = chunk // 2 + 1
+    e, prev = [], -1
+    for i in range(BANDS + 1):
+        f = LO * (HI / LO) ** (i / BANDS)
+        b = int(round(f / (rate / 2.0) * n))
+        b = max(b, prev + 1)
+        e.append(min(n - 1, b))
+        prev = e[-1]
+    return e
+
+
+def _push(self, eng):
+    """Fill the engine's FFT bins from the most recent audio, and detect onsets.
+
+    Automatic gain, because a fixed multiplier cannot serve real music. This was
+    a flat x40, and at that ordinary programme material clipped 18% of all band
+    samples flat against 255. A clipped band is a CONSTANT, so anything watching
+    for onsets sees nothing at all in exactly the bands carrying the music.
+    Dropping it to x10 fixed the passage it was measured on and then clipped 16%
+    on the next one, four minutes later - the dynamic range between a quiet
+    verse and a chorus is far wider than any one number can straddle. So: track
+    the loudest band with a fast attack and a slow release, and normalise
+    against it. The loudest band lands near 200, leaving real headroom for a
+    transient, and quiet passages come up instead of disappearing. gain stays
+    as a trim on top.
+
+    Onset by spectral flux on the low bands - the transient shape fx_lowBeat is
+    looking for. The floor attacks fast and decays slowly, so sustained bass
+    stops triggering while a kick over it still does.
+    """
+    spec = np.abs(np.fft.rfft(self._buf * self._win))
+    raw = np.empty(self.BANDS, np.float32)
+    for i in range(self.BANDS):
+        a, b = self._edges[i], max(self._edges[i] + 1, self._edges[i + 1])
+        raw[i] = spec[a:b].mean()
+    peak = float(raw.max())
+    if peak > self._agc:
+        self._agc = peak
+    else:
+        self._agc += (peak - self._agc) * 0.010
+    ref = max(self._agc, 0.35)
+    scaled = np.clip(raw * (200.0 / ref) * self.gain, 0.0, 255.0)
+    arr = eng.fft
+    for i in range(self.BANDS):
+        arr[i] = int(scaled[i])
+    self.level = float(scaled.mean())
+    low = (int(arr[0]) + int(arr[1]) + int(arr[2])) / 3.0
+    if not self._primed:
+        self._primed = True
+        self._prev_low = low
+        eng.audio(min(255.0, self.level * 1.6), 0)
+        return 0
+    flux = max(0.0, low - self._prev_low)
+    self._prev_low = low
+    self._floor = max(flux, self._floor * 0.92)
+    hit = 1 if (flux > 8 and flux >= self._floor * 0.85 and low > 40) else 0
+    eng.audio(min(255.0, self.level * 1.6), hit)
+    return hit
+
+
+class LiveInput:
+    """Any input device, on any OS, through sounddevice (PortAudio)."""
+    LO, HI, BANDS = LiveAudio.LO, LiveAudio.HI, LiveAudio.BANDS
+
+    def __init__(self, gain=3.0, chunk=2048, device=None):
+        if sd is None:
+            raise RuntimeError("sounddevice is not installed:  pip install sounddevice")
+        self.gain = gain
+        self.chunk = chunk
+        if device is None:
+            device = sd.default.device[0]
+        info = sd.query_devices(device)
+        self.name = info["name"]
+        self.rate = int(info.get("default_samplerate") or 48000)
+        self.channels = max(1, min(2, int(info.get("max_input_channels") or 1)))
+        self._buf = np.zeros(chunk, np.float32)
+        self._win = np.hanning(chunk).astype(np.float32)
+        self._edges = _band_edges(chunk, self.rate, self.LO, self.HI, self.BANDS)
+        self._prev_low = 0.0
+        self._floor = 0.0
+        self._primed = False
+        self._agc = 1.0
+        self.level = 0.0
+        self.stream = sd.InputStream(device=device, channels=self.channels,
+                                     samplerate=self.rate, blocksize=chunk,
+                                     dtype="float32", callback=self._cb)
+        self.stream.start()
+
+    def _cb(self, indata, frames, time_info, status):
+        a = indata.mean(axis=1) if indata.ndim > 1 and indata.shape[1] > 1 else indata.reshape(-1)
+        if a.size >= self.chunk:
+            self._buf = a[-self.chunk:].copy()
+
+    def push(self, eng):
+        return _push(self, eng)
+
+    def close(self):
+        try:
+            self.stream.stop(); self.stream.close()
+        except Exception:
+            pass
+
+
+def list_inputs():
+    """[(index, name)] of devices that can capture, for a picker."""
+    if sd is None:
+        return []
+    out = []
+    for i, d in enumerate(sd.query_devices()):
+        if d.get("max_input_channels", 0) > 0:
+            out.append((i, d["name"]))
+    return out
+
+
+def open_live(gain=3.0, device=None):
+    """Loopback of what is playing where the OS offers it, else an input.
+
+    Windows with pyaudiowpatch: the default output's loopback. Everything
+    else, or a named device: sounddevice. On Linux pick the "Monitor of ..."
+    device to hear what is playing; on macOS install BlackHole and route
+    through it - the OS has no loopback of its own.
+    """
+    if device is None and sys.platform.startswith("win") and pyaudio is not None:
+        try:
+            return LiveAudio(gain=gain)
+        except Exception:
+            pass                     # fall through to an input device
+    return LiveInput(gain=gain, device=device)
