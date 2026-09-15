@@ -80,9 +80,43 @@ def _coerce(expr, have, want):
     raise GraphError(f"cannot connect {have} to {want}")
 
 
+SUB = "sub:"          # node type prefix for a sub-graph used as a node
+
+
+def boundary_def(base, n):
+    """The definition of a Graph input / Graph output node with its pin typed
+    by its own `type` param - the one place a node's pins depend on its
+    settings."""
+    t = n.get("params", {}).get("type", "float")
+    d = dict(base)
+    if base["name"] == "Graph input":
+        d["outputs"] = [{"name": "value", "type": t}]
+        if t == "float":  d["code"] = "$out.value = $p.default;"
+        elif t == "bool": d["code"] = "$out.value = $p.default > 0.5f;"
+        else:             d["code"] = "$out.value = mq_scale(0xFFFFFFu, (uint8_t)(gc_sat($p.default) * 255.0f));"
+    else:
+        d["inputs"] = [{"name": "value", "type": t, "default": 0}]
+    return d
+
+
+def sub_def(name, sub):
+    """The definition of a sub-graph as a node: one pin per boundary node."""
+    ins, outs = [], []
+    for n in sorted(sub.nodes.values(), key=lambda n: (n["pos"][1], n["pos"][0])):
+        if n["type"] == "Graph input":
+            ins.append({"name": n["params"].get("name", "in"), "type": n["params"].get("type", "float"),
+                        "default": n["params"].get("default", 0.0)})
+        elif n["type"] == "Graph output":
+            outs.append({"name": n["params"].get("name", "out"), "type": n["params"].get("type", "float")})
+    return dict(name=SUB + name, cat="subgraphs", scope="pixel", inputs=ins, outputs=outs, params=[],
+                code="", doc=f"sub-graph {sub.name}: {len(ins)} in, {len(outs)} out", label=sub.name)
+
+
 class Graph:
-    def __init__(self, d=None, lib=None):
+    def __init__(self, d=None, lib=None, resolver=None):
         self.lib = lib or library()
+        # name -> Graph, for sub-graph nodes; supplied by the project
+        self.resolver = resolver
         d = d or {}
         self.name = d.get("name", "Untitled")
         self.nodes = {int(n["id"]): dict(n, id=int(n["id"])) for n in d.get("nodes", [])}
@@ -91,11 +125,30 @@ class Graph:
         self.link_meta = {(int(l[2]), l[3]): dict(l[4]) for l in d.get("links", []) if len(l) > 4 and l[4]}
         self._next = max(self.nodes.keys(), default=0) + 1
 
+    # --- definitions -----------------------------------------------------------
+    def node_def(self, n):
+        """The definition that applies to THIS node: the library's, typed by
+        the node's params for a boundary node, derived for a sub-graph."""
+        t = n["type"]
+        if t.startswith(SUB):
+            if t in self.lib:
+                return self.lib[t]
+            sub = self.resolver(t[len(SUB):]) if self.resolver else None
+            if sub is None:
+                raise GraphError(f"node {n['id']}: sub-graph {t[len(SUB):]!r} not found")
+            return sub_def(t[len(SUB):], sub)
+        d = self.lib.get(t)
+        if d is None:
+            raise GraphError(f"node {n['id']}: unknown type {t!r}")
+        if t in ("Graph input", "Graph output"):
+            return boundary_def(d, n)
+        return d
+
     # --- editing -----------------------------------------------------------
     def add(self, type_, pos=(0, 0), params=None):
-        if type_ not in self.lib:
+        if type_ not in self.lib and not type_.startswith(SUB):
             raise GraphError(f"no node type {type_!r}")
-        d = self.lib[type_]
+        d = self.lib[type_] if type_ in self.lib else {"params": []}
         p = {q["name"]: q["default"] for q in d["params"]}
         if params:
             p.update(params)
@@ -160,24 +213,120 @@ class Graph:
             visit(n)
         return out
 
+    def flatten(self, depth=0):
+        """A copy with every sub-graph node replaced by its contents.
+
+        A sub node's input pin X is the sub-graph's "Graph input" named X:
+        whatever fed the pin now feeds everything that read that input node,
+        and an unconnected pin leaves the sub-graph's default in place. The
+        pin Y is the "Graph output" named Y: whatever fed it inside now feeds
+        everything the pin fed outside. The boundary nodes themselves vanish.
+        Recursive, so a sub-graph may use sub-graphs; twelve deep is a loop.
+        """
+        if depth > 12:
+            raise GraphError("sub-graphs nested more than twelve deep - is one inside itself?")
+        flat = Graph({"name": self.name}, lib=self.lib, resolver=self.resolver)
+        flat.nodes = {}
+        flat.link_meta = dict(self.link_meta)
+        idmap = {}
+        # plain nodes first, keeping ids where possible
+        for nid, n in self.nodes.items():
+            if not n["type"].startswith(SUB):
+                flat.nodes[nid] = dict(n, id=nid, params=dict(n.get("params", {})), inputs=dict(n.get("inputs", {})))
+                idmap[nid] = nid
+        flat._next = max(flat.nodes.keys(), default=0) + 1
+        links = list(self.links)
+        for nid, n in self.nodes.items():
+            if not n["type"].startswith(SUB):
+                continue
+            name = n["type"][len(SUB):]
+            sub = self.resolver(name) if self.resolver else None
+            if sub is None:
+                raise GraphError(f"sub-graph {name!r} not found")
+            sub = sub.flatten(depth + 1)
+            # bring the sub-graph's nodes in under fresh ids
+            smap = {}
+            for sid, sn in sub.nodes.items():
+                new = flat._next; flat._next += 1
+                smap[sid] = new
+                flat.nodes[new] = dict(sn, id=new, params=dict(sn.get("params", {})), inputs=dict(sn.get("inputs", {})),
+                                       pos=[sn["pos"][0] + n["pos"][0], sn["pos"][1] + n["pos"][1]])
+            inner = [(smap[a], o, smap[b], i) for a, o, b, i in sub.links]
+            # where each boundary pin lands
+            src_in = {}    # pin name -> what feeds it from OUTSIDE (a, out), if anything
+            for a, o, b, i in links:
+                if b == nid:
+                    src_in[i] = (a, o)
+            out_src = {}   # pin name -> what feeds the Graph output INSIDE (a, out)
+            for a, o, b, i in inner:
+                bn = flat.nodes[b]
+                if bn["type"] == "Graph output":
+                    out_src[bn["params"].get("name", "out")] = (a, o)
+            # rewire: links inside from a Graph input -> from the outside source (or keep the
+            # boundary node, which then yields its default)
+            rewired = []
+            for a, o, b, i in inner:
+                an = flat.nodes[a]
+                if an["type"] == "Graph input":
+                    pin = an["params"].get("name", "in")
+                    if pin in src_in:
+                        a, o = src_in[pin]
+                if flat.nodes[b]["type"] == "Graph output":
+                    continue
+                rewired.append((a, o, b, i))
+            # links outside from the sub node's outputs -> from the inner source
+            outer = []
+            for a, o, b, i in links:
+                if a == nid:
+                    if o in out_src:
+                        a, o = out_src[o]
+                        outer.append((a, o, b, i))
+                    # an output nothing feeds inside just goes unconnected
+                elif b == nid:
+                    continue
+                else:
+                    outer.append((a, o, b, i))
+            links = outer + rewired
+            # boundary nodes that still feed something keep their defaults; the
+            # rest and every Graph output are dropped
+            used = {a for a, _, _, _ in links}
+            for sid, new in smap.items():
+                t = flat.nodes[new]["type"]
+                if t == "Graph output" or (t == "Graph input" and new not in used):
+                    flat.nodes.pop(new, None)
+        flat.links = [l for l in links if l[0] in flat.nodes and l[2] in flat.nodes]
+        return flat
+
     def compile(self, title=None):
         """The effect as C++ text. Raises GraphError with a message worth
         showing when the graph cannot be compiled."""
+        if any(n["type"].startswith(SUB) for n in self.nodes.values()):
+            return self.flatten().compile(title or self.name)
         title = title or self.name
         ident = _ident(title)
         outs = [n for n in self.nodes.values() if n["type"] == "Output"]
+        if not outs:
+            # a sub-graph previewed on its own: its first colour output is
+            # what the LEDs show, so it can be built and watched in place
+            gouts = [n for n in self.nodes.values()
+                     if n["type"] == "Graph output" and n["params"].get("type", "float") == "color"]
+            if gouts:
+                src = next(((a, o) for a, o, b, i in self.links if b == gouts[0]["id"]), None)
+                if src:
+                    prev = Graph(self.to_json(), lib=self.lib, resolver=self.resolver)
+                    o = prev.add("Output", gouts[0]["pos"])
+                    prev.link(src[0], src[1], o, "color")
+                    return prev.compile(title)
         if len(outs) != 1:
             raise GraphError("the graph needs exactly one Output node" + (f" (it has {len(outs)})" if outs else ""))
-        for n in self.nodes.values():
-            if n["type"] not in self.lib:
-                raise GraphError(f"node {n['id']}: unknown type {n['type']!r}")
+        defs = {nid: self.node_def(n) for nid, n in self.nodes.items()}
         order = self._order()
         src_of = {(b, inp): (a, out) for a, out, b, inp in self.links}
 
         # scope: frame nodes, then anything hoistable whose inputs are all frame
         scope = {}
         for nid in order:
-            d = self.lib[self.nodes[nid]["type"]]
+            d = defs[nid]
             if d["scope"] == "frame":
                 scope[nid] = "frame"; continue
             if PIXEL_NAMES.search(d["code"]):
@@ -189,7 +338,7 @@ class Graph:
             return f"n{nid}_{re.sub(r'[^A-Za-z0-9]', '_', out)}"
 
         def expand(nid):
-            n = self.nodes[nid]; d = self.lib[n["type"]]
+            n = self.nodes[nid]; d = defs[nid]
             code = d["code"]
             otypes = {o["name"]: o["type"] for o in d["outputs"]}
             # inputs
@@ -197,7 +346,7 @@ class Graph:
                 key = (nid, i["name"])
                 if key in src_of:
                     a, out = src_of[key]
-                    ad = self.lib[self.nodes[a]["type"]]
+                    ad = defs[a]
                     at = next((o["type"] for o in ad["outputs"] if o["name"] == out), None)
                     if at is None:
                         raise GraphError(f"node {a} has no output {out!r}")
@@ -306,8 +455,8 @@ static CfxBankReg {ident}_reg(&mode_{ident}, _data_FX_MODE_{upper});
 '''
 
 
-def load(path, lib=None):
-    return Graph(json.load(open(path, encoding="utf-8")), lib=lib)
+def load(path, lib=None, resolver=None):
+    return Graph(json.load(open(path, encoding="utf-8")), lib=lib, resolver=resolver)
 
 
 def save(graph, path):
@@ -315,10 +464,10 @@ def save(graph, path):
         json.dump(graph.to_json(), f, indent=1)
 
 
-def starter(name="New Graph", lib=None):
+def starter(name="New Graph", lib=None, resolver=None):
     """The graph a new file starts as: a palette gradient scrolled by Speed,
     so there is something on the LEDs the moment it compiles."""
-    g = Graph({"name": name}, lib=lib)
+    g = Graph({"name": name}, lib=lib, resolver=resolver)
     sp = g.add("Speed", (40, 40))
     tm = g.add("Time", (40, 140))
     mul = g.add("Multiply", (260, 90))

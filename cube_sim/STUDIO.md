@@ -85,6 +85,18 @@ checked, defaults for unconnected pins — and it goes through the same build
 and reload as a hand-written one. "Open as code" hands the generated file to
 the code pane for anything the nodes cannot reach.
 
+Sub-graphs: select some nodes and "fold into sub-graph" (toolbar or the
+node's right-click menu) and they become one node. Each wire that crossed the
+boundary becomes a pin — a "Graph input" node inside for every incoming one,
+a "Graph output" for every outgoing — named after the pin it fed, and the
+parent is rewired through the new node. The sub-graph is a file in
+`<project>/subgraphs/`, appears under "subgraphs" in the add menus, and can
+be dropped into any graph as many times as wanted. "Edit sub-graph" opens it
+in place with a back button; a Graph input's name, type and default are edited
+on the node, and a stale wire in a parent is dropped when it next opens. A
+sub-graph previews on its own: its first colour output stands in for Output.
+Compiling inlines the sub-graph wherever it is used — no call, no cost.
+
 ### Phase 3 — wiring and export
 
 The ledmap. For a matrix WLED's own settings suffice; for the shapes it is a

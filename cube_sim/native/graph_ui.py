@@ -71,6 +71,9 @@ class GraphPanel:
         self.lib = library(self._user_nodes())
         self.graph = None
         self.file = None
+        self.cur_dir = None      # graphs/ or subgraphs/ - where `file` lives
+        self.stack = []          # (dir, file) to return to from a sub-graph
+        self._subs = {}          # ident -> Graph, loaded on demand
         self.links = {}          # dpg link id -> (b, inp)
         self._pins = {}          # (node, "in"/"out", name) -> attribute tag
         self._ptype = {}         # attribute tag -> pin type
@@ -101,8 +104,44 @@ class GraphPanel:
                         print(f"user node {f}: {e}")
         return out
 
+    @property
+    def sub_dir(self):
+        d = os.path.join(self.app.project.path, "subgraphs")
+        os.makedirs(d, exist_ok=True)
+        return d
+
     def files(self):
         return sorted(f for f in os.listdir(self.dir) if f.endswith(".json"))
+
+    def sub_files(self):
+        return sorted(f for f in os.listdir(self.sub_dir) if f.endswith(".json"))
+
+    # --- sub-graphs as node types ------------------------------------------------------
+    def resolve_sub(self, ident):
+        """The Graph for a sub-graph node type, by file stem. Cached until
+        refresh_lib(), which runs whenever one is saved."""
+        if ident not in self._subs:
+            path = os.path.join(self.sub_dir, ident + ".json")
+            if not os.path.exists(path):
+                return None
+            self._subs[ident] = G.load(path, lib=self.lib, resolver=self.resolve_sub)
+        return self._subs[ident]
+
+    def refresh_lib(self):
+        """Rebuild the library: the built-ins, the user nodes, and one node
+        type per sub-graph file, its pins read from the boundary nodes."""
+        self._subs.clear()
+        self.lib = library(self._user_nodes())
+        for f in self.sub_files():
+            ident = f[:-5]
+            sub = self.resolve_sub(ident)
+            if sub is not None:
+                self.lib[G.SUB + ident] = G.sub_def(ident, sub)
+        if self.graph is not None:
+            self.graph.lib = self.lib
+        if dpg.does_item_exist("graph_add_type"):
+            dpg.configure_item("graph_add_type", items=self.type_names())
+        self.fill_add_menu()
 
     def new(self, name):
         name = (name or "").strip() or "New Graph"
@@ -110,19 +149,23 @@ class GraphPanel:
         n = 2
         while os.path.exists(os.path.join(self.dir, fname)):
             fname = f"{G._ident(name)}_{n}.json"; n += 1
-        g = G.starter(name, lib=self.lib)
+        g = G.starter(name, lib=self.lib, resolver=self.resolve_sub)
         G.save(g, os.path.join(self.dir, fname))
         self.open(fname)
 
-    def open(self, fname):
+    def open(self, fname, sub=False):
         if not fname:
             return
-        self.graph = G.load(os.path.join(self.dir, fname), lib=self.lib)
+        self.refresh_lib()
+        d = self.sub_dir if sub else self.dir
+        self.graph = G.load(os.path.join(d, fname), lib=self.lib, resolver=self.resolve_sub)
         self.file = fname
+        self.cur_dir = d
         self.rebuild()
         dpg.configure_item("graph_file", items=self.files())
-        dpg.set_value("graph_file", fname)
-        self.status(f"{fname}")
+        dpg.set_value("graph_file", fname if not sub else "")
+        dpg.configure_item("graph_back", show=bool(self.stack))
+        self.status(("sub-graph " if sub else "") + fname)
 
     def save(self):
         if not self.graph:
@@ -131,8 +174,106 @@ class GraphPanel:
             tag = f"gnode_{nid}"
             if dpg.does_item_exist(tag):
                 n["pos"] = list(dpg.get_item_pos(tag))
-        G.save(self.graph, os.path.join(self.dir, self.file))
+        G.save(self.graph, os.path.join(self.cur_dir or self.dir, self.file))
         self.status(f"{self.file} saved")
+        if self.cur_dir == self.sub_dir:
+            self._subs.pop(self.file[:-5], None)     # its pins may have changed
+
+    # --- sub-graphs: in and out --------------------------------------------------------
+    def enter_sub(self, nid):
+        """Open the sub-graph a node stands for; back returns to here."""
+        n = self.graph.nodes.get(nid)
+        if not n or not n["type"].startswith(G.SUB):
+            return
+        self.save()
+        self.stack.append((self.cur_dir, self.file))
+        self.open(n["type"][len(G.SUB):] + ".json", sub=True)
+
+    def back(self):
+        if not self.stack:
+            return
+        self.save()
+        d, f = self.stack.pop()
+        self.open(f, sub=(d == self.sub_dir))
+
+    def make_sub_from_selection(self, name=None):
+        """The selected nodes become one sub-graph node. Wires crossing the
+        boundary become the new node's pins - a Graph input for each link
+        coming in, named after the pin it fed; a Graph output for each
+        distinct output feeding out, named after it - and the parent is
+        rewired through the new node in their place."""
+        if not self.graph:
+            return
+        sel = [dpg.get_item_user_data(t) for t in dpg.get_selected_nodes("node_editor")]
+        sel = [nid for nid in sel if nid in self.graph.nodes and self.graph.nodes[nid]["type"] not in ("Output",)]
+        if not sel:
+            self.status("select the nodes to fold first")
+            return
+        self.save()                                   # positions
+        g = self.graph
+        S = set(sel)
+        name = (name or "").strip() or f"Sub {len(self.sub_files()) + 1}"
+        ident = G._ident(name)
+        while os.path.exists(os.path.join(self.sub_dir, ident + ".json")):
+            ident += "_2"
+        sub = G.Graph({"name": name}, lib=self.lib, resolver=self.resolve_sub)
+        # the chosen nodes, moved so the group starts near the origin
+        x0 = min(g.nodes[n]["pos"][0] for n in S); y0 = min(g.nodes[n]["pos"][1] for n in S)
+        smap = {}
+        for nid in sel:
+            n = g.nodes[nid]
+            smap[nid] = sub.add(n["type"], (n["pos"][0] - x0 + 260, n["pos"][1] - y0 + 40), dict(n.get("params", {})))
+            sub.nodes[smap[nid]]["inputs"] = dict(n.get("inputs", {}))
+        for a, o, b, i in g.links:
+            if a in S and b in S:
+                sub.link(smap[a], o, smap[b], i)
+        # boundary: in
+        in_pins, in_nodes = {}, {}     # (a, o) outside -> pin name ; pin -> Graph input id
+        y = 40
+        for a, o, b, i in g.links:
+            if a not in S and b in S:
+                key = (a, o)
+                if key not in in_pins:
+                    pin = i
+                    k = 2
+                    while pin in in_nodes:
+                        pin = f"{i}{k}"; k += 1
+                    t = next((x["type"] for x in g.node_def(g.nodes[a])["outputs"] if x["name"] == o), "float")
+                    in_pins[key] = pin
+                    in_nodes[pin] = sub.add("Graph input", (20, y), {"name": pin, "type": t, "default": 0.0}); y += 135
+                sub.link(in_nodes[in_pins[key]], "value", smap[b], i)
+        # boundary: out
+        out_pins, out_nodes = {}, {}
+        y = 40
+        xmax = max(sub.nodes[n]["pos"][0] for n in smap.values()) + 260 if smap else 500
+        for a, o, b, i in g.links:
+            if a in S and b not in S:
+                key = (a, o)
+                if key not in out_pins:
+                    pin = o
+                    k = 2
+                    while pin in out_nodes:
+                        pin = f"{o}{k}"; k += 1
+                    t = next((x["type"] for x in g.node_def(g.nodes[a])["outputs"] if x["name"] == o), "float")
+                    out_pins[key] = pin
+                    out_nodes[pin] = sub.add("Graph output", (xmax, y), {"name": pin, "type": t}); y += 110
+                    sub.link(smap[a], o, out_nodes[pin], "value")
+        G.save(sub, os.path.join(self.sub_dir, ident + ".json"))
+        self.refresh_lib()
+        # the parent: one node where the group was
+        cx = sum(g.nodes[n]["pos"][0] for n in S) / len(S); cy = sum(g.nodes[n]["pos"][1] for n in S) / len(S)
+        new = g.add(G.SUB + ident, (cx, cy))
+        outer_in = [(a, o, b, i) for a, o, b, i in g.links if a not in S and b in S]
+        outer_out = [(a, o, b, i) for a, o, b, i in g.links if a in S and b not in S]
+        for nid in sel:
+            g.remove(nid)
+        for a, o, b, i in outer_in:
+            g.link(a, o, new, in_pins[(a, o)])
+        for a, o, b, i in outer_out:
+            g.link(new, out_pins[(a, o)], b, i)
+        self.rebuild()
+        self.save()
+        self.status(f"folded {len(sel)} nodes into sub-graph '{name}'")
 
     def status(self, msg):
         if dpg.does_item_exist("graph_status"):
@@ -151,17 +292,28 @@ class GraphPanel:
             return
         for nid, n in self.graph.nodes.items():
             self._make_node(nid, n)
+        # a wire to a pin that no longer exists - a sub-graph's input was
+        # renamed or removed - is dropped rather than kept invisibly
+        stale = [l for l in self.graph.links
+                 if (l[0], "out", l[1]) not in self._pins or (l[2], "in", l[3]) not in self._pins]
+        if stale:
+            self.graph.links = [l for l in self.graph.links if l not in stale]
+            self.status(f"dropped {len(stale)} wire(s) to pins that no longer exist")
         for a, out, b, inp in self.graph.links:
             self._make_link(a, out, b, inp)
 
     def _make_node(self, nid, n):
-        d = self.lib.get(n["type"])
-        if d is None:
-            return
+        try:
+            d = self.graph.node_def(n)
+        except G.GraphError as e:
+            self.status(str(e)); return
         th = self.themes()
         linked = {(b, inp) for _, _, b, inp in self.graph.links}
         n.setdefault("inputs", {})
-        with dpg.node(label=n["type"], parent="node_editor", pos=n.get("pos", [0, 0]), tag=f"gnode_{nid}",
+        label = d.get("label") or n["type"]
+        if n["type"] in ("Graph input", "Graph output"):
+            label = f"{n['type']}: {n['params'].get('name', '')}"
+        with dpg.node(label=label, parent="node_editor", pos=n.get("pos", [0, 0]), tag=f"gnode_{nid}",
                       user_data=nid):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 dpg.add_spacer(width=NODE_W, height=1)
@@ -244,6 +396,11 @@ class GraphPanel:
         if isinstance(val, (list, tuple)) and len(val) >= 3 and all(isinstance(x, float) for x in val):
             val = [int(round(x * 255)) if x <= 1.0 else int(x) for x in val[:3]]
         self.graph.nodes[nid]["params"][name] = val
+        if self.graph.nodes[nid]["type"] in ("Graph input", "Graph output") and name in ("name", "type"):
+            if name == "type":
+                # the pin changed type: its wires no longer fit
+                self.graph.links = [l for l in self.graph.links if l[0] != nid and l[2] != nid]
+            self.rebuild()
 
     def _make_link(self, a, out, b, inp):
         ta, tb = self._pins.get((a, "out", out)), self._pins.get((b, "in", inp))
@@ -349,7 +506,7 @@ class GraphPanel:
         dpg.delete_item("graph_ctx", children_only=True)
         kind, nid, name = self._ctx
         n = self.graph.nodes[nid]
-        d = self.lib[n["type"]]
+        d = self.graph.node_def(n)
         P = "graph_ctx"
         close = lambda: dpg.configure_item(P, show=False)
 
@@ -382,7 +539,11 @@ class GraphPanel:
             for t in self._consumers(o["type"]):
                 row(f"  {t}", lambda t=t: self._connect_new(nid, name, o["type"], t))
         else:
-            dpg.add_text(n["type"], parent=P, color=DIM)
+            dpg.add_text(d.get("label") or n["type"], parent=P, color=DIM)
+            if n["type"].startswith(G.SUB):
+                row("edit sub-graph", lambda: self.enter_sub(nid))
+            if dpg.get_selected_nodes("node_editor"):
+                row("fold selection into a sub-graph", lambda: self.make_sub_from_selection(dpg.get_value("graph_new_name")))
             row("duplicate", lambda: self._dup(nid))
             row("disconnect all", lambda: self._disconnect_node(nid))
             row("delete", lambda: self._delete_node(nid))
@@ -461,6 +622,24 @@ class GraphPanel:
     def _delete_node(self, nid):
         self.graph.remove(nid); self.rebuild()
 
+    def fill_add_menu(self):
+        """The right-click add menu, rebuilt whenever the library changes so
+        new sub-graphs appear in it."""
+        if not dpg.does_item_exist("graph_menu"):
+            return
+        dpg.delete_item("graph_menu", children_only=True)
+        cats = {}
+        for name in self.type_names():
+            c, n = name.split(" / ", 1)
+            cats.setdefault(c, []).append(n)
+        dpg.add_text("add node", parent="graph_menu", color=DIM)
+        for c, names in cats.items():
+            with dpg.collapsing_header(label=c, parent="graph_menu", default_open=(c in ("generate", "colour", "subgraphs"))):
+                for n in names:
+                    lbl = self.lib[n].get("label", n) if n in self.lib else n
+                    dpg.add_selectable(label=lbl, user_data=n,
+                                       callback=lambda s, a, u: self.add_node_at_menu(u))
+
     def add_node_at_menu(self, type_):
         dpg.configure_item("graph_menu", show=False)
         if not self.graph or type_ not in self.lib:
@@ -517,7 +696,7 @@ class GraphPanel:
         for n, d in self.lib.items():
             cats.setdefault(d["cat"], []).append(n)
         out = []
-        for c in ("controls", "signals", "coords", "generate", "maths", "colour", "output"):
+        for c in ("controls", "signals", "coords", "generate", "maths", "colour", "graph", "subgraphs", "custom", "output"):
             out += [f"{c} / {n}" for n in sorted(cats.pop(c, []))]
         for c, ns in sorted(cats.items()):
             out += [f"{c} / {n}" for n in sorted(ns)]
@@ -527,6 +706,7 @@ class GraphPanel:
 def build_panel(app, panel):
     """The graph pane's widgets. Called once from build()."""
     with dpg.group(horizontal=True):
+        dpg.add_button(label="< back", tag="graph_back", show=False, callback=lambda: panel.back())
         dpg.add_combo(panel.files(), tag="graph_file", width=170, default_value=panel.file or "",
                       callback=lambda s, v: panel.open(v))
         dpg.add_button(label="save", callback=lambda: panel.save())
@@ -541,6 +721,8 @@ def build_panel(app, panel):
                                                           panel.lib.get(v.split(" / ", 1)[1], {}).get("doc", "")))
         dpg.add_button(label="add node", callback=lambda: panel.add_node(dpg.get_value("graph_add_type").split(" / ", 1)[1]))
         dpg.add_button(label="delete selected", callback=lambda: panel.delete_selected())
+        dpg.add_button(label="fold into sub-graph",
+                       callback=lambda: panel.make_sub_from_selection(dpg.get_value("graph_new_name")))
     dpg.add_text("", tag="graph_status", color=DIM)
     with dpg.node_editor(tag="node_editor", callback=panel.on_link, delink_callback=panel.on_delink,
                          minimap=True, minimap_location=dpg.mvNodeMiniMap_Location_BottomRight,
@@ -549,18 +731,10 @@ def build_panel(app, panel):
     # The right-click menu: a small window shown at the pointer, categories as
     # collapsing headers, a node per line. A window rather than a popup so it
     # can be positioned exactly and dismissed by the click that adds.
-    cats = {}
-    for name in panel.type_names():
-        c, n = name.split(" / ", 1)
-        cats.setdefault(c, []).append(n)
     with dpg.window(tag="graph_ctx", show=False, no_title_bar=True, no_resize=True, no_move=True,
                     autosize=True, popup=True):
         pass
     with dpg.window(tag="graph_menu", show=False, no_title_bar=True, no_resize=True, no_move=True,
                     autosize=True, popup=True):
-        dpg.add_text("add node", color=DIM)
-        for c, names in cats.items():
-            with dpg.collapsing_header(label=c, default_open=(c in ("generate", "colour"))):
-                for n in names:
-                    dpg.add_selectable(label=n, user_data=n,
-                                       callback=lambda s, a, u: panel.add_node_at_menu(u))
+        pass
+    panel.fill_add_menu()

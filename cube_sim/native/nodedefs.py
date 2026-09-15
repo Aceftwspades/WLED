@@ -212,6 +212,20 @@ LIBRARY = [
     # ---- output ---------------------------------------------------------------------
     _n("Output", "output", "pixel", [("color", C, 0)], [], [],
        "gc_out = $in.color;", "what the pixel shows - exactly one of these"),
+
+    # ---- sub-graph boundaries -----------------------------------------------------
+    # A graph that contains these can be used as a NODE in another graph: each
+    # Graph input becomes an input pin of that node, each Graph output an
+    # output pin, named and typed by the params here. The compiler inlines the
+    # whole sub-graph, so there is no call and no cost. Compiled on its own -
+    # previewing the sub-graph - a Graph input yields its default.
+    _n("Graph input", "graph", "frame", [], [("value", F)],
+       [_p("name", "text", "in"), _p("type", "choice", "float", choices=["float", "color", "bool"]),
+        _p("default", "float", 0.0)],
+       "$out.value = $p.default;", "an input pin of the node this graph becomes"),
+    _n("Graph output", "graph", "pixel", [("value", F, 0.0)], [],
+       [_p("name", "text", "out"), _p("type", "choice", "float", choices=["float", "color", "bool"])],
+       "(void)$in.value;", "an output pin of the node this graph becomes"),
 ]
 
 # The helpers every generated file carries. Small, static, and named gc_ so

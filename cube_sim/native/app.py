@@ -1146,6 +1146,21 @@ def service_command(app):
                 kind, nid, name, x, y = c["graph_ctx"]
                 app.gp._ctx = (kind, int(nid), name); app.gp._fill_ctx_menu()
                 dpg.configure_item("graph_ctx", show=True); dpg.set_item_pos("graph_ctx", [x, y])
+            if "graph_select" in c:                     # test hook: select nodes by id
+                app.gp._test_selection = [int(x) for x in c["graph_select"]]
+            if "graph_fold" in c:
+                sel = getattr(app.gp, "_test_selection", [])
+                import dearpygui.dearpygui as _d
+                _orig = _d.get_selected_nodes
+                _d.get_selected_nodes = lambda ed: [f"gnode_{i}" for i in sel if _d.does_item_exist(f"gnode_{i}")]
+                try:
+                    app.gp.make_sub_from_selection(c["graph_fold"])
+                finally:
+                    _d.get_selected_nodes = _orig
+            if "graph_enter" in c:
+                app.gp.enter_sub(int(c["graph_enter"]))
+            if c.get("graph_back"):
+                app.gp.back()
             if "graph_wire" in c:                       # test hook: colour the wire into (node, input)
                 nid, name, col = c["graph_wire"]
                 app.gp._set_wire([(int(nid), name)], tuple(col) if col else None)
