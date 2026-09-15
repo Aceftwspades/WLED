@@ -97,6 +97,12 @@ on the node, and a stale wire in a parent is dropped when it next opens. A
 sub-graph previews on its own: its first colour output stands in for Output.
 Compiling inlines the sub-graph wherever it is used — no call, no cost.
 
+Live preview: the "live" checkbox beside "compile + reload" rebuilds after
+every edit — a wire, a value on a pin, a param, a new node — once the edits
+pause for half a second. The build runs on the worker while the 3-D view
+keeps showing the previous one, and the hot swap keeps the sliders, palette
+and colours, so the effect changes under the cursor a second or two later.
+
 ### Phase 3 — wiring and export
 
 The ledmap. For a matrix WLED's own settings suffice; for the shapes it is a

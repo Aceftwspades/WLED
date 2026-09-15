@@ -1137,6 +1137,8 @@ def service_command(app):
                 app.gp.graph.nodes[int(nid)]["params"][name] = val; app.gp.rebuild()
             if c.get("graph_build"):
                 app.gp.compile()
+            if "graph_auto" in c:
+                app.gp.set_auto(c["graph_auto"]); dpg.set_value("graph_auto", bool(c["graph_auto"]))
             if "graph_menu" in c:                       # test hook: the right-click menu at x, y
                 app.gp._menu_pos = tuple(c["graph_menu"])
                 dpg.configure_item("graph_menu", show=True); dpg.set_item_pos("graph_menu", list(c["graph_menu"]))
@@ -1227,6 +1229,7 @@ def main():
                 app.relayout()
             try:
                 app.poll_build()
+                app.gp.poll()
                 app.step_sim()
                 app.draw()
             except Exception:

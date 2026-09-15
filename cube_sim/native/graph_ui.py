@@ -8,6 +8,7 @@ whole on open and edited in place otherwise. Positions are read back from the
 editor on save.
 """
 import os
+import time
 
 import dearpygui.dearpygui as dpg
 
@@ -81,6 +82,9 @@ class GraphPanel:
         self._themes = None      # PinThemes, built lazily (needs a context)
         self._wire_themes = {}   # (r,g,b) -> a link theme in that colour
         self._ctx = None         # what the context menu is about: ("in"|"out"|"node", ...)
+        self.auto = False        # live preview: rebuild after every edit
+        self._dirty = 0.0        # time of the last edit not yet built, 0 when clean
+        self._queued = False     # an edit landed while a build was running
         self._drag_type = None   # type of the output being dragged, if any
         self._menu_pos = (60, 60)
 
@@ -285,7 +289,35 @@ class GraphPanel:
             self._themes = PinThemes()
         return self._themes
 
+    # --- live preview ------------------------------------------------------------------
+    # Every edit marks the graph dirty; poll() - called each frame from the
+    # main loop - waits until the edits pause for a moment, then compiles and
+    # builds on the worker exactly as the button does. The 3-D view keeps
+    # running the previous build meanwhile, and the swap keeps the sliders,
+    # palette and colours, so the effect just changes under the cursor a
+    # second or two after the wire lands.
+    AUTO_DELAY = 0.5
+
+    def touch(self):
+        self._dirty = time.time()
+
+    def set_auto(self, on):
+        self.auto = bool(on)
+        if self.auto:
+            self.touch()
+
+    def poll(self):
+        if not self.auto or not self._dirty or not self.graph:
+            return
+        if time.time() - self._dirty < self.AUTO_DELAY:
+            return
+        if self.app.building:
+            return                    # tried again next frame; the last edit wins
+        self._dirty = 0.0
+        self.compile()
+
     def rebuild(self):
+        self.touch()
         dpg.delete_item("node_editor", children_only=True)
         self.links.clear(); self._pins.clear(); self._ptype.clear()
         if not self.graph:
@@ -358,6 +390,7 @@ class GraphPanel:
                                no_alpha=True, no_inputs=True, user_data=ud, callback=self._on_input, show=show)
 
     def _on_input(self, sender, val):
+        self.touch()
         nid, name = dpg.get_item_user_data(sender)
         if isinstance(val, (list, tuple)) and len(val) >= 3 and all(isinstance(x, float) for x in val):
             val = [int(round(x * 255)) if x <= 1.0 else int(x) for x in val[:3]]
@@ -392,6 +425,7 @@ class GraphPanel:
             dpg.add_input_text(label=p["name"], width=100, default_value=str(v), user_data=ud, callback=cb)
 
     def _on_param(self, sender, val):
+        self.touch()
         nid, name = dpg.get_item_user_data(sender)
         if isinstance(val, (list, tuple)) and len(val) >= 3 and all(isinstance(x, float) for x in val):
             val = [int(round(x * 255)) if x <= 1.0 else int(x) for x in val[:3]]
@@ -426,6 +460,7 @@ class GraphPanel:
 
     # --- editing callbacks ------------------------------------------------------------
     def on_link(self, sender, app_data):
+        self.touch()
         out_attr, in_attr = app_data
         a, out = dpg.get_item_user_data(out_attr)
         b, inp = dpg.get_item_user_data(in_attr)
@@ -441,6 +476,7 @@ class GraphPanel:
         self._make_link(a, out, b, inp)
 
     def on_delink(self, sender, app_data):
+        self.touch()
         lid = app_data
         b, inp = self.links.pop(lid, (None, None))
         if b is not None:
@@ -641,6 +677,7 @@ class GraphPanel:
                                        callback=lambda s, a, u: self.add_node_at_menu(u))
 
     def add_node_at_menu(self, type_):
+        self.touch()
         dpg.configure_item("graph_menu", show=False)
         if not self.graph or type_ not in self.lib:
             return
@@ -648,6 +685,7 @@ class GraphPanel:
         self._make_node(nid, self.graph.nodes[nid])
 
     def add_node(self, type_):
+        self.touch()
         if not self.graph or type_ not in self.lib:
             return
         self._add_count += 1
@@ -687,7 +725,9 @@ class GraphPanel:
         self.app.project.write_effect(fname, src)
         self.status(f"wrote {fname}")
         if and_build:
-            self.app.edit_file = fname
+            # the code pane follows: edit_build saves what the pane holds, and
+            # that must be this file, not whatever was open before
+            self.app.edit_open(fname)
             self.app.edit_build()
         return fname
 
@@ -711,6 +751,8 @@ def build_panel(app, panel):
                       callback=lambda s, v: panel.open(v))
         dpg.add_button(label="save", callback=lambda: panel.save())
         dpg.add_button(label="compile + reload", callback=lambda: panel.compile())
+        dpg.add_checkbox(label="live", tag="graph_auto", default_value=panel.auto,
+                         callback=lambda s, v: panel.set_auto(v))
         dpg.add_button(label="open as code", callback=lambda: app.open_graph_code())
     with dpg.group(horizontal=True):
         dpg.add_input_text(tag="graph_new_name", hint="new graph name", width=170,
