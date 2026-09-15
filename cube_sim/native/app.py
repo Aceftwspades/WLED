@@ -771,9 +771,17 @@ class App:
         if dpg.is_item_hovered("cube_img"):
             self._dragging = True
             self._yaw0, self._pitch0 = self.yaw, self.pitch
+        if self.layout == "graph":
+            self.gp.on_press()
 
     def on_mouse_release(self, sender, app_data):
         self._dragging = False
+        if self.layout == "graph":
+            self.gp.on_release()
+
+    def on_right_click(self, sender, app_data):
+        if self.layout == "graph":
+            self.gp.open_menu()
 
     def on_drag(self, sender, app_data):
         # Keyed to whether the drag STARTED on the cube, not to what is under
@@ -895,6 +903,7 @@ def build(app):
         # difference is the whole bug this replaced.
         dpg.add_mouse_click_handler(button=dpg.mvMouseButton_Left, callback=app.on_mouse_click)
         dpg.add_mouse_release_handler(button=dpg.mvMouseButton_Left, callback=app.on_mouse_release)
+        dpg.add_mouse_click_handler(button=dpg.mvMouseButton_Right, callback=app.on_right_click)
         dpg.add_mouse_wheel_handler(callback=app.on_wheel)
         dpg.add_key_press_handler(callback=app.on_key)
 
@@ -1128,6 +1137,21 @@ def service_command(app):
                 app.gp.graph.nodes[int(nid)]["params"][name] = val; app.gp.rebuild()
             if c.get("graph_build"):
                 app.gp.compile()
+            if "graph_menu" in c:                       # test hook: the right-click menu at x, y
+                app.gp._menu_pos = tuple(c["graph_menu"])
+                dpg.configure_item("graph_menu", show=True); dpg.set_item_pos("graph_menu", list(c["graph_menu"]))
+            if c.get("graph_menu_hide"):
+                dpg.configure_item("graph_menu", show=False)
+            if c.get("graph_release"):
+                app.gp.on_release()
+            if "graph_press" in c:                      # test hook: a drag from an output pin type
+                app.gp._drag_type = c["graph_press"]
+                th = app.gp.themes()
+                from native.graph_ui import compatible
+                for (nid, kind, name), tag in app.gp._pins.items():
+                    if kind == "in":
+                        t = app.gp._ptype.get(tag)
+                        dpg.bind_item_theme(tag, th.pin[t] if compatible(app.gp._drag_type, t) else th.grey[t])
         except Exception as e:
             print(f"command {c}: {e}")
 

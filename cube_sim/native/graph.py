@@ -31,7 +31,8 @@ Sparkle read the prologue and stay per pixel; everything downstream of them
 does too.
 
 Type rules are small: float and bool coerce both ways (0/1, > 0.5), colour
-converts to nothing. An unconnected input takes its default.
+converts to nothing. An unconnected input takes the value typed on the node,
+else the definition's default.
 """
 import json
 import re
@@ -97,7 +98,7 @@ class Graph:
         if params:
             p.update(params)
         nid = self._next; self._next += 1
-        self.nodes[nid] = {"id": nid, "type": type_, "pos": list(pos), "params": p}
+        self.nodes[nid] = {"id": nid, "type": type_, "pos": list(pos), "params": p, "inputs": {}}
         return nid
 
     def remove(self, nid):
@@ -181,7 +182,9 @@ class Graph:
                         raise GraphError(f"node {a} has no output {out!r}")
                     expr = _coerce(var(a, out), at, i["type"])
                 else:
-                    expr = _lit(i["type"], i.get("default", 0))
+                    # the value typed on the node stands in for the wire
+                    v = n.get("inputs", {}).get(i["name"], i.get("default", 0))
+                    expr = _lit(i["type"], v)
                 code = code.replace(f"$in.{i['name']}", expr)
             for o in d["outputs"]:
                 code = code.replace(f"$out.{o['name']}", var(nid, o["name"]))

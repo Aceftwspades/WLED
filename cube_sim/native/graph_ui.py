@@ -16,6 +16,40 @@ from native.nodedefs import library
 
 DIM = (139, 147, 163)
 PIN_COL = {"float": (110, 190, 250), "color": (250, 170, 90), "bool": (170, 230, 120)}
+GREY = (70, 74, 84)
+
+
+def compatible(a, b):
+    """Can a pin of type a feed a pin of type b? float and bool coerce both
+    ways; colour is colour."""
+    return a == b or {a, b} == {"float", "bool"}
+
+
+class PinThemes:
+    """One theme per pin type, lit and greyed, and one per link type. Built
+    once; bound to attributes and links so the wires are the colour of what
+    flows through them and a pin that cannot take the drag goes grey."""
+    def __init__(self):
+        self.pin, self.grey, self.link = {}, {}, {}
+        for t, col in PIN_COL.items():
+            self.pin[t] = self._attr_theme(col, col)
+            self.grey[t] = self._attr_theme(GREY, GREY)
+            with dpg.theme() as th:
+                with dpg.theme_component(dpg.mvNodeLink):
+                    dpg.add_theme_color(dpg.mvNodeCol_Link, col, category=dpg.mvThemeCat_Nodes)
+                    dpg.add_theme_color(dpg.mvNodeCol_LinkHovered, (255, 255, 255), category=dpg.mvThemeCat_Nodes)
+                    dpg.add_theme_color(dpg.mvNodeCol_LinkSelected, (255, 255, 255), category=dpg.mvThemeCat_Nodes)
+            self.link[t] = th
+
+    @staticmethod
+    def _attr_theme(pin, text):
+        with dpg.theme() as th:
+            with dpg.theme_component(dpg.mvNodeAttribute):
+                dpg.add_theme_color(dpg.mvNodeCol_Pin, pin, category=dpg.mvThemeCat_Nodes)
+                dpg.add_theme_color(dpg.mvNodeCol_PinHovered, (255, 255, 255), category=dpg.mvThemeCat_Nodes)
+            with dpg.theme_component(dpg.mvText):
+                dpg.add_theme_color(dpg.mvThemeCol_Text, text, category=dpg.mvThemeCat_Core)
+        return th
 
 
 class GraphPanel:
@@ -26,7 +60,11 @@ class GraphPanel:
         self.file = None
         self.links = {}          # dpg link id -> (b, inp)
         self._pins = {}          # (node, "in"/"out", name) -> attribute tag
+        self._ptype = {}         # attribute tag -> pin type
         self._add_count = 0
+        self._themes = None      # PinThemes, built lazily (needs a context)
+        self._drag_type = None   # type of the output being dragged, if any
+        self._menu_pos = (60, 60)
 
     # --- files -------------------------------------------------------------------
     @property
@@ -86,9 +124,14 @@ class GraphPanel:
             dpg.set_value("graph_status", msg)
 
     # --- build the widgets from the graph -----------------------------------------
+    def themes(self):
+        if self._themes is None:
+            self._themes = PinThemes()
+        return self._themes
+
     def rebuild(self):
         dpg.delete_item("node_editor", children_only=True)
-        self.links.clear(); self._pins.clear()
+        self.links.clear(); self._pins.clear(); self._ptype.clear()
         if not self.graph:
             return
         for nid, n in self.graph.nodes.items():
@@ -100,14 +143,24 @@ class GraphPanel:
         d = self.lib.get(n["type"])
         if d is None:
             return
+        th = self.themes()
+        linked = {(b, inp) for _, _, b, inp in self.graph.links}
+        n.setdefault("inputs", {})
         with dpg.node(label=n["type"], parent="node_editor", pos=n.get("pos", [0, 0]), tag=f"gnode_{nid}",
                       user_data=nid):
             for i in d["inputs"]:
                 tag = f"gin_{nid}_{i['name']}"
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input, tag=tag,
                                         user_data=(nid, i["name"]), shape=dpg.mvNode_PinShape_CircleFilled):
-                    dpg.add_text(i["name"], color=PIN_COL.get(i["type"], DIM))
+                    # An unconnected input is EDITABLE on the node: the value
+                    # it takes stands in for the wire. Connected, the widget
+                    # hides and the name stays.
+                    is_linked = (nid, i["name"]) in linked
+                    dpg.add_text(i["name"], tag=tag + "_t", show=is_linked)
+                    self._input_widget(nid, n, i, tag + "_w", show=not is_linked)
+                dpg.bind_item_theme(tag, th.pin[i["type"]])
                 self._pins[(nid, "in", i["name"])] = tag
+                self._ptype[tag] = i["type"]
             for p in d["params"]:
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                     self._param_widget(nid, n, p)
@@ -115,8 +168,37 @@ class GraphPanel:
                 tag = f"gout_{nid}_{o['name']}"
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output, tag=tag,
                                         user_data=(nid, o["name"]), shape=dpg.mvNode_PinShape_CircleFilled):
-                    dpg.add_text(o["name"], color=PIN_COL.get(o["type"], DIM))
+                    dpg.add_text(o["name"])
+                dpg.bind_item_theme(tag, th.pin[o["type"]])
                 self._pins[(nid, "out", o["name"])] = tag
+                self._ptype[tag] = o["type"]
+
+    def _input_widget(self, nid, n, i, tag, show):
+        """The editable stand-in for an unconnected input pin."""
+        v = n["inputs"].get(i["name"], i.get("default", 0))
+        ud = (nid, i["name"])
+        if i["type"] == "float":
+            dpg.add_input_float(label=i["name"], tag=tag, width=72, default_value=float(v), step=0,
+                                format="%.3g", user_data=ud, callback=self._on_input, show=show)
+        elif i["type"] == "bool":
+            dpg.add_checkbox(label=i["name"], tag=tag, default_value=bool(v), user_data=ud,
+                             callback=self._on_input, show=show)
+        else:
+            rgb = list(v)[:3] if isinstance(v, (list, tuple)) else [0, 0, 0]
+            dpg.add_color_edit([int(c) for c in rgb] + [255], label=i["name"], tag=tag, width=90,
+                               no_alpha=True, no_inputs=True, user_data=ud, callback=self._on_input, show=show)
+
+    def _on_input(self, sender, val):
+        nid, name = dpg.get_item_user_data(sender)
+        if isinstance(val, (list, tuple)) and len(val) >= 3 and all(isinstance(x, float) for x in val):
+            val = [int(round(x * 255)) if x <= 1.0 else int(x) for x in val[:3]]
+        self.graph.nodes[nid].setdefault("inputs", {})[name] = val
+
+    def _show_input(self, b, inp, linked):
+        tag = f"gin_{b}_{inp}"
+        if dpg.does_item_exist(tag + "_t"):
+            dpg.configure_item(tag + "_t", show=linked)
+            dpg.configure_item(tag + "_w", show=not linked)
 
     def _param_widget(self, nid, n, p):
         v = n["params"].get(p["name"], p["default"])
@@ -151,13 +233,19 @@ class GraphPanel:
         if not ta or not tb:
             return
         lid = dpg.add_node_link(ta, tb, parent="node_editor")
+        dpg.bind_item_theme(lid, self.themes().link[self._ptype.get(ta, "float")])
         self.links[lid] = (b, inp)
+        self._show_input(b, inp, True)
 
     # --- editing callbacks ------------------------------------------------------------
     def on_link(self, sender, app_data):
         out_attr, in_attr = app_data
         a, out = dpg.get_item_user_data(out_attr)
         b, inp = dpg.get_item_user_data(in_attr)
+        ta, tb = self._ptype.get(out_attr), self._ptype.get(in_attr)
+        if ta and tb and not compatible(ta, tb):
+            self.status(f"cannot connect {ta} to {tb}")
+            return
         # replace whatever fed this input
         for lid, (bb, ii) in list(self.links.items()):
             if bb == b and ii == inp:
@@ -170,7 +258,54 @@ class GraphPanel:
         b, inp = self.links.pop(lid, (None, None))
         if b is not None:
             self.graph.unlink(b, inp)
+            self._show_input(b, inp, False)
         dpg.delete_item(lid)
+
+    # --- greying out while a wire is dragged -----------------------------------------
+    # Dear PyGui does not say when a link drag begins, but it does say what is
+    # hovered: a press over an output pin is the start of a drag from it, and
+    # every input that cannot take that type goes grey until the release.
+    def on_press(self):
+        if not self.graph or not dpg.does_item_exist("node_editor") or not dpg.is_item_shown("node_editor"):
+            return
+        for (nid, kind, name), tag in self._pins.items():
+            if kind == "out" and dpg.does_item_exist(tag) and dpg.is_item_hovered(tag):
+                self._drag_type = self._ptype.get(tag)
+                break
+        else:
+            return
+        th = self.themes()
+        for (nid, kind, name), tag in self._pins.items():
+            if kind == "in" and dpg.does_item_exist(tag):
+                t = self._ptype.get(tag)
+                dpg.bind_item_theme(tag, th.pin[t] if compatible(self._drag_type, t) else th.grey[t])
+
+    def on_release(self):
+        if self._drag_type is None:
+            return
+        self._drag_type = None
+        th = self.themes()
+        for (nid, kind, name), tag in self._pins.items():
+            if kind == "in" and dpg.does_item_exist(tag):
+                dpg.bind_item_theme(tag, th.pin[self._ptype.get(tag, "float")])
+
+    # --- the right-click menu -------------------------------------------------------------
+    def open_menu(self):
+        """Remember where the pointer is, so the node lands there."""
+        if not dpg.does_item_exist("node_editor") or not dpg.is_item_hovered("node_editor"):
+            return
+        mx, my = dpg.get_mouse_pos(local=False)
+        ex, ey = dpg.get_item_rect_min("node_editor")
+        self._menu_pos = (max(0, mx - ex - 20), max(0, my - ey - 10))
+        dpg.configure_item("graph_menu", show=True)
+        dpg.set_item_pos("graph_menu", [mx, my])
+
+    def add_node_at_menu(self, type_):
+        dpg.configure_item("graph_menu", show=False)
+        if not self.graph or type_ not in self.lib:
+            return
+        nid = self.graph.add(type_, self._menu_pos)
+        self._make_node(nid, self.graph.nodes[nid])
 
     def add_node(self, type_):
         if not self.graph or type_ not in self.lib:
@@ -250,3 +385,18 @@ def build_panel(app, panel):
                          minimap=True, minimap_location=dpg.mvNodeMiniMap_Location_BottomRight,
                          width=-1, height=-1):
         pass
+    # The right-click menu: a small window shown at the pointer, categories as
+    # collapsing headers, a node per line. A window rather than a popup so it
+    # can be positioned exactly and dismissed by the click that adds.
+    cats = {}
+    for name in panel.type_names():
+        c, n = name.split(" / ", 1)
+        cats.setdefault(c, []).append(n)
+    with dpg.window(tag="graph_menu", show=False, no_title_bar=True, no_resize=True, no_move=True,
+                    autosize=True, popup=True):
+        dpg.add_text("add node", color=DIM)
+        for c, names in cats.items():
+            with dpg.collapsing_header(label=c, default_open=(c in ("generate", "colour"))):
+                for n in names:
+                    dpg.add_selectable(label=n, user_data=n,
+                                       callback=lambda s, a, u: panel.add_node_at_menu(u))
