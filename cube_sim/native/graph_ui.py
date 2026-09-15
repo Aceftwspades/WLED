@@ -91,6 +91,9 @@ class GraphPanel:
         self._dirty = 0.0        # time of the last edit not yet built, 0 when clean
         self._queued = False     # an edit landed while a build was running
         self._drag_type = None   # type of the output being dragged, if any
+        self._drag_from = None   # (node, output) being dragged, for a drop on empty space
+        self._press_at = (0, 0)
+        self._pending = None     # (node, output, type): the new node gets wired from here
         self._menu_pos = (60, 60)
 
     # --- files -------------------------------------------------------------------
@@ -679,6 +682,8 @@ class GraphPanel:
         for (nid, kind, name), tag in self._pins.items():
             if kind == "out" and dpg.does_item_exist(tag) and dpg.is_item_hovered(tag):
                 self._drag_type = self._ptype.get(tag)
+                self._drag_from = (nid, name)
+                self._press_at = dpg.get_mouse_pos(local=False)
                 break
         else:
             return
@@ -691,11 +696,30 @@ class GraphPanel:
     def on_release(self):
         if self._drag_type is None:
             return
-        self._drag_type = None
+        t, frm = self._drag_type, self._drag_from
+        self._drag_type = self._drag_from = None
         th = self.themes()
         for (nid, kind, name), tag in self._pins.items():
             if kind == "in" and dpg.does_item_exist(tag):
                 dpg.bind_item_theme(tag, th.pin[self._ptype.get(tag, "float")])
+        # A wire dropped on empty editor: offer the nodes it could feed, and
+        # wire the one chosen. Over a pin or a node the drop is DPG's (a link
+        # or nothing); a short drag is a click on the pin.
+        mx, my = dpg.get_mouse_pos(local=False)
+        if abs(mx - self._press_at[0]) + abs(my - self._press_at[1]) < 12:
+            return
+        if not dpg.is_item_hovered("node_editor"):
+            return
+        for (nid, kind, name), tag in self._pins.items():
+            if dpg.does_item_exist(tag) and dpg.is_item_hovered(tag):
+                return
+        for nid in self.graph.nodes:
+            if dpg.does_item_exist(f"gnode_{nid}") and dpg.is_item_hovered(f"gnode_{nid}"):
+                return
+        ex, ey = dpg.get_item_rect_min("node_editor")
+        self._menu_pos = (max(0, mx - ex - 20), max(0, my - ey - 10))
+        self._pending = (frm[0], frm[1], t)
+        self.show_add_menu((mx, my), only=self._consumers(t, limit=60))
 
     # --- the right-click menus -------------------------------------------------------------
     def open_menu(self):
@@ -719,8 +743,58 @@ class GraphPanel:
                 return
         ex, ey = dpg.get_item_rect_min("node_editor")
         self._menu_pos = (max(0, mx - ex - 20), max(0, my - ey - 10))
+        self._pending = None
+        self.show_add_menu((mx, my))
+
+    def show_add_menu(self, at, only=None, focus=True):
+        """The add menu at a screen position, its search box focused and
+        empty. `only` narrows it to those node types (a dropped wire)."""
+        self._only = only
+        dpg.set_value("graph_search", "")
+        self._search("graph_search", "")
         dpg.configure_item("graph_menu", show=True)
-        dpg.set_item_pos("graph_menu", [mx, my])
+        dpg.set_item_pos("graph_menu", list(at))
+        if focus:
+            dpg.focus_item("graph_search")
+
+    def _search(self, sender, text):
+        """Filter the add menu: with text, a flat list of matches on name or
+        description; without, the categories (or the dropped wire's list)."""
+        text = (text or "").strip().lower()
+        only = getattr(self, "_only", None)
+        flat = bool(text) or only is not None
+        dpg.configure_item("graph_cats", show=not flat)
+        dpg.configure_item("graph_hits", show=flat)
+        if not flat:
+            return
+        dpg.delete_item("graph_hits", children_only=True)
+        names = only if only is not None else [n.split(" / ", 1)[1] for n in self.type_names()]
+        hits = []
+        for n in names:
+            d = self.lib.get(n, {})
+            lbl = d.get("label", n)
+            if not text or text in lbl.lower() or text in n.lower() or text in d.get("doc", "").lower():
+                hits.append((0 if text and lbl.lower().startswith(text) else 1, lbl, n))
+        if text:
+            hits.sort()                    # else the given order: most useful first
+        if only is not None and not text:
+            dpg.add_text("connect to a new", parent="graph_hits", color=DIM)
+        for _, lbl, n in hits[:24]:
+            dpg.add_selectable(label=lbl, parent="graph_hits", user_data=n,
+                               callback=lambda s, a, u: self.add_node_at_menu(u))
+        if not hits:
+            dpg.add_text("no match", parent="graph_hits", color=DIM)
+        rows = min(len(hits), 24) + (1 if only is not None and not text else 0)
+        dpg.configure_item("graph_hits", height=max(30, 21 * max(rows, 1) + 12))
+
+    def _search_enter(self, sender, text):
+        """Enter in the search box adds the first hit."""
+        kids = dpg.get_item_children("graph_hits", 1) or []
+        for k in kids:
+            u = dpg.get_item_user_data(k)
+            if u:
+                self.add_node_at_menu(u)
+                return
 
     def _fill_ctx_menu(self):
         """The context menu's rows, for whatever was right-clicked."""
@@ -822,7 +896,7 @@ class GraphPanel:
         self.graph.link(existing, out, nid, name)
         self.rebuild()
 
-    def _consumers(self, t):
+    def _consumers(self, t, limit=14):
         """Node types with a first input this output can feed, most useful first."""
         prefer = ["Palette", "Blend", "Mask", "Scale", "HSV", "Add", "Multiply", "Mix", "Remap",
                   "Smoothstep", "Wave", "Noise", "Select", "Threshold", "Output", "Split", "Fade"]
@@ -833,7 +907,7 @@ class GraphPanel:
                 continue
             if any(compatible(t, i["type"]) for i in d["inputs"]):
                 out.append(name)
-        return out[:14]
+        return out[:limit]
 
     def _connect_new(self, nid, out_name, t, new_type):
         self.snapshot()
@@ -865,13 +939,22 @@ class GraphPanel:
             dpg.add_button(label="redo", small=True, callback=lambda: (self._hide_menus(), self.redo()))
             dpg.add_button(label="paste here", small=True,
                            callback=lambda: (self._hide_menus(), self.paste(self._menu_pos)))
+        dpg.add_input_text(tag="graph_search", parent="graph_menu", hint="search nodes", width=200,
+                           callback=self._search, on_enter=False)
+        # on_enter would stop the per-keystroke callback; Enter is read separately
         dpg.add_text("add node", parent="graph_menu", color=DIM)
-        for c, names in cats.items():
-            with dpg.collapsing_header(label=c, parent="graph_menu", default_open=(c in ("generate", "colour", "subgraphs"))):
-                for n in names:
-                    lbl = self.lib[n].get("label", n) if n in self.lib else n
-                    dpg.add_selectable(label=lbl, user_data=n,
-                                       callback=lambda s, a, u: self.add_node_at_menu(u))
+        # child windows rather than groups: a collapsing header stretches to
+        # its parent, and an autosized popup would stretch with it
+        dpg.add_child_window(tag="graph_hits", parent="graph_menu", show=False, width=230, height=60,
+                             border=False)
+        with dpg.child_window(tag="graph_cats", parent="graph_menu", width=230, height=430, border=False):
+            for c, names in cats.items():
+                with dpg.collapsing_header(label=c, default_open=(c in ("generate", "colour", "subgraphs"))):
+                    for n in names:
+                        lbl = self.lib[n].get("label", n) if n in self.lib else n
+                        dpg.add_selectable(label=lbl, user_data=n,
+                                           callback=lambda s, a, u: self.add_node_at_menu(u))
+        self._widgets.add("graph_search")
 
     def _hide_menus(self):
         for t in ("graph_menu", "graph_ctx"):
@@ -886,6 +969,14 @@ class GraphPanel:
         self.snapshot()
         nid = self.graph.add(type_, self._menu_pos)
         self._make_node(nid, self.graph.nodes[nid])
+        if self._pending:
+            a, out, t = self._pending
+            self._pending = None
+            d = self.graph.node_def(self.graph.nodes[nid])
+            inp = next((i["name"] for i in d["inputs"] if compatible(t, i["type"])), None)
+            if inp and a in self.graph.nodes:
+                self.graph.link(a, out, nid, inp)
+                self.rebuild()
 
     def add_node(self, type_):
         self.touch()

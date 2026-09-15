@@ -854,6 +854,10 @@ class App:
         if any(dpg.does_item_exist(t) and dpg.is_item_active(t) for t in self._inputs):
             return
         if self.layout == "graph" and self.gp.typing():
+            if app_data == dpg.mvKey_Return and dpg.does_item_exist("graph_search") and dpg.is_item_active("graph_search"):
+                self.gp._search_enter(None, dpg.get_value("graph_search"))
+            elif app_data == dpg.mvKey_Escape:
+                self.gp._hide_menus()
             return
         ctrl = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
         if ctrl and self.layout == "graph":
@@ -1225,7 +1229,17 @@ def service_command(app):
                 app.gp.set_auto(c["graph_auto"]); dpg.set_value("graph_auto", bool(c["graph_auto"]))
             if "graph_menu" in c:                       # test hook: the right-click menu at x, y
                 app.gp._menu_pos = tuple(c["graph_menu"])
-                dpg.configure_item("graph_menu", show=True); dpg.set_item_pos("graph_menu", list(c["graph_menu"]))
+                app.gp._pending = None
+                app.gp.show_add_menu(tuple(c["graph_menu"]), focus=False)   # a focused box keeps its own text
+            if "graph_search" in c:                     # test hook: type in the add menu's search box
+                dpg.set_value("graph_search", c["graph_search"]); app.gp._search(None, c["graph_search"])
+            if c.get("graph_search_enter"):
+                app.gp._search_enter(None, dpg.get_value("graph_search"))
+            if "graph_drop" in c:                       # test hook: a wire from (node, out) dropped at x, y
+                nid, out, x, y = c["graph_drop"]
+                t = app.gp._ptype.get(app.gp._pins[(int(nid), "out", out)])
+                app.gp._menu_pos = (x, y); app.gp._pending = (int(nid), out, t)
+                app.gp.show_add_menu((x + 40, y + 120), only=app.gp._consumers(t, limit=60))
             if c.get("graph_menu_hide"):
                 dpg.configure_item("graph_menu", show=False); dpg.configure_item("graph_ctx", show=False)
             if "graph_ctx" in c:                        # test hook: context menu for a pin or node

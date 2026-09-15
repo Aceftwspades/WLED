@@ -136,9 +136,12 @@ editor. Ticked when done; the order within a group is the order to do them.
 - [x] **Copy / cut / paste** (Ctrl+C/X/V; "paste here" in the right-click
       menu, copy/cut in a node's). The clipboard is graph JSON held on the
       app, so it works across graphs and into sub-graphs.
-- [ ] **Search in the add menu** — a typed filter at the top of the
-      right-click menu; the library is past fifty types plus sub-graphs.
-- [ ] **Drop a wire on empty space → add a node** wired to it.
+- [x] **Search in the add menu** — a box at the top of the right-click menu,
+      focused as it opens; matches on name or description, Enter adds the
+      first hit, Escape closes.
+- [x] **Drop a wire on empty space → add a node** wired to it: the menu
+      offers what that output can feed, most useful first, and the chosen
+      node lands where the wire was dropped.
 - [ ] **Insert on wire**: drop a node onto a wire and it splices in.
 - [ ] **Reroute knots** for long wires.
 - [ ] **Frames** (titled, coloured group boxes) and **comment notes**.
