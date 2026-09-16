@@ -142,10 +142,17 @@ editor. Ticked when done; the order within a group is the order to do them.
 - [x] **Drop a wire on empty space → add a node** wired to it: the menu
       offers what that output can feed, most useful first, and the chosen
       node lands where the wire was dropped.
-- [ ] **Insert on wire**: drop a node onto a wire and it splices in.
-- [ ] **Reroute knots** for long wires.
-- [ ] **Frames** (titled, coloured group boxes) and **comment notes**.
-- [ ] **Collapse a node** to its title bar; **node colour**.
+- [x] **Insert on wire**: right-click a connected input → "insert on the
+      wire" lists what fits between the two ends and splices it in. (Dropping
+      a dragged node onto a wire is not possible: the node editor cannot say
+      which wire is under the pointer.)
+- [x] **Reroute knots**: Knot and Knot colour, narrow pass-through nodes the
+      compiler folds away; also offered first by "insert on the wire".
+- [x] **Frames** and **notes**: a Frame is a titled, tinted box with a size
+      on the node; nodes whose corner is inside move with it. A Note is a
+      multi-line text. Neither is compiled.
+- [x] **Collapse a node** to its pins (node menu); **node colour** swatches
+      in the node menu, ten colours, same set as the wires.
 - [ ] **On-node / pin preview**: "preview this output" builds the graph with
       the pin routed to Output — one click, not continuous.
 - [ ] **Validation on the node**: unconnected required inputs, cycles and a

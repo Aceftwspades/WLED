@@ -320,7 +320,7 @@ class Graph:
         if len(outs) != 1:
             raise GraphError("the graph needs exactly one Output node" + (f" (it has {len(outs)})" if outs else ""))
         defs = {nid: self.node_def(n) for nid, n in self.nodes.items()}
-        order = self._order()
+        order = [nid for nid in self._order() if not defs[nid].get("decor")]
         src_of = {(b, inp): (a, out) for a, out, b, inp in self.links}
 
         # scope: frame nodes, then anything hoistable whose inputs are all frame

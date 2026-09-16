@@ -226,6 +226,20 @@ LIBRARY = [
     _n("Graph output", "graph", "pixel", [("value", F, 0.0)], [],
        [_p("name", "text", "out"), _p("type", "choice", "float", choices=["float", "color", "bool"])],
        "(void)$in.value;", "an output pin of the node this graph becomes"),
+
+    # ---- tidiness ----------------------------------------------------------------------
+    # Knots reroute a wire - a pass-through the compiler folds away. Notes and
+    # Frames are decoration: the compiler skips them entirely.
+    dict(_n("Knot", "graph", "frame", [("in", F, 0.0)], [("out", F)], [],
+            "$out.out = $in.in;", "a bend in a wire - a pass-through with no cost"), narrow=True),
+    dict(_n("Knot colour", "graph", "frame", [("in", C, 0)], [("out", C)], [],
+            "$out.out = $in.in;", "a bend in a colour wire"), narrow=True),
+    dict(_n("Note", "graph", "frame", [], [], [_p("text", "text", "note")],
+            "", "a comment on the graph - not compiled"), decor=True, multiline=True),
+    dict(_n("Frame", "graph", "frame", [], [],
+            [_p("title", "text", "group"), _p("w", "int", 400, 80, 4000), _p("h", "int", 300, 60, 4000),
+             _p("colour", "color", [90, 110, 160])],
+            "", "a titled box - nodes inside move with it; not compiled"), decor=True),
 ]
 
 # The helpers every generated file carries. Small, static, and named gc_ so

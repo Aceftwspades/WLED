@@ -1210,6 +1210,14 @@ def service_command(app):
                 dpg.set_value("new_name", c["rename"]); app.edit_rename()
             if "graph_rename" in c:
                 app.gp.rename(c["graph_rename"])
+            if "graph_collapse" in c:
+                app.gp._collapse(int(c["graph_collapse"]))
+            if "graph_colour" in c:
+                nid, col = c["graph_colour"]; app.gp._set_colour(int(nid), col)
+            if "graph_insert" in c:
+                nid, name, t = c["graph_insert"]; app.gp._insert_before(int(nid), name, t)
+            if "graph_move" in c:                       # test hook: move a node (as a drag would)
+                nid, x, y = c["graph_move"]; dpg.set_item_pos(f"gnode_{int(nid)}", [x, y])
             if "graph_undo" in c:
                 app.gp.undo()
             if "graph_redo" in c:

@@ -27,11 +27,14 @@ WIRE_COLOURS = [("type colour", None), ("white", (235, 235, 235)), ("red", (235,
 CHAR_W = 7.2            # the default font at 13 px, near enough to right-align by
 
 
-def _right(text):
+NARROW_W = 46           # a knot: just wide enough for its two pin names
+
+
+def _right(text, width=NODE_W):
     """Indent that puts `text` against the node's right edge, so an output's
     name sits beside its pin on the right the way an input's sits beside its
     pin on the left. Inputs left, outputs right, on every node."""
-    return max(0, int(NODE_W - len(text) * CHAR_W))
+    return max(0, int(width - len(text) * CHAR_W))
 
 
 def compatible(a, b):
@@ -87,6 +90,9 @@ class GraphPanel:
         self._redo = []
         self._last_snap = None   # (key, time) of the last snapshot, to coalesce slider drags
         self._widgets = set()    # every value widget on a node, so keys know when one is typed in
+        self._node_themes = {}   # (r,g,b) -> a node theme with that title bar
+        self._frame_last = {}    # frame node -> its position last poll
+        self._frame_drag = {}    # frame node -> the nodes moving with it, while it moves
         self.auto = False        # live preview: rebuild after every edit
         self._dirty = 0.0        # time of the last edit not yet built, 0 when clean
         self._queued = False     # an edit landed while a build was running
@@ -486,6 +492,7 @@ class GraphPanel:
             self.touch()
 
     def poll(self):
+        self._poll_frames()
         if not self.auto or not self._dirty or not self.graph:
             return
         if time.time() - self._dirty < self.AUTO_DELAY:
@@ -502,8 +509,12 @@ class GraphPanel:
         self.links.clear(); self._pins.clear(); self._ptype.clear()
         if not self.graph:
             return
-        for nid, n in self.graph.nodes.items():
+        # frames first: nodes draw in creation order, so a frame made first
+        # sits behind the nodes inside it
+        for nid, n in sorted(self.graph.nodes.items(), key=lambda kv: kv[1]["type"] != "Frame"):
             self._make_node(nid, n)
+        self._frame_last = {nid: tuple(n["pos"]) for nid, n in self.graph.nodes.items() if n["type"] == "Frame"}
+        self._frame_drag.clear()
         # a wire to a pin that no longer exists - a sub-graph's input was
         # renamed or removed - is dropped rather than kept invisibly
         stale = [l for l in self.graph.links
@@ -525,10 +536,16 @@ class GraphPanel:
         label = d.get("label") or n["type"]
         if n["type"] in ("Graph input", "Graph output"):
             label = f"{n['type']}: {n['params'].get('name', '')}"
+        if n["type"] == "Frame":
+            label = str(n["params"].get("title", "group"))
+        collapsed = bool(n.get("collapsed"))
+        width = NARROW_W if d.get("narrow") else NODE_W
         with dpg.node(label=label, parent="node_editor", pos=n.get("pos", [0, 0]), tag=f"gnode_{nid}",
                       user_data=nid):
+            if n["type"] == "Frame":
+                self._frame_body(nid, n)
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                dpg.add_spacer(width=NODE_W, height=1)
+                dpg.add_spacer(width=width, height=1)
             for i in d["inputs"]:
                 tag = f"gin_{nid}_{i['name']}"
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input, tag=tag,
@@ -537,22 +554,105 @@ class GraphPanel:
                     # it takes stands in for the wire. Connected, the widget
                     # hides and the name stays.
                     is_linked = (nid, i["name"]) in linked
-                    dpg.add_text(i["name"], tag=tag + "_t", show=is_linked)
-                    self._input_widget(nid, n, i, tag + "_w", show=not is_linked)
+                    dpg.add_text(i["name"], tag=tag + "_t", show=is_linked or collapsed)
+                    if not collapsed:
+                        self._input_widget(nid, n, i, tag + "_w", show=not is_linked)
                 dpg.bind_item_theme(tag, th.pin[i["type"]])
                 self._pins[(nid, "in", i["name"])] = tag
                 self._ptype[tag] = i["type"]
-            for p in d["params"]:
-                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                    self._param_widget(nid, n, p)
+            if not collapsed and n["type"] != "Frame":
+                for p in d["params"]:
+                    with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                        self._param_widget(nid, n, p, multiline=d.get("multiline", False))
             for o in d["outputs"]:
                 tag = f"gout_{nid}_{o['name']}"
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output, tag=tag,
                                         user_data=(nid, o["name"]), shape=dpg.mvNode_PinShape_CircleFilled):
-                    dpg.add_text(o["name"], indent=_right(o["name"]))
+                    dpg.add_text(o["name"], indent=_right(o["name"], width))
                 dpg.bind_item_theme(tag, th.pin[o["type"]])
                 self._pins[(nid, "out", o["name"])] = tag
                 self._ptype[tag] = o["type"]
+        col = n.get("color")
+        if col:
+            dpg.bind_item_theme(f"gnode_{nid}", self._node_theme(tuple(col)))
+        elif n["type"] == "Frame":
+            dpg.bind_item_theme(f"gnode_{nid}", self._node_theme(tuple(n["params"].get("colour", [90, 110, 160]))[:3], frame=True))
+
+    def _node_theme(self, col, frame=False):
+        """A node theme whose title bar is `col`; a frame's body is a wash of
+        the same colour so the nodes inside still read through it."""
+        key = (col, frame)
+        th = self._node_themes.get(key)
+        if th is None:
+            r, g, b = col
+            with dpg.theme() as th:
+                with dpg.theme_component(dpg.mvNode):
+                    dpg.add_theme_color(dpg.mvNodeCol_TitleBar, (r, g, b, 255), category=dpg.mvThemeCat_Nodes)
+                    dpg.add_theme_color(dpg.mvNodeCol_TitleBarHovered, (min(255, r + 30), min(255, g + 30), min(255, b + 30), 255),
+                                        category=dpg.mvThemeCat_Nodes)
+                    dpg.add_theme_color(dpg.mvNodeCol_TitleBarSelected, (min(255, r + 50), min(255, g + 50), min(255, b + 50), 255),
+                                        category=dpg.mvThemeCat_Nodes)
+                    if frame:
+                        dpg.add_theme_color(dpg.mvNodeCol_NodeBackground, (r, g, b, 40), category=dpg.mvThemeCat_Nodes)
+                        dpg.add_theme_color(dpg.mvNodeCol_NodeBackgroundHovered, (r, g, b, 55), category=dpg.mvThemeCat_Nodes)
+                        dpg.add_theme_color(dpg.mvNodeCol_NodeBackgroundSelected, (r, g, b, 70), category=dpg.mvThemeCat_Nodes)
+                        dpg.add_theme_color(dpg.mvNodeCol_NodeOutline, (r, g, b, 160), category=dpg.mvThemeCat_Nodes)
+            self._node_themes[key] = th
+        return th
+
+    # --- frames ---------------------------------------------------------------------
+    # A Frame is an ordinary node with nothing in it but a spacer of its size,
+    # its body tinted by theme. Nodes are not parented to it - imnodes has no
+    # groups - so poll() watches the frame's position: when it moves, the nodes
+    # whose corner was inside it are moved by the same amount. Nodes in the
+    # current selection are left alone, since the drag moves them already.
+    def _frame_body(self, nid, n):
+        w = int(n["params"].get("w", 400)); h = int(n["params"].get("h", 300))
+        with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+            dpg.add_spacer(width=w, height=h - 40)
+            with dpg.group(horizontal=True):
+                w_ = dpg.add_input_int(label="w", width=70, default_value=w, step=0, user_data=(nid, "w"),
+                                       callback=self._on_param)
+                h_ = dpg.add_input_int(label="h", width=70, default_value=h, step=0, user_data=(nid, "h"),
+                                       callback=self._on_param)
+                self._widgets.update((w_, h_))
+
+    def _frame_rect(self, nid, pos=None):
+        n = self.graph.nodes[nid]
+        x, y = pos if pos is not None else dpg.get_item_pos(f"gnode_{nid}")
+        return x, y, x + int(n["params"].get("w", 400)) + 16, y + int(n["params"].get("h", 300)) + 30
+
+    def _poll_frames(self):
+        if not self.graph or not self._frame_last:
+            return
+        selected = {dpg.get_item_user_data(t) for t in dpg.get_selected_nodes("node_editor")}
+        for fid, last in list(self._frame_last.items()):
+            tag = f"gnode_{fid}"
+            if not dpg.does_item_exist(tag):
+                continue
+            cur = tuple(dpg.get_item_pos(tag))
+            dx, dy = cur[0] - last[0], cur[1] - last[1]
+            if dx == 0 and dy == 0:
+                self._frame_drag.pop(fid, None)
+                continue
+            if fid not in self._frame_drag:
+                x0, y0, x1, y1 = self._frame_rect(fid, last)
+                members = []
+                for nid in self.graph.nodes:
+                    if nid == fid or nid in selected or self.graph.nodes[nid]["type"] == "Frame":
+                        continue
+                    t = f"gnode_{nid}"
+                    if dpg.does_item_exist(t):
+                        px, py = dpg.get_item_pos(t)
+                        if x0 <= px <= x1 and y0 <= py <= y1:
+                            members.append(nid)
+                self._frame_drag[fid] = members
+            for nid in self._frame_drag[fid]:
+                t = f"gnode_{nid}"
+                if dpg.does_item_exist(t):
+                    px, py = dpg.get_item_pos(t)
+                    dpg.set_item_pos(t, [px + dx, py + dy])
+            self._frame_last[fid] = cur
 
     def _input_widget(self, nid, n, i, tag, show):
         """The editable stand-in for an unconnected input pin."""
@@ -584,10 +684,15 @@ class GraphPanel:
             dpg.configure_item(tag + "_t", show=linked)
             dpg.configure_item(tag + "_w", show=not linked)
 
-    def _param_widget(self, nid, n, p):
+    def _param_widget(self, nid, n, p, multiline=False):
         v = n["params"].get(p["name"], p["default"])
         ud = (nid, p["name"])
         cb = self._on_param
+        if p["type"] == "text" and multiline:
+            w = dpg.add_input_text(width=220, height=90, multiline=True, default_value=str(v), user_data=ud,
+                                   callback=cb)
+            self._widgets.add(w)
+            return
         if p["type"] == "float":
             w = dpg.add_input_float(label=p["name"], width=78, default_value=float(v), step=0,
                                 format="%.3f", user_data=ud, callback=cb)
@@ -616,6 +721,8 @@ class GraphPanel:
         if isinstance(val, (list, tuple)) and len(val) >= 3 and all(isinstance(x, float) for x in val):
             val = [int(round(x * 255)) if x <= 1.0 else int(x) for x in val[:3]]
         self.graph.nodes[nid]["params"][name] = val
+        if self.graph.nodes[nid]["type"] == "Frame" and name in ("title", "colour"):
+            self._sync_pos(); self.rebuild()
         if self.graph.nodes[nid]["type"] in ("Graph input", "Graph output") and name in ("name", "type"):
             if name == "type":
                 # the pin changed type: its wires no longer fit
@@ -694,6 +801,13 @@ class GraphPanel:
                 dpg.bind_item_theme(tag, th.pin[t] if compatible(self._drag_type, t) else th.grey[t])
 
     def on_release(self):
+        # a clicked frame comes to the front and would then take the clicks
+        # meant for the nodes inside it: send it back behind them
+        if self.graph and self._frame_last and dpg.does_item_exist("node_editor"):
+            for fid in self._frame_last:
+                if dpg.does_item_exist(f"gnode_{fid}") and dpg.is_item_hovered(f"gnode_{fid}"):
+                    self._sync_pos(); self.rebuild()
+                    break
         if self._drag_type is None:
             return
         t, frm = self._drag_type, self._drag_from
@@ -815,6 +929,14 @@ class GraphPanel:
                 row("disconnect", lambda: self._disconnect_in(nid, name))
                 self._colour_rows(P, [(nid, name)])
             i = next(x for x in d["inputs"] if x["name"] == name)
+            if linked:
+                a, out = next((l[0], l[1]) for l in self.graph.links if l[2] == nid and l[3] == name)
+                at = next((o["type"] for o in self.graph.node_def(self.graph.nodes[a])["outputs"] if o["name"] == out), "float")
+                between = self._between(at, i["type"])
+                if between:
+                    dpg.add_text("insert on the wire", parent=P, color=DIM)
+                    for t in between[:8]:
+                        row(f"  {t}", lambda t=t: self._insert_before(nid, name, t))
             row("reset to default", lambda: self._reset_input(nid, name, i))
             # expose this input as a control: a slider or checkbox node, wired in
             ctrls = ["Speed", "Intensity", "Custom 1", "Custom 2", "Custom 3"] if i["type"] != "bool" \
@@ -842,8 +964,66 @@ class GraphPanel:
                 row("copy selection", self.copy)
                 row("cut selection", self.cut)
             row("duplicate", lambda: self._dup(nid))
+            if d["inputs"] or d["params"]:
+                row("expand" if n.get("collapsed") else "collapse", lambda: self._collapse(nid))
             row("disconnect all", lambda: self._disconnect_node(nid))
             row("delete", lambda: self._delete_node(nid))
+            self._node_colour_rows(P, nid)
+
+    def _node_colour_rows(self, P, nid):
+        dpg.add_text("node colour", parent=P, color=DIM)
+        for chunk in (WIRE_COLOURS[:5], WIRE_COLOURS[5:]):
+            with dpg.group(parent=P, horizontal=True):
+                for label, col in chunk:
+                    if col is None:
+                        dpg.add_button(label="auto", small=True,
+                                       callback=lambda: (dpg.configure_item(P, show=False), self._set_colour(nid, None)))
+                    else:
+                        dpg.add_color_button(default_value=list(col) + [255], width=18, height=18, no_border=True,
+                                             callback=lambda s, a, c=col: (dpg.configure_item(P, show=False), self._set_colour(nid, c)))
+
+    def _set_colour(self, nid, col):
+        self.snapshot(); self._sync_pos()
+        if col is None:
+            self.graph.nodes[nid].pop("color", None)
+        else:
+            self.graph.nodes[nid]["color"] = list(col)
+        self.rebuild()
+
+    def _collapse(self, nid):
+        self.snapshot(); self._sync_pos()
+        n = self.graph.nodes[nid]
+        n["collapsed"] = not n.get("collapsed")
+        self.rebuild()
+
+    def _between(self, at, bt):
+        """Node types that can sit on a wire of type at -> bt: an input that
+        takes `at`, an output that gives `bt`."""
+        prefer = ["Knot", "Knot colour", "Scale", "Multiply", "Add", "Remap", "Smoothstep", "Clamp", "Abs", "Fade",
+                  "Blend", "Mask", "Mix", "Select", "Threshold", "Expression", "Colour expression"]
+        out = []
+        for name in prefer + sorted(self.lib):
+            d = self.lib.get(name)
+            if not d or name in out or d.get("decor"):
+                continue
+            if any(compatible(at, i["type"]) for i in d["inputs"]) and any(compatible(o["type"], bt) for o in d["outputs"]):
+                out.append(name)
+        return out
+
+    def _insert_before(self, nid, name, new_type):
+        """Splice a node into the wire feeding this input."""
+        self.snapshot(); self._sync_pos()
+        a, out = next((l[0], l[1]) for l in self.graph.links if l[2] == nid and l[3] == name)
+        d = self.lib[new_type]
+        bt = next(i["type"] for i in self.graph.node_def(self.graph.nodes[nid])["inputs"] if i["name"] == name)
+        at = next(o["type"] for o in self.graph.node_def(self.graph.nodes[a])["outputs"] if o["name"] == out)
+        inp = next(i["name"] for i in d["inputs"] if compatible(at, i["type"]))
+        outp = next(o["name"] for o in d["outputs"] if compatible(o["type"], bt))
+        pa, pb = self.graph.nodes[a]["pos"], self.graph.nodes[nid]["pos"]
+        new = self.graph.add(new_type, ((pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2 + 20))
+        self.graph.link(a, out, new, inp)
+        self.graph.link(new, outp, nid, name)
+        self.rebuild()
 
     def _colour_rows(self, P, keys):
         dpg.add_text("wire colour", parent=P, color=DIM)
@@ -969,6 +1149,8 @@ class GraphPanel:
         self.snapshot()
         nid = self.graph.add(type_, self._menu_pos)
         self._make_node(nid, self.graph.nodes[nid])
+        if type_ == "Frame":
+            self._sync_pos(); self.rebuild()      # behind the nodes it now covers
         if self._pending:
             a, out, t = self._pending
             self._pending = None
