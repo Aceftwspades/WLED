@@ -179,6 +179,7 @@ class GraphPanel:
             if not os.path.exists(path):
                 return None
             self._subs[ident] = G.load(path, lib=self.lib, resolver=self.resolve_sub)
+            self._subs[ident].project_dir = self.app.project.path
         return self._subs[ident]
 
     def refresh_lib(self):
@@ -216,6 +217,7 @@ class GraphPanel:
         self.offset = [0.0, 0.0]
         d = self.sub_dir if sub else self.dir
         self.graph = G.load(os.path.join(d, fname), lib=self.lib, resolver=self.resolve_sub)
+        self.graph.project_dir = self.app.project.path
         self.file = fname
         self.cur_dir = d
         self._undo.clear(); self._redo.clear(); self._last_snap = None
@@ -528,6 +530,7 @@ class GraphPanel:
 
     def _restore(self, snap):
         self.graph = G.Graph(json.loads(snap), lib=self.lib, resolver=self.resolve_sub)
+        self.graph.project_dir = self.app.project.path
         self._last_snap = None
         self.rebuild()
 
@@ -897,9 +900,11 @@ class GraphPanel:
         v = n["params"].get(p["name"], p["default"])
         ud = (nid, p["name"])
         cb = self._on_param
-        if p["type"] == "text" and multiline:
-            w = dpg.add_input_text(width=self.px(220), height=self.px(90), multiline=True, default_value=str(v), user_data=ud,
-                                   callback=cb)
+        if p["type"] == "text" and (multiline or p.get("lines")):
+            # rows of a bitmap are '/'-separated in the param and shown as lines
+            shown = str(v).replace("/", "\n") if p.get("lines") else str(v)
+            w = dpg.add_input_text(width=self.px(220), height=self.px(90 if not p.get("lines") else 150), multiline=True,
+                                   default_value=shown, user_data=ud, callback=cb)
             self._widgets.add(w)
             return
         if p["type"] == "float":
@@ -919,14 +924,93 @@ class GraphPanel:
                                user_data=ud, callback=cb)
         elif p["type"] == "text":
             w = dpg.add_input_text(label=p["name"], width=self.px(100), default_value=str(v), user_data=ud, callback=cb)
+        elif p["type"] == "file":
+            with dpg.group(horizontal=True):
+                w = dpg.add_input_text(label=p["name"], width=self.px(120), default_value=str(v), user_data=ud, callback=cb)
+                dpg.add_button(label="...", small=True, user_data=(nid, p["name"]),
+                               callback=lambda s_, a_, u_: self._pick_file(u_))
         else:
             return
         self._widgets.add(w)
+
+    def _pick_file(self, target):
+        """The file dialog, for a node's file param; the choice lands in the
+        param (relative to the project when it is inside it) and rebuilds."""
+        self._file_target = target
+        if not dpg.does_item_exist("graph_file_dialog"):
+            with dpg.file_dialog(directory_selector=False, show=False, tag="graph_file_dialog", width=640, height=440,
+                                 callback=lambda s_, a_: self._file_picked(a_.get("file_path_name", ""))):
+                for ext, col in ((".png", (120, 200, 120)), (".jpg", (120, 200, 120)), (".jpeg", (120, 200, 120)),
+                                 (".gif", (120, 200, 120)), (".bmp", (120, 200, 120)), (".*", (180, 180, 180))):
+                    dpg.add_file_extension(ext, color=col)
+        dpg.show_item("graph_file_dialog")
+
+    def _file_picked(self, path):
+        if not path or not getattr(self, "_file_target", None) or not self.graph:
+            return
+        nid, name = self._file_target
+        if nid not in self.graph.nodes:
+            return
+        proj = self.app.project.path
+        try:
+            rel = os.path.relpath(path, proj)
+            if not rel.startswith(".."):
+                path = rel.replace("\\", "/")
+        except ValueError:
+            pass
+        self.snapshot(); self._sync_pos()
+        self.graph.nodes[nid]["params"][name] = path
+        self.rebuild()
+        self.status(f"{os.path.basename(path)}")
+
+    def image_to_bitmap(self, nid):
+        """An Image node becomes a Bitmap and a Colour pick, wired the same:
+        the picture as digits you can edit, its palette as colours you can
+        change. Up to eight colours; the image is re-quantised to fit."""
+        from native.nodedefs import load_image_indexed
+        n = self.graph.nodes.get(nid)
+        if not n or n["type"] != "Image":
+            return
+        p = n["params"]
+        path = str(p.get("file", "")).strip()
+        if path and not os.path.isabs(path):
+            path = os.path.join(self.app.project.path, path)
+        if not path or not os.path.exists(path):
+            self.status("the Image node has no file"); return
+        w, h = int(p.get("width", 16)), int(p.get("height", 16))
+        try:
+            idx, palette = load_image_indexed(path, w, h, min(8, int(p.get("colours", 8))), bool(p.get("alpha_clear", True)))
+        except Exception as e:
+            self.status(f"cannot read the image: {e}"); return
+        rows = "/".join("".join("." if idx[y * w + x] == 255 else str(min(9, idx[y * w + x])) for x in range(w)) for y in range(h))
+        self.snapshot(); self._sync_pos()
+        g = self.graph
+        pos = n["pos"]
+        bm = g.add("Bitmap", (pos[0], pos[1]), {"rows": rows})
+        cp = g.add("Colour pick", (pos[0] + 240, pos[1]), {f"c{k}": list(palette[k]) if k < len(palette) else [0, 0, 0] for k in range(8)})
+        mk = g.add("Mask", (pos[0] + 480, pos[1]))
+        g.link(bm, "slot", cp, "index"); g.link(cp, "color", mk, "color"); g.link(bm, "on", mk, "mask")
+        # the same wires in and out
+        for a, o, b_, i in [l for l in g.links if l[2] == nid]:
+            if i in ("u", "v"):
+                g.link(a, o, bm, i)
+        for a, o, b_, i in [l for l in g.links if l[0] == nid]:
+            src = {"color": (mk, "color"), "slot": (bm, "slot"), "on": (bm, "on")}.get(o)
+            if src:
+                g.link(src[0], src[1], b_, i)
+        for k in ("u", "v"):
+            if k in n.get("inputs", {}):
+                g.nodes[bm]["inputs"][k] = n["inputs"][k]
+        g.remove(nid)
+        self.rebuild()
+        self.status(f"image -> Bitmap ({w} x {h}, {len(palette)} colours) + Colour pick")
 
     def _on_param(self, sender, val):
         self.touch()
         nid, name = dpg.get_item_user_data(sender)
         self.snapshot(("param", nid, name))
+        if isinstance(val, str) and "\n" in val:
+            val = val.replace("\r", "").replace("\n", "/")      # a bitmap's lines back to rows
         if isinstance(val, (list, tuple)) and len(val) >= 3 and all(isinstance(x, float) for x in val):
             val = [int(round(x * 255)) if x <= 1.0 else int(x) for x in val[:3]]
         self.graph.nodes[nid]["params"][name] = val
@@ -1175,6 +1259,8 @@ class GraphPanel:
                 dpg.add_text(m, parent=P, color=(235, 80, 70) if m.startswith("error") else (240, 190, 70))
             if n["type"].startswith(G.SUB):
                 row("edit sub-graph", lambda: self.enter_sub(nid))
+            if n["type"] == "Image":
+                row("convert to Bitmap + Colour pick", lambda: self.image_to_bitmap(nid))
             if dpg.get_selected_nodes("node_editor"):
                 row("fold selection into a sub-graph", lambda: self.make_sub_from_selection(dpg.get_value("graph_new_name")))
                 row("copy selection", self.copy)
@@ -1497,6 +1583,7 @@ class GraphPanel:
             self.preview = None
             return None
         g = G.Graph(self.graph.to_json(), lib=self.lib, resolver=self.resolve_sub)
+        g.project_dir = self.app.project.path
         for o in [m for m, n in g.nodes.items() if n["type"] == "Output"]:
             g.remove(o)
         d = g.node_def(g.nodes[nid])

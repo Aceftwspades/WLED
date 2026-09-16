@@ -37,7 +37,7 @@ else the definition's default.
 import json
 import re
 
-from native.nodedefs import library, HELPERS
+from native.nodedefs import library, HELPERS, CODEGEN
 
 PIXEL_NAMES = re.compile(r"\b(px|py|u|v|cx|cy|r|ang|nx|ny|nz|X3|Y3|Z3|W|H|N|gc_out)\b")
 TYPES = {"float": "float", "color": "uint32_t", "bool": "bool"}
@@ -117,6 +117,7 @@ class Graph:
         self.lib = lib or library()
         # name -> Graph, for sub-graph nodes; supplied by the project
         self.resolver = resolver
+        self.project_dir = None       # where relative file params resolve; the panel sets it
         d = d or {}
         self.name = d.get("name", "Untitled")
         self.nodes = {int(n["id"]): dict(n, id=int(n["id"])) for n in d.get("nodes", [])}
@@ -275,6 +276,7 @@ class Graph:
         if depth > 12:
             raise GraphError("sub-graphs nested more than twelve deep - is one inside itself?")
         flat = Graph({"name": self.name}, lib=self.lib, resolver=self.resolver)
+        flat.project_dir = getattr(self, "project_dir", None)
         flat.nodes = {}
         flat.link_meta = dict(self.link_meta)
         idmap = {}
@@ -388,7 +390,7 @@ class Graph:
                     raise GraphError(f"{d['name']} #{nid} keeps one value per frame, so its inputs "
                                      f"cannot come from a per-pixel node (Coords, Noise...)")
                 scope[nid] = "pixel" if per_pixel_in else "frame"; continue
-            if PIXEL_NAMES.search(d["code"]):
+            if PIXEL_NAMES.search(d["code"]) or d.get("codegen"):
                 scope[nid] = "pixel"; continue
             scope[nid] = "pixel" if per_pixel_in else "frame"
 
@@ -415,6 +417,11 @@ class Graph:
         def expand(nid, late=False):
             n = self.nodes[nid]; d = defs[nid]
             code = d["late_code"] if late else d["code"]
+            if d.get("codegen") and not late:
+                try:
+                    code = CODEGEN[d["codegen"]](n, getattr(self, "project_dir", None))
+                except Exception as e:
+                    raise GraphError(f"{d['name']} #{nid}: {e}")
             otypes = {o["name"]: o["type"] for o in d["outputs"]}
             # inputs
             for i in d["inputs"]:
@@ -439,7 +446,7 @@ class Graph:
                     rgb = list(v)[:3] if isinstance(v, (list, tuple)) else [255, 255, 255]
                     for k, c in zip("rgb", rgb):
                         code = code.replace(f"$p.{p['name']}_{k}", str(int(c)))
-                elif p["type"] == "text":
+                elif p["type"] in ("text", "file"):
                     code = code.replace(f"$p.{p['name']}", str(v).replace('"', "'"))
                 elif p["type"] == "choice":
                     code = code.replace(f"$p.{p['name']}", str(v))

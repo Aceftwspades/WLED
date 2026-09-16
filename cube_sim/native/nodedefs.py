@@ -305,8 +305,18 @@ LIBRARY = [
             "  $out.density = gc_sat(D_[j_ * NX_ + b_]); }",
             "the fig tree: the bifurcation diagram of x -> x^2 + c between c_lo..c_hi (u) and x_lo..x_hi (v), as orbit density with a trail - zoom the windows toward -1.401155 to fly into it"),
          state=1 + 64 + 64 * 48),
+    # An image file, baked into the effect at compile time: resized to the
+    # node's size, quantised to its number of colours, stored as an index
+    # table and a palette in the generated C++ - so the effect still needs
+    # no files on the device. The node menu can turn it into a Bitmap plus a
+    # Colour pick, editable pixel art.
+    dict(_n("Image", "generate", "pixel", [("u", F, 0.0), ("v", F, 0.0)], [("color", C), ("slot", F), ("on", B)],
+            [_p("file", "file", ""), _p("width", "int", 16, 1, 64), _p("height", "int", 16, 1, 64),
+             _p("colours", "int", 8, 2, 16), _p("alpha_clear", "bool", True)],
+            "", "an image file (png, jpg, gif...) resized and quantised into the effect: its colour at u, v, the palette slot, and whether the pixel is opaque"),
+         codegen="image"),
     _n("Bitmap", "generate", "pixel", [("u", F, 0.0), ("v", F, 0.0)], [("slot", F), ("on", B)],
-       [_p("rows", "text", "0110/1001/1001/0110")],
+       [dict(_p("rows", "text", "0110/1001/1001/0110"), lines=True)],
        "{ const int s_ = gc_bitmap(\"$p.rows\", $in.u, $in.v); $out.on = s_ >= 0; $out.slot = (float)(s_ < 0 ? 0 : s_); }",
        "pixel art: rows of digits separated by '/', '.' transparent, read at u, v - the digit is a colour slot for Colour pick"),
     _n("Hash", "generate", "pixel", [("x", F, 0.0), ("y", F, 0.0), ("seed", F, 0.0)], [("value", F)], [],
@@ -399,10 +409,12 @@ LIBRARY = [
        "the palette-source setting's colours (what the audio palettes draw from) at index 0..1; "
        "the segment's palette where the palettes usermod is absent"),
     _n("Colour pick", "colour", "pixel", [("index", F, 0.0)], [("color", C)],
-       [_p("c0", "color", [255, 255, 255]), _p("c1", "color", [255, 0, 0]), _p("c2", "color", [0, 255, 0]), _p("c3", "color", [0, 0, 255])],
-       "{ const int i_ = (int)$in.index; $out.color = i_ <= 0 ? RGBW32($p.c0_r, $p.c0_g, $p.c0_b, 0) : i_ == 1 ? RGBW32($p.c1_r, $p.c1_g, $p.c1_b, 0)\n"
-       "    : i_ == 2 ? RGBW32($p.c2_r, $p.c2_g, $p.c2_b, 0) : RGBW32($p.c3_r, $p.c3_g, $p.c3_b, 0); }",
-       "one of four colours by index (0..3) - a bitmap's palette"),
+       [_p("c0", "color", [255, 255, 255]), _p("c1", "color", [255, 0, 0]), _p("c2", "color", [0, 255, 0]), _p("c3", "color", [0, 0, 255]),
+        _p("c4", "color", [255, 255, 0]), _p("c5", "color", [0, 255, 255]), _p("c6", "color", [255, 0, 255]), _p("c7", "color", [128, 128, 128])],
+       "{ static const uint32_t cp_[8] = { RGBW32($p.c0_r, $p.c0_g, $p.c0_b, 0), RGBW32($p.c1_r, $p.c1_g, $p.c1_b, 0), RGBW32($p.c2_r, $p.c2_g, $p.c2_b, 0), RGBW32($p.c3_r, $p.c3_g, $p.c3_b, 0),\n"
+       "    RGBW32($p.c4_r, $p.c4_g, $p.c4_b, 0), RGBW32($p.c5_r, $p.c5_g, $p.c5_b, 0), RGBW32($p.c6_r, $p.c6_g, $p.c6_b, 0), RGBW32($p.c7_r, $p.c7_g, $p.c7_b, 0) };\n"
+       "  int i_ = (int)$in.index; if (i_ < 0) i_ = 0; if (i_ > 7) i_ = 7; $out.color = cp_[i_]; }",
+       "one of eight colours by index (0..7) - a bitmap's palette"),
     _n("HSV", "colour", "pixel", [("h", F, 0.0), ("s", F, 1.0), ("v", F, 1.0)], [("color", C)], [],
        "$out.color = gc_hsv($in.h, $in.s, $in.v);", "hue 0..1 round the wheel"),
     _n("Scale", "colour", "pixel", [("color", C, 0), ("by", F, 1.0)], [("color", C)], [],
@@ -748,3 +760,63 @@ def library(extra=()):
         except Exception:
             pass
     return lib
+
+
+# ---------------------------------------------------------------------------
+# Code generated per node at compile time, for the nodes whose C++ depends
+# on something a template cannot hold - an image's pixels. Each takes the
+# node (its params) and the project directory (for relative paths) and
+# returns the code, with $in/$out holes still to be filled.
+# ---------------------------------------------------------------------------
+_IMAGE_CACHE = {}
+
+
+def load_image_indexed(path, w, h, colours, alpha_clear=True):
+    """The image as (indices, palette): indices a w*h list, 255 where
+    transparent; palette a list of (r, g, b). Cached on the file's mtime."""
+    import os
+    key = (os.path.abspath(path), os.path.getmtime(path), w, h, colours, alpha_clear)
+    hit = _IMAGE_CACHE.get(key)
+    if hit is not None:
+        return hit
+    from PIL import Image
+    im = Image.open(path).convert("RGBA").resize((w, h), Image.LANCZOS)
+    alpha = list(im.getchannel("A").getdata())
+    rgb = im.convert("RGB")
+    q = rgb.quantize(colors=max(2, min(256, colours)), method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+    pal = q.getpalette()[:3 * colours]
+    palette = [(pal[i], pal[i + 1], pal[i + 2]) for i in range(0, len(pal), 3)]
+    idx = list(q.getdata())
+    # drop palette entries nothing uses, so the slots are dense
+    used = sorted(set(i for i, a in zip(idx, alpha) if not (alpha_clear and a < 128)))
+    remap = {old: new for new, old in enumerate(used)}
+    palette = [palette[i] if i < len(palette) else (0, 0, 0) for i in used]
+    out = [255 if (alpha_clear and a < 128) else remap.get(i, 0) for i, a in zip(idx, alpha)]
+    _IMAGE_CACHE[key] = (out, palette)
+    return out, palette
+
+
+def codegen_image(n, project_dir=None):
+    import os
+    p = n["params"]
+    path = str(p.get("file", "")).strip()
+    w, h = int(p.get("width", 16)), int(p.get("height", 16))
+    if path and not os.path.isabs(path) and project_dir:
+        path = os.path.join(project_dir, path)
+    if not path or not os.path.exists(path):
+        # no image: a checkerboard, so the node still compiles and shows something
+        return ("{ const int x_ = (int)(gc_sat($in.u) * 8.0f), y_ = (int)(gc_sat($in.v) * 8.0f);\n"
+                "  const bool c_ = ((x_ + y_) & 1) != 0; $out.on = true; $out.slot = c_ ? 1.0f : 0.0f;\n"
+                "  $out.color = c_ ? 0xFF00FFu : 0x202020u; }")
+    idx, palette = load_image_indexed(path, w, h, int(p.get("colours", 8)), bool(p.get("alpha_clear", True)))
+    table = ",".join(str(i) for i in idx)
+    pal = ",".join(f"0x{r:02X}{g:02X}{b:02X}u" for r, g, b in palette) or "0u"
+    return (f"{{ static const uint8_t im_[{w * h}] = {{{table}}};\n"
+            f"  static const uint32_t pl_[{max(1, len(palette))}] = {{{pal}}};\n"
+            f"  int x_ = (int)(gc_sat($in.u) * {w}.0f); if (x_ >= {w}) x_ = {w - 1};\n"
+            f"  int y_ = (int)(gc_sat($in.v) * {h}.0f); if (y_ >= {h}) y_ = {h - 1};\n"
+            f"  const uint8_t s_ = im_[y_ * {w} + x_];\n"
+            f"  $out.on = s_ != 255; $out.slot = (float)(s_ == 255 ? 0 : s_); $out.color = (s_ == 255) ? 0u : pl_[s_]; }}")
+
+
+CODEGEN = {"image": codegen_image}

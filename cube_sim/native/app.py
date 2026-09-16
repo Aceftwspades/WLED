@@ -1622,6 +1622,8 @@ def service_command(app):
                 dpg.set_value("find_text", c["find"]); app.find()
             if "replace" in c:
                 dpg.set_value("replace_text", c["replace"]); app.replace_all()
+            if "graph_image_convert" in c:
+                app.gp.image_to_bitmap(int(c["graph_image_convert"]))
             if "graph_preview" in c:
                 if c["graph_preview"]:
                     nid, name = c["graph_preview"]; app.gp.preview_pin(int(nid), name)

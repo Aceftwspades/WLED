@@ -117,6 +117,12 @@ class Project:
                 for f in os.listdir(ex):
                     if f.endswith(".json"):
                         shutil.copyfile(os.path.join(ex, f), os.path.join(gdir, f))
+            assets = os.path.join(HERE, "examples", "assets")
+            if os.path.isdir(assets):
+                adir = os.path.join(self.path, "assets"); os.makedirs(adir, exist_ok=True)
+                for f in os.listdir(assets):
+                    if not os.path.exists(os.path.join(adir, f)):
+                        shutil.copyfile(os.path.join(assets, f), os.path.join(adir, f))
         self.load()
 
     # --- persistence ----------------------------------------------------------------

@@ -1248,11 +1248,26 @@ def liquid():
     return b.save("liquid.json")
 
 
+def smiley():
+    """An image on every face: the Image node bakes assets/smiley.png into
+    the effect at compile time. Right-click it for 'convert to Bitmap +
+    Colour pick' and the picture becomes editable pixel art."""
+    b = GB("Smiley")
+    b.n("Effect settings", 0, 0, {"palette": 11, "dimensions": "2-D"})
+    face = b.n("Cube face", 0, 1)
+    img = b.n("Image", 1, 1, {"file": "assets/smiley.png", "width": 16, "height": 16, "colours": 6})
+    b.l(face, "a", img, "u"); b.l(face, "b", img, "v")
+    out = b.n("Output", 2, 1); b.l(img, "color", out, "color")
+    return b.save("smiley.json")
+
+
 ALL = [slab_cut, cell_weave, truchet, ring_rain, box_fire, maelstrom, kaleidoscope, mandelbrot, watershed, moire,
-       ripples, chladni, candy_knot, gyro_sand, breakout, cube_axes, liquid_tunnel, question_block, feigenbaum, liquid]
+       ripples, chladni, candy_knot, gyro_sand, breakout, cube_axes, liquid_tunnel, question_block, feigenbaum, liquid,
+       smiley]
+STATIC_EXTRA = {"Smiley"}
 
 
-STATIC = {"Cube Axes"}          # still by design
+STATIC = {"Cube Axes", "Smiley"}          # still by design
 
 
 def check():
@@ -1267,6 +1282,7 @@ def check():
     srcs = []
     for fn in sorted(os.listdir(OUT)):
         g = G.load(os.path.join(OUT, fn))
+        g.project_dir = HERE                              # examples/assets/... resolves
         p = os.path.join(tmp, fn[:-5] + ".cpp")
         open(p, "w", encoding="utf-8", newline="\n").write(g.compile())
         srcs.append(p)
