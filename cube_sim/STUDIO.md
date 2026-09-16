@@ -431,7 +431,7 @@ python -m native.app
 
 Every action is on the menus with its shortcut, and Help > Keyboard
 shortcuts lists them. Keys: **G** node graph, **C** code pane, **Q** logical view, **E** 3-D, **W** both,
-**H** hide the controls, **space** pause, **Ctrl+N / Ctrl+S / F2 / F5** new, save, rename, build. In the graph: **Delete** removes selected nodes,
+(again returns to the panels), **H** hide the controls, **space** pause, **Ctrl+N / Ctrl+S / F2 / F5** new, save, rename, build. In the graph: **Delete** removes selected nodes,
 **Ctrl+Z / Ctrl+Y** undo / redo, **Ctrl+C / X / V** copy, cut, paste, **wheel / Ctrl+= / Ctrl+- / Ctrl+0** zoom,
 **M** mute, **Shift+D** duplicate with inputs, **Ctrl+L** arrange, **Ctrl+H** hide unwired pins, **F** connect two
 selected nodes, **Alt+click** detach a node. Projects live in `cube_sim/projects/<name>/`;

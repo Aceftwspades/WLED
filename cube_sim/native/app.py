@@ -1416,10 +1416,16 @@ class App:
         cluttered window with one view missing.
 
         H brings the controls back without leaving the layout, for adjusting a
-        slider while watching, and takes them away again.
+        slider while watching, and takes them away again. The same key again,
+        while its view is up full-frame, comes back to the panels: one key
+        goes there and back, the way C and G do for their panes.
         """
-        self.layout = which
-        self.ui = False
+        if self.layout == which and not self.ui:
+            self.layout = "both"
+            self.ui = True
+        else:
+            self.layout = which
+            self.ui = False
         self.request_layout()
 
     # --- the loop ------------------------------------------------------------
@@ -1708,8 +1714,11 @@ def service_command(app):
                     if dpg.does_item_exist(t):
                         print("measure", t, "pos", dpg.get_item_pos(t), "size", dpg.get_item_rect_size(t),
                               "conf", dpg.get_item_configuration(t).get("height"))
+                print("measure layout", app.layout, "ui", app.ui)
                 print("measure viewport", dpg.get_viewport_client_width(), dpg.get_viewport_client_height(),
                       "footer rect", dpg.get_item_rect_min("footer"), dpg.get_item_rect_max("footer"))
+            if "key" in c:                              # test hook: a key press, by mvKey_ name
+                app.on_key(None, getattr(dpg, "mvKey_" + c["key"]))
             if "chrome" in c:                           # test hook: a chrome action by name
                 {"new": lambda: app.new_effect(), "rename": app.rename_current, "open": lambda: chrome.show_open(app),
                  "device": lambda: chrome.show_device(app), "editor": lambda: chrome.show_editor(app),

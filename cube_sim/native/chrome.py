@@ -27,7 +27,7 @@ LAYOUTS = (("net", "Logical net", "Q"), ("cube", "3-D view", "E"), ("both", "Net
            ("edit", "Code", "C"), ("graph", "Graph", "G"))
 
 SHORTCUTS = [
-    ("Views", [("Q / E / W", "logical net / 3-D / both, full frame"), ("C", "code pane"), ("G", "graph pane"),
+    ("Views", [("Q / E / W", "logical net / 3-D / both, full frame; again returns to the panels"), ("C", "code pane"), ("G", "graph pane"),
                ("H", "presentation: hide every control"), ("F11", "fullscreen window"),
                ("drag the bars between panes", "resize them")]),
     ("Playback", [("space", "play / pause"), ("F5", "compile + reload the current effect")]),
