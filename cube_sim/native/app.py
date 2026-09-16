@@ -1176,7 +1176,22 @@ class App:
                 self.gp.zoom_step(-1)
             elif app_data in (dpg.mvKey_0, dpg.mvKey_NumPad0):
                 self.gp.set_zoom(1.0)
+            elif app_data == dpg.mvKey_H:
+                self.gp.toggle_selected("hide_pins")
+            elif app_data == dpg.mvKey_L:
+                self.gp.arrange()
             return
+        if self.layout == "graph" and not ctrl:
+            shift = dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift)
+            if app_data == dpg.mvKey_M:
+                self.gp.toggle_selected("muted"); return
+            if app_data == dpg.mvKey_F:
+                self.gp.connect_selected(); return
+            if app_data == dpg.mvKey_D and shift:
+                sel = self.gp._selected()
+                if sel:
+                    self.gp._dup(sel[0], True)
+                return
         if ctrl:
             return
         if self.layout == "graph":
@@ -1638,6 +1653,21 @@ def service_command(app):
                     nid, name = c["graph_preview"]; app.gp.preview_pin(int(nid), name)
                 else:
                     app.gp.stop_preview()
+            if "graph_toggle" in c:                     # test hook: [node, flag]
+                app.gp._toggle(int(c["graph_toggle"][0]), c["graph_toggle"][1])
+            if c.get("graph_arrange"):
+                app.gp.arrange()
+            if "graph_connect" in c:                    # test hook: [a, b] as F would with them selected
+                a, b = c["graph_connect"]
+                import dearpygui.dearpygui as _d
+                _orig = _d.get_selected_nodes
+                _d.get_selected_nodes = lambda ed: [f"gnode_{a}", f"gnode_{b}"]
+                try:
+                    app.gp.connect_selected()
+                finally:
+                    _d.get_selected_nodes = _orig
+            if "graph_selected" in c:                   # test hook: a selection, held until cleared with []
+                app.gp._test_sel = [int(x) for x in c["graph_selected"]] or None
             if "graph_collapse" in c:
                 app.gp._collapse(int(c["graph_collapse"]))
             if "graph_colour" in c:

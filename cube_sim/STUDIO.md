@@ -416,7 +416,9 @@ python -m native.app
 
 Keys: **G** node graph, **C** code pane, **Q** logical view, **E** 3-D, **W** both,
 **H** hide the controls, **space** pause. In the graph: **Delete** removes selected nodes,
-**Ctrl+Z / Ctrl+Y** undo / redo, **Ctrl+C / X / V** copy, cut, paste, **wheel / Ctrl+= / Ctrl+- / Ctrl+0** zoom. Projects live in `cube_sim/projects/<name>/`;
+**Ctrl+Z / Ctrl+Y** undo / redo, **Ctrl+C / X / V** copy, cut, paste, **wheel / Ctrl+= / Ctrl+- / Ctrl+0** zoom,
+**M** mute, **Shift+D** duplicate with inputs, **Ctrl+L** arrange, **Ctrl+H** hide unwired pins, **F** connect two
+selected nodes, **Alt+click** detach a node. Projects live in `cube_sim/projects/<name>/`;
 the default one is created on first run.
 
 ## Compatibility rules for this branch

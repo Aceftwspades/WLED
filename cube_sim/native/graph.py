@@ -213,13 +213,63 @@ class Graph:
         for l in [l for l in self.links if l[0] == a and l[1] == out]:
             self.unlink(l[2], l[3])
 
-    def duplicate(self, nid, offset=(40, 40)):
+    def duplicate(self, nid, offset=(40, 40), with_links=False):
+        """A copy beside the node; with_links, the copy is fed by the same
+        wires (Blender's Shift+D)."""
         n = self.nodes.get(nid)
         if not n:
             return None
         import copy
         pos = (n["pos"][0] + offset[0], n["pos"][1] + offset[1])
-        return self.add(n["type"], pos, copy.deepcopy(n.get("params", {}))) if True else None
+        new = self.add(n["type"], pos, copy.deepcopy(n.get("params", {})))
+        self.nodes[new]["inputs"] = copy.deepcopy(n.get("inputs", {}))
+        for k in ("color", "collapsed", "hide_pins", "muted"):
+            if k in n:
+                self.nodes[new][k] = n[k]
+        if with_links:
+            for a, o, b, i in list(self.links):
+                if b == nid:
+                    self.link(a, o, new, i)
+        return new
+
+    def arrange(self, col_w=260, row_gap=30):
+        """Lay the nodes out in columns by depth - each node one column right
+        of the furthest node that feeds it - stacked in their current order.
+        Frames and notes stay where they are."""
+        deps = {nid: set() for nid in self.nodes}
+        for a, _, b, _ in self.links:
+            if a in deps and b in deps and not self._late(b):
+                deps[b].add(a)
+        depth = {}
+        def dep(n, seen=()):
+            if n in depth:
+                return depth[n]
+            if n in seen:
+                return 0
+            d = 0
+            for m in deps[n]:
+                d = max(d, dep(m, seen + (n,)) + 1)
+            depth[n] = d
+            return d
+        for nid in self.nodes:
+            dep(nid)
+        cols = {}
+        for nid, n in self.nodes.items():
+            if n["type"] in ("Frame", "Note"):
+                continue
+            cols.setdefault(depth[nid], []).append(nid)
+        for c, ids in cols.items():
+            ids.sort(key=lambda i: self.nodes[i]["pos"][1])
+            y = 40
+            for nid in ids:
+                n = self.nodes[nid]
+                n["pos"] = [40 + c * col_w, y]
+                try:
+                    d = self.node_def(n)
+                    rows = len(d["inputs"]) + len(d["outputs"]) + (0 if n.get("collapsed") else len(d["params"]))
+                except GraphError:
+                    rows = 3
+                y += 56 + 27 * max(1, rows) + row_gap
 
     def to_json(self):
         links = []
@@ -457,7 +507,18 @@ class Graph:
         def expand(nid, late=False):
             n = self.nodes[nid]; d = defs[nid]
             code = d["late_code"] if late else d["code"]
-            if d.get("codegen") and not late:
+            if n.get("muted") and not late:
+                # bypassed: each output takes the first input of its type, else nothing
+                parts = []
+                for o in d["outputs"]:
+                    src = next((i for i in d["inputs"] if i["type"] == o["type"]), None)
+                    if src is None:
+                        src = next((i for i in d["inputs"] if compatible(i["type"], o["type"])), None)
+                    if src is not None:
+                        parts.append(f"$out.{o['name']} = $in.{src['name']};")
+                code = " ".join(parts) or "/* muted */"
+                d = dict(d, state=None, fields=None, field=None, codegen=None)
+            elif d.get("codegen") and not late:
                 try:
                     code = CODEGEN[d["codegen"]](n, getattr(self, "project_dir", None))
                 except Exception as e:

@@ -396,6 +396,52 @@ class GraphPanel:
         if dpg.does_item_exist("graph_help") and dpg.get_value("graph_help") != text:
             dpg.set_value("graph_help", text)
 
+    # --- properties: the selected node's long text, in a wide box under the toolbar ----
+    def _poll_props(self):
+        if not dpg.does_item_exist("graph_props") or not self.graph:
+            return
+        sel = self._selected()
+        key = (self.file, sel[0]) if sel else None
+        if key == getattr(self, "_props_for", None):
+            return
+        self._props_for = key
+        dpg.delete_item("graph_props", children_only=True)
+        if not sel:
+            dpg.configure_item("graph_props", show=False); return
+        nid = sel[0]
+        n = self.graph.nodes.get(nid)
+        if not n:
+            dpg.configure_item("graph_props", show=False); return
+        d = self.graph.node_def(n)
+        long_ = [p for p in d["params"] if p["type"] in ("text", "file") and not p.get("lines") is False]
+        if not long_:
+            dpg.configure_item("graph_props", show=False); return
+        h = 34 + sum((self.px(120) + 8) if p.get("lines") else 30 for p in long_)
+        dpg.configure_item("graph_props", show=True, height=h)
+        dpg.add_text(f"{d.get('label') or n['type']} #{nid}", parent="graph_props", color=DIM)
+        for p in long_:
+            v = str(n["params"].get(p["name"], p["default"]))
+            shown = v.replace("/", "\n") if p.get("lines") else v
+            dpg.add_input_text(parent="graph_props", label=p["name"], width=-90, multiline=bool(p.get("lines")) or len(v) > 60,
+                               height=self.px(120) if p.get("lines") else 0, default_value=shown,
+                               user_data=(nid, p["name"]), callback=self._on_prop)
+
+    def _on_prop(self, sender, val):
+        nid, name = dpg.get_item_user_data(sender)
+        if nid not in self.graph.nodes:
+            return
+        self.touch(); self.snapshot(("prop", nid, name))
+        if isinstance(val, str) and "\n" in val:
+            val = val.replace("\r", "").replace("\n", "/")
+        self.graph.nodes[nid]["params"][name] = val
+        # the node's own box shows the same text
+        for w in list(self._widgets):
+            if dpg.does_item_exist(w) and dpg.get_item_user_data(w) == (nid, name):
+                try:
+                    dpg.set_value(w, val.replace("/", "\n") if isinstance(val, str) and "/" in val and "\n" not in val and dpg.get_item_configuration(w).get("multiline") else val)
+                except Exception:
+                    pass
+
     def _poll_help(self):
         now = time.time()
         if now - getattr(self, "_help_at", 0.0) < 0.15:
@@ -625,6 +671,8 @@ class GraphPanel:
     def _selected(self):
         if not self.graph:
             return []
+        if getattr(self, "_test_sel", None):            # the remote-control hooks stand in for a click
+            return [i for i in self._test_sel if i in self.graph.nodes]
         out = []
         for tag in dpg.get_selected_nodes("node_editor"):
             nid = dpg.get_item_user_data(tag)
@@ -702,6 +750,7 @@ class GraphPanel:
     def poll(self):
         self._poll_frames()
         self._poll_help()
+        self._poll_props()
         if not self.auto or not self._dirty or not self.graph:
             return
         if time.time() - self._dirty < self.AUTO_DELAY:
@@ -787,6 +836,9 @@ class GraphPanel:
         if n["type"] == "Frame":
             label = str(n["params"].get("title", "group"))
         collapsed = bool(n.get("collapsed"))
+        hide = bool(n.get("hide_pins"))
+        if n.get("muted"):
+            label = f"{label} (muted)"
         width = self.px(NARROW_W if d.get("narrow") else NODE_W)
         with dpg.node(label=label, parent="node_editor", pos=self._disp(n.get("pos", [0, 0])), tag=f"gnode_{nid}",
                       user_data=nid):
@@ -794,7 +846,10 @@ class GraphPanel:
                 self._frame_body(nid, n)
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 dpg.add_spacer(width=width, height=1)
+            fed_out = {(a, o) for a, o, _, _ in self.graph.links}
             for i in d["inputs"]:
+                if hide and (nid, i["name"]) not in linked:
+                    continue
                 tag = f"gin_{nid}_{i['name']}"
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input, tag=tag,
                                         user_data=(nid, i["name"]), shape=dpg.mvNode_PinShape_CircleFilled):
@@ -813,6 +868,8 @@ class GraphPanel:
                     with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                         self._param_widget(nid, n, p, multiline=d.get("multiline", False))
             for o in d["outputs"]:
+                if hide and (nid, o["name"]) not in fed_out:
+                    continue
                 tag = f"gout_{nid}_{o['name']}"
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output, tag=tag,
                                         user_data=(nid, o["name"]), shape=dpg.mvNode_PinShape_CircleFilled):
@@ -821,7 +878,9 @@ class GraphPanel:
                 self._pins[(nid, "out", o["name"])] = tag
                 self._ptype[tag] = o["type"]
         col = n.get("color")
-        if col:
+        if n.get("muted"):
+            dpg.bind_item_theme(f"gnode_{nid}", self._node_theme((70, 74, 82)))
+        elif col:
             dpg.bind_item_theme(f"gnode_{nid}", self._node_theme(tuple(col)))
         elif n["type"] == "Frame":
             dpg.bind_item_theme(f"gnode_{nid}", self._node_theme(tuple(n["params"].get("colour", [90, 110, 160]))[:3], frame=True))
@@ -1181,6 +1240,10 @@ class GraphPanel:
     def on_press(self):
         if not self.graph or not dpg.does_item_exist("node_editor") or not dpg.is_item_shown("node_editor"):
             return
+        if dpg.is_key_down(dpg.mvKey_LAlt) or dpg.is_key_down(dpg.mvKey_RAlt):
+            for nid in list(self.graph.nodes):
+                if dpg.does_item_exist(f"gnode_{nid}") and dpg.is_item_hovered(f"gnode_{nid}"):
+                    self.detach(nid); return
         for (nid, kind, name), tag in self._pins.items():
             if kind == "out" and dpg.does_item_exist(tag) and dpg.is_item_hovered(tag):
                 self._drag_type = self._ptype.get(tag)
@@ -1378,6 +1441,9 @@ class GraphPanel:
             row("duplicate", lambda: self._dup(nid))
             if d["inputs"] or d["params"]:
                 row("expand" if n.get("collapsed") else "collapse", lambda: self._collapse(nid))
+                row("show all pins" if n.get("hide_pins") else "hide unwired pins", lambda: self._toggle(nid, "hide_pins"))
+            row("unmute" if n.get("muted") else "mute (pass through)", lambda: self._toggle(nid, "muted"))
+            row("duplicate with inputs", lambda: self._dup(nid, True))
             row("disconnect all", lambda: self._disconnect_node(nid))
             row("delete", lambda: self._delete_node(nid))
             self._node_colour_rows(P, nid)
@@ -1510,8 +1576,58 @@ class GraphPanel:
         self.graph.link(nid, out_name, new, inp)
         self.rebuild()
 
-    def _dup(self, nid):
-        self.snapshot(); self.graph.duplicate(nid); self.rebuild()
+    def _dup(self, nid, with_links=False):
+        self.snapshot(); self._sync_pos(); self.graph.duplicate(nid, with_links=with_links); self.rebuild()
+
+    def _toggle(self, nid, flag):
+        self.snapshot(); self._sync_pos()
+        n = self.graph.nodes[nid]
+        n[flag] = not n.get(flag)
+        if not n[flag]:
+            n.pop(flag, None)
+        self.rebuild()
+
+    def toggle_selected(self, flag):
+        sel = self._selected()
+        if not sel:
+            self.status("select nodes first"); return
+        self.snapshot(); self._sync_pos()
+        on = not all(self.graph.nodes[i].get(flag) for i in sel)
+        for i in sel:
+            if on:
+                self.graph.nodes[i][flag] = True
+            else:
+                self.graph.nodes[i].pop(flag, None)
+        self.rebuild()
+
+    def arrange(self):
+        if not self.graph:
+            return
+        self.snapshot(); self._sync_pos()
+        self.offset = [0.0, 0.0]
+        self.graph.arrange()
+        self.rebuild()
+        self.status("arranged")
+
+    def detach(self, nid):
+        """Alt-click: a node loses every wire, in and out, and stays put."""
+        self.snapshot(); self._disconnect_node(nid)
+
+    def connect_selected(self):
+        """F: the first selected node's first output feeds the second's first
+        unwired input of a type that fits."""
+        sel = self._selected()
+        if len(sel) < 2:
+            self.status("select two nodes: the source first, then the target"); return
+        a, b = sel[0], sel[1]
+        da, db = self.graph.node_def(self.graph.nodes[a]), self.graph.node_def(self.graph.nodes[b])
+        wired = {(x, i) for _, _, x, i in self.graph.links}
+        for o in da["outputs"]:
+            for i in db["inputs"]:
+                if (b, i["name"]) not in wired and compatible(o["type"], i["type"]):
+                    self.snapshot(); self.graph.link(a, o["name"], b, i["name"]); self.rebuild()
+                    self.status(f"{da.get('label') or da['name']} . {o['name']} -> {i['name']}"); return
+        self.status("no free input fits")
 
     def _delete_node(self, nid):
         self.snapshot(); self.graph.remove(nid); self.rebuild()
@@ -1531,6 +1647,7 @@ class GraphPanel:
             dpg.add_button(label="redo", small=True, callback=lambda: (self._hide_menus(), self.redo()))
             dpg.add_button(label="paste here", small=True,
                            callback=lambda: (self._hide_menus(), self.paste(self._menu_pos)))
+            dpg.add_button(label="arrange", small=True, callback=lambda: (self._hide_menus(), self.arrange()))
         dpg.add_input_text(tag="graph_search", parent="graph_menu", hint="search nodes", width=200,
                            callback=self._search, on_enter=False)
         # on_enter would stop the per-keystroke callback; Enter is read separately
@@ -1793,6 +1910,8 @@ def build_panel(app, panel):
         dpg.add_file_extension(".*")
     dpg.add_text("", tag="graph_status", color=DIM)
     dpg.add_text("", tag="graph_help", color=(170, 178, 192), wrap=0)
+    with dpg.child_window(tag="graph_props", show=False, height=170, border=True):
+        pass
     with dpg.node_editor(tag="node_editor", callback=panel.on_link, delink_callback=panel.on_delink,
                          minimap=True, minimap_location=dpg.mvNodeMiniMap_Location_BottomRight,
                          width=-1, height=-1):
