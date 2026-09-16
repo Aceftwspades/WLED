@@ -390,6 +390,44 @@ class GraphPanel:
         if dpg.does_item_exist("graph_status"):
             dpg.set_value("graph_status", msg)
 
+    # --- help: what is under the pointer ---------------------------------------------
+    # A tooltip inside a node crashes the node editor, so the help is a
+    # line of its own under the status: hover a pin and it names the pin
+    # and says what to plug in or what comes out; hover a node's title and
+    # it says what the node is for. Checked a few times a second.
+    def help(self, text):
+        if dpg.does_item_exist("graph_help") and dpg.get_value("graph_help") != text:
+            dpg.set_value("graph_help", text)
+
+    def _poll_help(self):
+        now = time.time()
+        if now - getattr(self, "_help_at", 0.0) < 0.15:
+            return
+        self._help_at = now
+        if not self.graph or not dpg.does_item_exist("node_editor") or not dpg.is_item_shown("node_editor"):
+            return
+        if not dpg.is_item_hovered("node_editor"):
+            return
+        for (nid, kind, name), tag in self._pins.items():
+            if dpg.does_item_exist(tag) and dpg.is_item_hovered(tag):
+                n = self.graph.nodes.get(nid)
+                if not n:
+                    return
+                d = self.graph.node_def(n)
+                pins = d["inputs"] if kind == "in" else d["outputs"]
+                p = next((x for x in pins if x["name"] == name), None)
+                what = (p or {}).get("doc", "")
+                arrow = "<-" if kind == "in" else "->"
+                self.help(f"{d.get('label') or n['type']} {arrow} {name} ({(p or {}).get('type', '')})" + (f": {what}" if what else ""))
+                return
+        for nid, n in self.graph.nodes.items():
+            tag = f"gnode_{nid}"
+            if dpg.does_item_exist(tag) and dpg.is_item_hovered(tag):
+                d = self.graph.node_def(n)
+                self.help(f"{d.get('label') or n['type']}: {d.get('doc', '')}")
+                return
+        self.help("")
+
     # --- build the widgets from the graph -----------------------------------------
     def themes(self):
         if self._themes is None:
@@ -666,6 +704,7 @@ class GraphPanel:
 
     def poll(self):
         self._poll_frames()
+        self._poll_help()
         if not self.auto or not self._dirty or not self.graph:
             return
         if time.time() - self._dirty < self.AUTO_DELAY:
@@ -1218,6 +1257,9 @@ class GraphPanel:
         if kind == "in":
             linked = any(l[2] == nid and l[3] == name for l in self.graph.links)
             dpg.add_text(f"{n['type']} . {name}", parent=P, color=DIM)
+            pd_ = next((x.get("doc") for x in d["inputs"] if x["name"] == name), None)
+            if pd_:
+                dpg.add_text(pd_, parent=P, color=(170, 178, 192), wrap=260)
             if linked:
                 row("disconnect", lambda: self._disconnect_in(nid, name))
                 self._colour_rows(P, [(nid, name)])
@@ -1241,6 +1283,9 @@ class GraphPanel:
         elif kind == "out":
             outs = [l for l in self.graph.links if l[0] == nid and l[1] == name]
             dpg.add_text(f"{n['type']} . {name}", parent=P, color=DIM)
+            pd_ = next((x.get("doc") for x in d["outputs"] if x["name"] == name), None)
+            if pd_:
+                dpg.add_text(pd_, parent=P, color=(170, 178, 192), wrap=260)
             if outs:
                 row(f"disconnect all ({len(outs)})", lambda: self._disconnect_out(nid, name))
                 self._colour_rows(P, [(l[2], l[3]) for l in outs])
@@ -1254,6 +1299,8 @@ class GraphPanel:
                 row(f"  {t}", lambda t=t: self._connect_new(nid, name, o["type"], t))
         else:
             dpg.add_text(d.get("label") or n["type"], parent=P, color=DIM)
+            if d.get("doc"):
+                dpg.add_text(d["doc"], parent=P, color=(170, 178, 192), wrap=300)
             if nid in self.problems:
                 m = self.problems[nid]
                 dpg.add_text(m, parent=P, color=(235, 80, 70) if m.startswith("error") else (240, 190, 70))
@@ -1682,6 +1729,7 @@ def build_panel(app, panel):
         dpg.add_file_extension(".json", color=(120, 200, 120))
         dpg.add_file_extension(".*")
     dpg.add_text("", tag="graph_status", color=DIM)
+    dpg.add_text("", tag="graph_help", color=(170, 178, 192), wrap=0)
     with dpg.node_editor(tag="node_editor", callback=panel.on_link, delink_callback=panel.on_delink,
                          minimap=True, minimap_location=dpg.mvNodeMiniMap_Location_BottomRight,
                          width=-1, height=-1):

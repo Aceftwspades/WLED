@@ -750,16 +750,19 @@ static inline uint32_t gc_blend_screen(uint32_t u, uint32_t o, float a) {
 
 
 def library(extra=()):
-    """The node types by name: the library, then any user nodes over it."""
+    """The node types by name: the library, then any user nodes over it,
+    with the plain-words docs of nodedocs.py on every node and pin."""
+    import copy
     lib = {}
     for d in LIBRARY:
-        lib[d["name"]] = d
+        lib[d["name"]] = copy.deepcopy(d)
     for d in extra:
         try:
             lib[d["name"]] = d
         except Exception:
             pass
-    return lib
+    from native.nodedocs import apply
+    return apply(lib)
 
 
 # ---------------------------------------------------------------------------

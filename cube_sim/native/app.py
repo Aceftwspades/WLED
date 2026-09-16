@@ -1622,6 +1622,15 @@ def service_command(app):
                 dpg.set_value("find_text", c["find"]); app.find()
             if "replace" in c:
                 dpg.set_value("replace_text", c["replace"]); app.replace_all()
+            if "graph_hover" in c:                      # test hook: help for a pin or node, as hovering would
+                kind, nid, name = c["graph_hover"]
+                n = app.gp.graph.nodes[int(nid)]; d = app.gp.graph.node_def(n)
+                if kind == "node":
+                    app.gp.help(f"{d.get('label') or n['type']}: {d.get('doc', '')}")
+                else:
+                    pins = d["inputs"] if kind == "in" else d["outputs"]
+                    p = next(x for x in pins if x["name"] == name)
+                    app.gp.help(f"{n['type']} {'<-' if kind == 'in' else '->'} {name} ({p['type']}): {p.get('doc', '')}")
             if "graph_image_convert" in c:
                 app.gp.image_to_bitmap(int(c["graph_image_convert"]))
             if "graph_preview" in c:
