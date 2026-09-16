@@ -152,6 +152,25 @@ DOCS = {
         "in": {"target": "where it settles", "kick": "a push - the beat's hit"},
         "out": {"value": "where it is now", "velocity": "how fast it is moving"},
         "params": {"hz": "how many swings a second", "damping": "how quickly the swinging dies away, 0 (forever) .. 1"}},
+    "Ease": {
+        "doc": "A value that glides instead of jumping. Give it a target - a slider, a switch, a random - and it "
+               "moves there over about `seconds`, so a change on the WLED page fades in rather than snapping.",
+        "in": {"target": "where to go", "seconds": "roughly how long the glide takes"},
+        "out": {"value": "where it is now", "moving": "true while it is still on its way"}},
+    "Sequencer": {
+        "doc": "A timed cycle of up to four phases - a bump, a spin, a hold, a rest - each lasting the seconds you "
+               "give it, started by the trigger (or straight away). It tells you which phase is on, how far "
+               "through it is (0..1) and how long since the cycle began; loop makes it repeat.",
+        "in": {"trigger": "true starts the cycle from the top (the beat)", "t1": "phase 1's length in seconds",
+               "t2": "phase 2's length", "t3": "phase 3's length", "t4": "phase 4's length"},
+        "out": {"phase": "1, 2, 3 or 4 while running, 0 when finished", "progress": "how far through the current phase, 0..1",
+                "since": "seconds since the cycle started", "running": "true until the last phase ends"},
+        "params": {"loop": "start again at the end", "start_running": "run once from the first frame without a trigger"}},
+    "Statistics": {
+        "doc": "The least, the most and the average of a field over every pixel, from last frame. Divide a field by "
+               "its max to keep it in range whatever it does, or use the mean to know how much of the cube is lit.",
+        "out": {"min": "the smallest value anywhere", "max": "the largest", "mean": "the average"},
+        "params": {"field": "which field to measure"}},
     "Number": {"doc": "A fixed number you type in. Most pins can be typed straight on the node instead; this is for a "
                       "value you want to send to several places.",
                "out": {"value": "the number"}, "params": {"value": "the number"}},
@@ -200,6 +219,13 @@ DOCS = {
                "grain of sand falls into.",
         "in": {"pos": "the point, as a vector (Position plus a step)"},
         "out": {"u": "that pixel, across", "v": "that pixel, down"}},
+    "Transform": {
+        "doc": "Moves, turns and zooms a pair of coordinates about a pivot - feed Coords' u, v through it and "
+               "anything drawn from the result pans, spins or scales. A clock into turns spins the whole picture.",
+        "in": {"u": "the coordinate across", "v": "the coordinate down", "move_u": "shift across", "move_v": "shift down",
+               "turns": "spin, 1 = a full circle", "zoom": "1 leaves it, 2 zooms in, 0.5 out",
+               "pivot_u": "the point it turns and zooms about, across", "pivot_v": "and down"},
+        "out": {"u": "the new coordinate across", "v": "the new coordinate down"}},
     "Pixel": {
         "doc": "This pixel's whole-number column, row and index. For when you want to count pixels rather than "
                "measure in 0..1.",
@@ -308,6 +334,13 @@ DOCS = {
                 "Nx": "which way the tube's surface faces, x", "Ny": "y", "Nz": "z"},
         "params": {"p": "how many times the knot winds round", "q": "how many times it winds through",
                    "R": "the knot's overall size", "r": "the loop's size"}},
+    "Path": {
+        "doc": "A route through the cube, from points you type (x, y, z in the -1..1 box, one point per ';'). "
+               "For each pixel: how far it is from the route, and how far along the route the nearest point is - "
+               "a light running along a track (Band on `along` plus a clock), a glowing wire, a shape's outline.",
+        "in": {"pos": "this pixel's position (Position)"},
+        "out": {"distance": "how far from the route", "along": "how far along it the nearest point is, 0..1", "nearest": "that point"},
+        "params": {"points": "the corners: x,y,z; x,y,z; ...", "closed": "join the last point back to the first"}},
     "Sparkle": {
         "doc": "Random pixels lit. density is what fraction; change seed (Time through a Floor for steps) to make them "
                "twinkle.",
@@ -501,12 +534,12 @@ DOCS = {
                "pixel's new value. Two fields per graph, 0 and 1.",
         "in": {"u": "which pixel, across, 0..1", "v": "which pixel, down, 0..1"},
         "out": {"value": "the stored number there, from last frame"},
-        "params": {"field": "which field, 0 or 1"}},
+        "params": {"field": "which field, 0 to 3"}},
     "Field write": {
         "doc": "Stores a number for this pixel, to be read by Field next frame. The other half of a simulation: "
                "compute the new heat, write it here, read it back next frame with Field.",
         "in": {"value": "this pixel's number for next frame"},
-        "params": {"field": "which field, 0 or 1"}},
+        "params": {"field": "which field, 0 to 3"}},
     "Drain": {
         "doc": "Water running downhill over the pixels. Given a height field and a water field, it tells each pixel "
                "how much water flows into it from the neighbours that are higher, whether it is a sink (a hollow), "
@@ -514,6 +547,17 @@ DOCS = {
         "out": {"water": "the water arriving here this frame", "sink": "true if nothing around is lower",
                 "height": "this pixel's height, from the field"},
         "params": {"height_field": "the field holding heights", "water_field": "the field holding water"}},
+    "Blur": {
+        "doc": "Last frame's picture, softened: the average of the pixels around this one. Blend it under the new "
+               "picture for softness, or add a little of it for a glow.",
+        "out": {"color": "the blurred colour here"},
+        "params": {"radius": "how wide the blur is, in pixels (1 = the 3 x 3 around)"}},
+    "Glow": {
+        "doc": "Bloom: a colour plus a blurred copy of last frame's picture, so anything bright bleeds light into "
+               "its neighbours. Put it just before Output.",
+        "in": {"color": "the picture", "amount": "how much glow, 0..1"},
+        "out": {"color": "the picture with its glow"},
+        "params": {"radius": "how far the glow reaches, in pixels"}},
     "Previous": {
         "doc": "This pixel's own colour last frame. Fade it a little and Blend the new picture on top and everything "
                "leaves a trail.",

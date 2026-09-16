@@ -195,6 +195,31 @@ LIBRARY = [
             "$out.value = $st.x; $out.velocity = $st.v;",
             "a damped oscillator pulled to `target`: a kick (an impulse, on the beat) makes it overshoot, rock back and settle - a slosh, a bounce"),
          state=["x", "v"]),
+    dict(_n("Ease", "signals", "frame", [("target", F, 0.0), ("seconds", F, 1.0)], [("value", F), ("moving", B)], [],
+            "if ($first) $st.x = $in.target;\n"
+            "{ const float d_ = $in.target - $st.x; const float step_ = ($in.seconds > 0.0f) ? (float)dt * 0.001f / $in.seconds : 1.0f;\n"
+            "  $st.x += d_ * (step_ > 1.0f ? 1.0f : step_) * 2.0f; if (fabsf($in.target - $st.x) < 0.0005f) $st.x = $in.target; }\n"
+            "$out.value = $st.x; $out.moving = fabsf($in.target - $st.x) > 0.0005f;",
+            "glides toward whatever target it is given, taking about `seconds` to get there - a value that never jumps when a slider or a switch does"),
+         state=["x"]),
+    dict(_n("Sequencer", "signals", "frame", [("trigger", B, False), ("t1", F, 1.0), ("t2", F, 1.0), ("t3", F, 1.0), ("t4", F, 1.0)],
+            [("phase", F), ("progress", F), ("since", F), ("running", B)],
+            [_p("loop", "bool", False), _p("start_running", "bool", True)],
+            "if ($first) { $st.t = $p.start_running ? 0.0f : -1.0f; }\n"
+            "if ($in.trigger) $st.t = 0.0f;\n"
+            "if ($st.t >= 0.0f) $st.t += (float)dt * 0.001f;\n"
+            "{ const float d_[4] = {$in.t1, $in.t2, $in.t3, $in.t4}; const float total_ = d_[0] + d_[1] + d_[2] + d_[3];\n"
+            "  float t_ = $st.t; if (t_ >= 0.0f && t_ >= total_) { if ($p.loop && total_ > 0.0f) { t_ -= floorf(t_ / total_) * total_; $st.t = t_; } else { $st.t = -1.0f; t_ = -1.0f; } }\n"
+            "  $out.running = t_ >= 0.0f; $out.since = t_ < 0.0f ? 0.0f : t_; $out.phase = 0.0f; $out.progress = 0.0f;\n"
+            "  if (t_ >= 0.0f) { float acc_ = 0.0f; for (int i_ = 0; i_ < 4; i_++) { if (t_ < acc_ + d_[i_] || i_ == 3) { $out.phase = (float)(i_ + 1); $out.progress = d_[i_] > 0.0f ? gc_sat((t_ - acc_) / d_[i_]) : 1.0f; break; } acc_ += d_[i_]; } } }",
+            "a timed cycle of up to four phases, each `t` seconds long, started by the trigger (or at once): which phase it is in, how far through that phase, how long since it started - a bump, a spin, a hold, an idle"),
+         state=["t"]),
+    dict(_n("Statistics", "signals", "frame", [], [("min", F), ("max", F), ("mean", F)], [_p("field", "int", 0, 0, 3)],
+            "{ const float *F_ = gc_fr$p.field; float mn_ = 1e9f, mx_ = -1e9f, sum_ = 0.0f;\n"
+            "  for (int i_ = 0; i_ < N; i_++) { const float v_ = F_[i_]; if (v_ < mn_) mn_ = v_; if (v_ > mx_) mx_ = v_; sum_ += v_; }\n"
+            "  $out.min = N ? mn_ : 0.0f; $out.max = N ? mx_ : 0.0f; $out.mean = N ? sum_ / (float)N : 0.0f; }",
+            "the least, the most and the average of a field over every pixel, from last frame - normalise a simulation, or let the whole picture answer 'how much is lit'"),
+         fields=["field"]),
     _n("Number", "signals", "frame", [], [("value", F)], [_p("value", "float", 1.0, -1000.0, 1000.0)],
        "$out.value = $p.value;", "a constant"),
     _n("Toggle", "signals", "frame", [], [("on", B)], [_p("on", "bool", True)],
@@ -351,6 +376,10 @@ LIBRARY = [
        "{ float al_, ed_, Nx_, Ny_, Nz_; const bool hit_ = gc_knot($in.dir.x, $in.dir.y, $in.dir.z, $p.p, $p.q, $p.R, $p.r, $in.tube, al_, ed_, Nx_, Ny_, Nz_);\n"
        "  $out.on = hit_ ? 1.0f : 0.0f; $out.along = al_; $out.edge = ed_; $out.Nx = Nx_; $out.Ny = Ny_; $out.Nz = Nz_; $out.normal = gc_v3(Nx_, Ny_, Nz_); }",
        "a (p, q) torus knot seen from the cube's centre along a direction: hit or not, where along the knot (0..1), how near the tube's edge (0 centre, 1 rim), and the tube's normal there for lighting"),
+    dict(_n("Path", "generate", "pixel", [("pos", V, [0.0, 0.0, 0.0])], [("distance", F), ("along", F), ("nearest", V)],
+            [_p("points", "text", "-1,-1,1; 1,-1,1; 1,1,1; -1,1,1"), _p("closed", "bool", True)],
+            "", "a path through the cube - points you type, joined by straight lines: how far this pixel is from it, and how far along it the nearest point lies - a track for a light to run on, the spine of a shape"),
+         codegen="path"),
     _n("Sparkle", "generate", "pixel", [("density", F, 0.1), ("seed", F, 0.0)], [("value", F)], [],
        "{ uint32_t h_ = (uint32_t)(px * 73856093u) ^ (uint32_t)(py * 19349663u) ^ (uint32_t)($in.seed * 83492791.0f); h_ ^= h_ >> 13; h_ *= 0x5bd1e995u; h_ ^= h_ >> 15; $out.value = ((h_ & 0xFFFFu) * (1.0f / 65535.0f) < $in.density) ? 1.0f : 0.0f; }",
        "random pixels lit, a fraction `density` of them; change seed over time to twinkle"),
@@ -557,14 +586,14 @@ LIBRARY = [
     # A field is a number per pixel kept between frames - heat, height, age -
     # separate from the colour, so a simulation is not bent by its palette.
     # Read last frame's value anywhere (a neighbour, a step down the ring);
-    # write this pixel's value for next frame. Two per graph, 0 and 1.
+    # write this pixel's value for next frame. Four per graph, 0 to 3.
     dict(_n("Field", "colour", "pixel", [("u", F, 0.0), ("v", F, 0.0)], [("value", F)],
-            [_p("field", "int", 0, 0, 1)],
+            [_p("field", "int", 0, 0, 3)],
             "{ const int x_ = (int)floorf(gc_sat($in.u) * (float)(W - 1) + 0.5f), y_ = (int)floorf(gc_sat($in.v) * (float)(H - 1) + 0.5f);\n"
             "  $out.value = gc_fr$p.field[y_ * W + x_]; }",
             "last frame's value of the field at a logical position (0..1) - a simulation's memory"),
          field=True),
-    dict(_n("Field write", "colour", "pixel", [("value", F, 0.0)], [], [_p("field", "int", 0, 0, 1)],
+    dict(_n("Field write", "colour", "pixel", [("value", F, 0.0)], [], [_p("field", "int", 0, 0, 3)],
             "gc_fw$p.field[py * W + px] = $in.value;",
             "this pixel's value of the field for next frame - what Field will read"),
          field=True),
@@ -573,7 +602,7 @@ LIBRARY = [
     # frame's water on the neighbours that drain to this pixel. Gather, not
     # scatter, so it fits a per-pixel graph; convergence falls out.
     dict(_n("Drain", "colour", "pixel", [], [("water", F), ("sink", B), ("height", F)],
-            [_p("height_field", "int", 0, 0, 1), _p("water_field", "int", 1, 0, 1)],
+            [_p("height_field", "int", 0, 0, 3), _p("water_field", "int", 1, 0, 3)],
             "{ const float *Hf_ = gc_fr$p.height_field; const float *Wf_ = gc_fr$p.water_field;\n"
             "  const int me_ = py * W + px; float sum_ = 0.0f; const float h0_ = Hf_[me_];\n"
             "  static const int dx_[4] = {1, -1, 0, 0}, dy_[4] = {0, 0, 1, -1};\n"
@@ -593,6 +622,19 @@ LIBRARY = [
             "  $out.water = sum_; $out.height = h0_; }",
             "watershed: the water flowing into this pixel from the neighbours that drain to it (their last-frame water), whether it is a sink, and its height - write the height and the water back with Field write"),
          fields=["height_field", "water_field"]),
+    _n("Blur", "colour", "pixel", [], [("color", C)], [_p("radius", "int", 1, 1, 3)],
+       "$out.color = gc_blur(px, py, $p.radius, W, H, is2d);",
+       "last frame's picture, blurred: the average of the pixels around this one - softness, or the base of a glow"),
+    _n("Glow", "colour", "pixel", [("color", C, 0), ("amount", F, 0.5)], [("color", C)], [_p("radius", "int", 1, 1, 3)],
+       "$out.color = color_add($in.color, mq_scale(gc_blur(px, py, $p.radius, W, H, is2d), (uint8_t)(gc_sat($in.amount) * 255.0f)), true);",
+       "bloom: a colour plus a blurred copy of last frame's picture, so bright things bleed light around them"),
+    _n("Transform", "coords", "pixel", [("u", F, 0.0), ("v", F, 0.0), ("move_u", F, 0.0), ("move_v", F, 0.0), ("turns", F, 0.0), ("zoom", F, 1.0),
+                                        ("pivot_u", F, 0.5), ("pivot_v", F, 0.5)],
+       [("u", F), ("v", F)], [],
+       "{ const float a_ = $in.turns * 6.2831853f, c_ = cosf(a_), s_ = sinf(a_); const float z_ = $in.zoom != 0.0f ? 1.0f / $in.zoom : 1.0f;\n"
+       "  const float x_ = ($in.u - $in.pivot_u - $in.move_u) * z_, y_ = ($in.v - $in.pivot_v - $in.move_v) * z_;\n"
+       "  $out.u = x_ * c_ - y_ * s_ + $in.pivot_u; $out.v = x_ * s_ + y_ * c_ + $in.pivot_v; }",
+       "move, turn and zoom a pair of coordinates about a pivot - pan a picture, spin it, scale it, all in one node"),
     _n("Previous", "colour", "pixel", [], [("color", C)], [],
        "$out.color = SEGMENT.is2D() ? SEGMENT.getPixelColorXY(px, py) : SEGMENT.getPixelColor(px);",
        "this pixel's colour from the LAST frame - feedback, for trails and fades"),
@@ -882,6 +924,20 @@ static inline int gc_bitmap(const char *bm, float u, float v) {
   const char ch = p[c];
   return (ch >= '0' && ch <= '9') ? (ch - '0') : -1;
 }
+// Last frame's colour around a pixel, averaged over a (2r+1)^2 box - a
+// blur of the buffer, for glow and softness. Reads the current buffer, so
+// pixels already written this frame contribute this frame's colour.
+static inline uint32_t gc_blur(int px, int py, int r, int W, int H, bool is2d) {
+  uint32_t rs = 0, gs = 0, bs = 0; int n = 0;
+  for (int dy = -r; dy <= r; dy++) for (int dx = -r; dx <= r; dx++) {
+    const int x = px + dx, y = py + dy;
+    if (x < 0 || y < 0 || x >= W || y >= H) continue;
+    const uint32_t c = is2d ? SEGMENT.getPixelColorXY(x, y) : SEGMENT.getPixelColor(x);
+    rs += (c >> 16) & 255; gs += (c >> 8) & 255; bs += c & 255; n++;
+  }
+  if (!n) return 0;
+  return RGBW32((uint8_t)(rs / n), (uint8_t)(gs / n), (uint8_t)(bs / n), 0);
+}
 static inline uint32_t gc_prev_at(float u, float v, int W, int H, bool is2d) {
   int x = (int)floorf(gc_sat(u) * (float)(W - 1) + 0.5f), y = (int)floorf(gc_sat(v) * (float)(H - 1) + 0.5f);
   return is2d ? SEGMENT.getPixelColorXY(x, y) : SEGMENT.getPixelColor(x);
@@ -1072,4 +1128,33 @@ def codegen_ramp(n, project_dir=None):
             f"    $out.color = color_blend(rc_[i_], rc_[i_ + 1], (uint8_t)(f_ * 255.0f)); }} }}")
 
 
-CODEGEN = {"image": codegen_image, "ramp": codegen_ramp}
+def codegen_path(n, project_dir=None):
+    p = n["params"]
+    pts = []
+    for part in str(p.get("points", "")).replace("\n", ";").split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            x, y, z = (float(c) for c in part.split(",")[:3])
+            pts.append((x, y, z))
+        except ValueError:
+            continue
+    if len(pts) < 2:
+        pts = [(-1.0, 0.0, 1.0), (1.0, 0.0, 1.0)]
+    closed = bool(p.get("closed", True))
+    if closed:
+        pts = pts + [pts[0]]
+    k = len(pts)
+    table = ",".join(f"{{{x}f,{y}f,{z}f}}" for x, y, z in pts)
+    return (f"{{ static const float pp_[{k}][3] = {{{table}}}; float best_ = 1e9f, alongBest_ = 0.0f, total_ = 0.0f; GcVec near_ = gc_v3(0.0f, 0.0f, 0.0f);\n"
+            f"  float acc_ = 0.0f; const GcVec q_ = $in.pos;\n"
+            f"  for (int i_ = 0; i_ < {k} - 1; i_++) {{ const GcVec a_ = gc_v3(pp_[i_][0], pp_[i_][1], pp_[i_][2]), b_ = gc_v3(pp_[i_ + 1][0], pp_[i_ + 1][1], pp_[i_ + 1][2]);\n"
+            f"    const GcVec ab_ = gc_vsub(b_, a_); const float L2_ = gc_vdot(ab_, ab_); const float L_ = sqrtf(L2_);\n"
+            f"    float t_ = L2_ > 1e-9f ? gc_vdot(gc_vsub(q_, a_), ab_) / L2_ : 0.0f; t_ = gc_sat(t_);\n"
+            f"    const GcVec c_ = gc_vadd(a_, gc_vscale(ab_, t_)); const float d_ = gc_vlen(gc_vsub(q_, c_));\n"
+            f"    if (d_ < best_) {{ best_ = d_; alongBest_ = acc_ + t_ * L_; near_ = c_; }} acc_ += L_; }}\n"
+            f"  total_ = acc_; $out.distance = best_; $out.along = total_ > 0.0f ? alongBest_ / total_ : 0.0f; $out.nearest = near_; }}")
+
+
+CODEGEN = {"image": codegen_image, "ramp": codegen_ramp, "path": codegen_path}

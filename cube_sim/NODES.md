@@ -159,6 +159,18 @@ Remembers a number for one frame. It is the one node a wire may loop back throug
 **Outputs**
 - `value` *(float)*: what x was last frame (0 on the first)
 
+### Ease
+
+A value that glides instead of jumping. Give it a target - a slider, a switch, a random - and it moves there over about `seconds`, so a change on the WLED page fades in rather than snapping.
+
+**Inputs**
+- `target` *(float)*: where to go
+- `seconds` *(float)*: roughly how long the glide takes
+
+**Outputs**
+- `value` *(float)*: where it is now
+- `moving` *(bool)*: true while it is still on its way
+
 ### Emitters
 
 Drops a thing on the surface each time the trigger fires - up to eight alive at once - and remembers where and how old each is. Plug the beat into trigger and the Shells node reads them: rings spreading from wherever each kick landed.
@@ -280,6 +292,27 @@ Turns a switch into a tap: true for exactly one frame when its input goes from o
 **Outputs**
 - `pulse` *(bool)*: true for one frame when x turns on
 
+### Sequencer
+
+A timed cycle of up to four phases - a bump, a spin, a hold, a rest - each lasting the seconds you give it, started by the trigger (or straight away). It tells you which phase is on, how far through it is (0..1) and how long since the cycle began; loop makes it repeat.
+
+**Inputs**
+- `trigger` *(bool)*: true starts the cycle from the top (the beat)
+- `t1` *(float)*: phase 1's length in seconds
+- `t2` *(float)*: phase 2's length
+- `t3` *(float)*: phase 3's length
+- `t4` *(float)*: phase 4's length
+
+**Outputs**
+- `phase` *(float)*: 1, 2, 3 or 4 while running, 0 when finished
+- `progress` *(float)*: how far through the current phase, 0..1
+- `since` *(float)*: seconds since the cycle started
+- `running` *(bool)*: true until the last phase ends
+
+**Settings**
+- `loop` *(bool)*: start again at the end
+- `start_running` *(bool)*: run once from the first frame without a trigger
+
 ### Spectrum
 
 The whole spectrum as a curve you can read anywhere: index 0 is the lowest band, 1 the highest. Feed a coordinate into index and the bands spread across the cube - a graphic equaliser along u, or round the ring. smooth stops it flickering.
@@ -309,6 +342,18 @@ A weight on a spring. It is pulled toward target, and a kick sends it swinging: 
 **Settings**
 - `hz` *(float)*: how many swings a second
 - `damping` *(float)*: how quickly the swinging dies away, 0 (forever) .. 1
+
+### Statistics
+
+The least, the most and the average of a field over every pixel, from last frame. Divide a field by its max to keep it in range whatever it does, or use the mean to know how much of the cube is lit.
+
+**Outputs**
+- `min` *(float)*: the smallest value anywhere
+- `max` *(float)*: the largest
+- `mean` *(float)*: the average
+
+**Settings**
+- `field` *(int)*: which field to measure
 
 ### Time
 
@@ -414,6 +459,24 @@ The reverse of Cube ring: give it a point as around and depth and it tells you w
 **Outputs**
 - `u` *(float)*: that pixel, across
 - `v` *(float)*: that pixel, down
+
+### Transform
+
+Moves, turns and zooms a pair of coordinates about a pivot - feed Coords' u, v through it and anything drawn from the result pans, spins or scales. A clock into turns spins the whole picture.
+
+**Inputs**
+- `u` *(float)*: the coordinate across
+- `v` *(float)*: the coordinate down
+- `move_u` *(float)*: shift across
+- `move_v` *(float)*: shift down
+- `turns` *(float)*: spin, 1 = a full circle
+- `zoom` *(float)*: 1 leaves it, 2 zooms in, 0.5 out
+- `pivot_u` *(float)*: the point it turns and zooms about, across
+- `pivot_v` *(float)*: and down
+
+**Outputs**
+- `u` *(float)*: the new coordinate across
+- `v` *(float)*: the new coordinate down
 
 ## generate
 
@@ -557,6 +620,22 @@ Smooth random blobs - clouds, plasma, flames. Give it a point (Direction's nx, n
 **Settings**
 - `octaves` *(int)*: 1 is smooth blobs; 3-5 adds finer and finer detail on top - clouds, smoke
 - `roughness` *(float)*: how strong each finer layer is, 0..1
+
+### Path
+
+A route through the cube, from points you type (x, y, z in the -1..1 box, one point per ';'). For each pixel: how far it is from the route, and how far along the route the nearest point is - a light running along a track (Band on `along` plus a clock), a glowing wire, a shape's outline.
+
+**Inputs**
+- `pos` *(vector)*: this pixel's position (Position)
+
+**Outputs**
+- `distance` *(float)*: how far from the route
+- `along` *(float)*: how far along it the nearest point is, 0..1
+- `nearest` *(vector)*: that point
+
+**Settings**
+- `points` *(text)*: the corners: x,y,z; x,y,z; ...
+- `closed` *(bool)*: join the last point back to the first
 
 ### Reaction diffusion
 
@@ -1132,6 +1211,16 @@ Puts one colour on top of another - the layering node. 'over' covers 'under' by 
 **Settings**
 - `mode` *(choice)*: over (cover), add (light adds up), max (brighter wins), min, multiply (darken), screen (lighten), overlay, difference, soft light, and hue / saturation / colour / luminosity (take that part of 'over')
 
+### Blur
+
+Last frame's picture, softened: the average of the pixels around this one. Blend it under the new picture for softness, or add a little of it for a glow.
+
+**Outputs**
+- `color` *(color)*: the blurred colour here
+
+**Settings**
+- `radius` *(int)*: how wide the blur is, in pixels (1 = the 3 x 3 around)
+
 ### Colour pick
 
 One of eight colours you set, chosen by number: 0 gives the first, 1 the second... The palette for a Bitmap's digits, or for a cell number.
@@ -1214,7 +1303,7 @@ A hidden number stored per pixel between frames - a simulation's memory (heat, w
 - `value` *(float)*: the stored number there, from last frame
 
 **Settings**
-- `field` *(int)*: which field, 0 or 1
+- `field` *(int)*: which field, 0 to 3
 
 ### Field write
 
@@ -1224,7 +1313,21 @@ Stores a number for this pixel, to be read by Field next frame. The other half o
 - `value` *(float)*: this pixel's number for next frame
 
 **Settings**
-- `field` *(int)*: which field, 0 or 1
+- `field` *(int)*: which field, 0 to 3
+
+### Glow
+
+Bloom: a colour plus a blurred copy of last frame's picture, so anything bright bleeds light into its neighbours. Put it just before Output.
+
+**Inputs**
+- `color` *(color)*: the picture
+- `amount` *(float)*: how much glow, 0..1
+
+**Outputs**
+- `color` *(color)*: the picture with its glow
+
+**Settings**
+- `radius` *(int)*: how far the glow reaches, in pixels
 
 ### HSV
 

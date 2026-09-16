@@ -364,20 +364,17 @@ within each group is the order to do them.
 
 **Simulation and time**
 
-- [ ] More than two **Fields** per graph (a constant).
-- [ ] **Blur / Glow** (a small-radius blur from Previous at; bloom = blur
-      plus add), **Transform** (translate / rotate / scale u, v about a
-      pivot).
-- [ ] **Ease** (tween a value toward a target over N seconds) and
-      **Sequencer** (cycle through timed phases — built by hand for the
-      Question Block).
-- [ ] **Statistics** (min / max / mean of a field over all pixels, once a
-      frame) for normalisation and auto-exposure.
+- [x] Four **Fields** per graph.
+- [x] **Blur / Glow** (radius 1-3 over last frame's picture; Glow adds the
+      blur), **Transform** (move / turn / zoom u, v about a pivot).
+- [x] **Ease** (glides to its target over N seconds) and **Sequencer** (up
+      to four timed phases, triggered or looping: phase, progress, since).
+- [x] **Statistics** (min / max / mean of a field over every pixel).
 - [ ] **Particles** — N particles with position, velocity, age and a brush
       that accumulates them into a field: sparks, rain, fireworks. The one
       real capability gap; the largest item here.
-- [ ] **Path** (a list of points; distance to it, position along it) to
-      generalise Torus knot.
+- [x] **Path** (points typed on the node, open or closed: distance to it,
+      position along it, the nearest point).
 
 **Editor**
 
