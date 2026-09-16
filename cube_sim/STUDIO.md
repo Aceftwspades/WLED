@@ -446,6 +446,78 @@ within each group is the order to do them.
   the slot is absent. The one firmware-side change on the near horizon; small
   and self-contained by design.
 
+## Roadmap
+
+What is still missing, measured against a finished tool. In the order to do
+them within each group; ticked when done.
+
+### Getting effects onto the cube
+
+- [ ] **Flash from the studio.** Export stops at a usermod folder and a zip.
+      A "build firmware + flash" that stages the usermod into the WLED tree,
+      generates an environment extending the chosen one (its usermods plus
+      ours), runs PlatformIO, and sends the binary to the device over OTA
+      (`/update`) closes the loop the whole tool exists for.
+- [ ] **Push the current effect's settings** - sliders, palette, colours -
+      to the device over the JSON API, so what was tuned in the sim is what
+      runs.
+
+### Working with graphs
+
+- [ ] **Undo for code edits** - the graph has undo; the code box does not.
+- [ ] **Expose a param as an input pin** with one toggle (a sub-graph with
+      promoted params is most of the way there).
+- [ ] **Where used**: which graphs use a node type or a sub-graph.
+- [ ] **Node presets**: save a configured node (Noise with these octaves)
+      to drop in again.
+- [ ] **Version history** per graph: a copy per save, restorable, so live
+      editing is safe.
+- [ ] **Focus mode**: dim the wires and nodes outside the selection.
+- [ ] **Wire labels**.
+
+### Preview and testing
+
+- [ ] **A/B compare**: two effects, or two versions of one, side by side.
+- [ ] **Slider sweep**: drive a slider through its range on a timer to see
+      the whole space; record that as the GIF.
+- [ ] **Audio file input**: a WAV through the analyser, for reproducible
+      beat tests, alongside synth and live capture.
+- [ ] **Timeline scrub** over the last seconds of frames, for transients.
+- [ ] **Per-effect cost on the device**: a calibrated µs/frame estimate for
+      the ESP32 from the host's measure, which says whether it will run.
+
+### Geometry
+
+- [ ] **Ledmap import from a device** (`/json/cfg` or the ledmap file)
+      beside the XYZ import.
+- [ ] **A ledmap editor**: drag pixels, rotate faces, flip strips.
+- [ ] **Multiple segments**: the sim runs one; WLED layers several.
+
+### Polish and workflow
+
+- [ ] **Recent files and projects** in File.
+- [ ] **Autosave** with recovery.
+- [ ] **Drag and drop** a graph, a .cpp, an image or an XYZ file onto the
+      window.
+- [ ] **Context menus** on the panes and the toolbar (the graph has them).
+- [ ] **Theme choice**: a light variant and the accent colour, beside the
+      frame gradients in Settings.
+- [ ] **Tests** around `graph.py` (compile, migrate, problems, arrange) so
+      regressions show without launching the app.
+
+### Deferred from earlier lists
+
+- [ ] **Live values on pins** when hovered - needs a readback channel from
+      the compiled effect; pin preview covers one pin at a time.
+- [ ] **Preview thumbnails on nodes** - the same readback; a small picture
+      on the node being previewed.
+- [ ] **An in-app code editor widget** - only if the external hand-off
+      proves insufficient.
+- [ ] **The scripted runtime** (phase 4): an interpreter usermod so an
+      effect reaches a device without a firmware build.
+- [ ] **True PCM into audioreactive**: the ninth `u_data` slot for the FFT
+      batch.
+
 ## Running it
 
 ```bash
