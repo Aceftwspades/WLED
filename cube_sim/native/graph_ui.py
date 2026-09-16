@@ -12,6 +12,7 @@ import os
 import time
 
 import dearpygui.dearpygui as dpg
+import numpy as np
 
 from native import graph as G
 from native.nodedefs import library
@@ -30,6 +31,8 @@ CHAR_W = 7.2            # the default font at 13 px, near enough to right-align 
 NARROW_W = 46           # a knot: just wide enough for its two pin names
 ZOOMS = (0.5, 0.6, 0.7, 0.85, 1.0, 1.2, 1.4, 1.7, 2.0)
 BASE_FONT = 13          # the size everything above is laid out for
+THUMB = 96              # the preview thumbnail on a node, layout px
+THUMB_PX = 96           # its texture
 
 
 def _right(text, width=NODE_W, char_w=CHAR_W):
@@ -865,6 +868,14 @@ class GraphPanel:
                 self._frame_body(nid, n)
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 dpg.add_spacer(width=width, height=1)
+            if self.preview and self.preview[0] == nid:
+                # the previewed node wears a small picture of what its pin
+                # draws - the net, as the cube shows it - refreshed each frame
+                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                    self._thumb_texture()
+                    t = self.px(THUMB)
+                    dpg.add_image("preview_thumb_tex", width=t, height=t, tag=f"gthumb_{nid}")
+                    dpg.add_text(f"previewing {self.preview[1]}", color=DIM)
             fed_out = {(a, o) for a, o, _, _ in self.graph.links}
             for i in d["inputs"]:
                 if hide and (nid, i["name"]) not in linked:
@@ -2218,13 +2229,35 @@ class GraphPanel:
     def preview_pin(self, nid, name):
         self.preview = (nid, name)
         self.status(f"previewing {self.graph.nodes[nid]['type']} . {name}")
+        self._sync_pos(); self.rebuild()               # the node grows a thumbnail
         self.compile()
+
+    def _thumb_texture(self):
+        if not dpg.does_item_exist("preview_thumb_tex"):
+            with dpg.texture_registry():
+                dpg.add_raw_texture(THUMB_PX, THUMB_PX, np.zeros(THUMB_PX * THUMB_PX * 4, np.float32),
+                                    format=dpg.mvFormat_Float_rgba, tag="preview_thumb_tex")
+
+    def update_thumb(self, net):
+        """The previewed node's picture: the net, resampled to the thumbnail
+        (nearest, so the LEDs stay square)."""
+        if not self.preview or not dpg.does_item_exist(f"gthumb_{self.preview[0]}") or net is None:
+            return
+        h, w = net.shape[:2]
+        ys = (np.arange(THUMB_PX) * h // THUMB_PX)
+        xs = (np.arange(THUMB_PX) * w // THUMB_PX)
+        small = net[ys][:, xs]
+        buf = self._thumb_buf if getattr(self, "_thumb_buf", None) is not None else np.ones((THUMB_PX, THUMB_PX, 4), np.float32)
+        self._thumb_buf = buf
+        np.multiply(small, np.float32(1.0 / 255.0), out=buf[..., :3], casting="unsafe")
+        dpg.set_value("preview_thumb_tex", buf.reshape(-1))
 
     def stop_preview(self):
         self.preview = None
         p = self.app.project
         if self.PREVIEW_FILE in p.effect_files():
             os.remove(p.effect_path(self.PREVIEW_FILE))
+        self._sync_pos(); self.rebuild()
         self.compile()
 
     def _preview_graph(self):

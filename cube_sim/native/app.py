@@ -2037,6 +2037,8 @@ class App:
                 img = both
             dpg.set_value("cube_tex", self._rgba("cube", img))
         self._draw_wiring()
+        if self.layout == "graph" and self.gp.preview:
+            self.gp.update_thumb(net)
         # Records whatever is being SHOWN, so Q, E and W frame the clip too.
         self.rec_frame(big, img)
         if self.rec_msg:

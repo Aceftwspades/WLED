@@ -540,7 +540,14 @@ them within each group; ticked when done.
       wiring on the net" draws the path through the pixels, first LED
       amber, last red. Dragging single pixels is not offered: a cube is
       wired by the panel, and the per-face settings cover that.
-- [ ] **Multiple segments**: the sim runs one; WLED layers several.
+- [ ] **Multiple segments**: the sim runs one; WLED layers several. Scoped:
+      the shim (`sim_main.cpp`) would host N `Segment`s with their own
+      bounds, effect, params and data, run them in turn and composite by
+      WLED's rules (later segments over earlier, with blending); the API
+      grows a segment index; the side panel a segment list. A day's work
+      in the engine and the panel, for the matrix users the cube's effects
+      do not serve - the cube is one 3B x 3B segment by design - so it
+      waits until someone needs it.
 
 ### Polish and workflow
 
@@ -570,8 +577,12 @@ them within each group; ticked when done.
       firmware compiles to nothing; hovering a pin shows `= value` in the
       help line while the effect on the cube is this graph's build (an
       unwired input shows its setting).
-- [ ] **Preview thumbnails on nodes** - the same readback; a small picture
-      on the node being previewed.
+- [x] **Preview thumbnails on nodes**: the node whose pin is being
+      previewed wears a small picture of the net - what the cube shows -
+      refreshed every frame (nearest resampled, so the LEDs stay square).
+      One node at a time, as the preview is; every node at once would need
+      a field tap per node, which the compile-to-C++ model cannot give
+      cheaply.
 - [ ] **An in-app code editor widget** - only if the external hand-off
       proves insufficient.
 - [ ] **The scripted runtime** (phase 4): an interpreter usermod so an
