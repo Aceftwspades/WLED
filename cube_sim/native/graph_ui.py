@@ -2133,6 +2133,7 @@ class GraphPanel:
         pos = (60 + 30 * (self._add_count % 8), 60 + 30 * (self._add_count % 8))
         nid = self.graph.add(type_, pos)
         self._make_node(nid, self.graph.nodes[nid])
+        return nid
 
     def delete_selected(self):
         if not self.graph or not dpg.get_selected_nodes("node_editor"):

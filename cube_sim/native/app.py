@@ -42,6 +42,7 @@ from native.project import (default_project, Project, list_projects, project_pat
 from native.graph_ui import GraphPanel, build_panel
 from native import chrome, glow
 from native.gpucube import CubeQuads
+from native.dropfiles import DropFiles, classify
 from native.keys import Keymap, combo as key_combo
 from native import render, gif
 from native.apiref import API
@@ -1738,6 +1739,58 @@ class App:
     FLOATING = ("frames_win", "keys_win", "flash_win", "where_win", "history_win", "compare_menu", "sweep_win", "wav_dialog", "appearance_win", "name_dialog", "device_dialog", "editor_dialog", "about_win",
                 "open_menu", "graph_menu", "graph_ctx", "project_dialog", "graph_import_dialog", "xyz_dialog")
 
+    # --- files dropped on the window -----------------------------------------
+    def poll_drops(self):
+        drop = getattr(self, "drops", None)
+        if not drop:
+            return
+        for path in drop.take():
+            self.take_file(path)
+
+    def take_file(self, path):
+        """A file from the desktop: a graph or bundle opens in the graph pane,
+        a .cpp becomes a code effect, an image an Image node in the graph,
+        an XYZ file or a ledmap the geometry, a WAV the audio."""
+        kind = classify(path)
+        name = os.path.basename(path)
+        if kind == "graph":
+            self.gp.import_bundle(path)
+            self.show_layout("graph")
+        elif kind == "code":
+            fname = os.path.basename(path)
+            if not fname.endswith(".cpp"):
+                fname += ".cpp"
+            n = 2
+            stem = fname[:-4]
+            while fname in self.project.effect_files():
+                fname = f"{stem}_{n}.cpp"; n += 1
+            self.project.write_effect(fname, open(path, encoding="utf-8", errors="replace").read())
+            self.open_code(fname)
+        elif kind == "image":
+            adir = os.path.join(self.project.path, "assets")
+            os.makedirs(adir, exist_ok=True)
+            dst = os.path.join(adir, name)
+            if os.path.abspath(dst) != os.path.abspath(path):
+                shutil.copyfile(path, dst)
+            if not self.gp.graph:
+                self.gp.status(f"{name} copied to assets/ - open a graph to place it"); return
+            self.show_layout("graph")
+            nid = self.gp.add_node("Image")
+            if nid is not None:
+                self.gp.graph.nodes[nid]["params"]["file"] = "assets/" + name
+                self.gp.rebuild()
+            self.gp.status(f"{name} as an Image node")
+        elif kind == "xyz":
+            self.on_xyz_file(None, {"file_path_name": path})
+        elif kind == "ledmap":
+            self.import_ledmap(path=path)
+        elif kind == "wav":
+            self.start_file_audio(path)
+        else:
+            self.gp.status(f"{name}: not a graph, .cpp, image, XYZ, ledmap or WAV")
+            return
+        self.gp.status(f"{name}: {kind}")
+
     def poll_view_mode(self):
         """The 3-D view is remade when what it should draw changes: flat
         mode toggled, A/B started or stopped, the GPU view switched."""
@@ -2329,6 +2382,7 @@ def service_command(app):
                         print("measure", t, "pos", dpg.get_item_pos(t), "size", dpg.get_item_rect_size(t),
                               "conf", dpg.get_item_configuration(t).get("height"))
                 print("measure prof polls/sim/draw/render ms", [round(x, 1) for x in getattr(app, "_prof_avg", [])])
+                print("measure drops", getattr(app.drops, "ok", None), getattr(app.drops, "error", ""))
                 print("measure layout", app.layout, "ui", app.ui, "playing", app.playing, "scrub_row", dpg.does_item_exist("scrub_row") and dpg.is_item_shown("scrub_row"), len(app.history_frames))
                 print("measure viewport", dpg.get_viewport_client_width(), dpg.get_viewport_client_height(),
                       "footer rect", dpg.get_item_rect_min("footer"), dpg.get_item_rect_max("footer"))
@@ -2356,6 +2410,8 @@ def service_command(app):
                         dpg.set_value(tag, o[k])
             if "gp_call" in c:                          # test hook: [method of the graph panel, args]
                 getattr(app.gp, c["gp_call"][0])(*c["gp_call"][1])
+            if "drop" in c:                             # test hook: a path, as if dropped on the window
+                app.take_file(c["drop"])
             if "gpu" in c:                              # test hook: the GPU cube view on or off
                 app.set_gpu_cube(bool(c["gpu"]))
             if "appearance" in c:                       # test hook: {"light": bool, "accent": [r,g,b]}
@@ -2597,6 +2653,7 @@ def main():
     app = App()
     build(app)
     dpg.show_viewport()
+    app.drops = DropFiles("WLED Effect Studio")
     os.makedirs(SHOT_DIR, exist_ok=True)
     os.makedirs(GIF_DIR, exist_ok=True)
     print(f"if a frame throws, the traceback lands in {os.path.join(SHOT_DIR, 'crash.txt')}")
@@ -2623,6 +2680,7 @@ def main():
                 chrome.poll_flash(app)
                 app.poll_autosave()
                 app.poll_view_mode()
+                app.poll_drops()
                 app.poll_glow()
                 _t.append(time.perf_counter())
                 app.step_sim()

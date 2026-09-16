@@ -556,8 +556,13 @@ them within each group; ticked when done.
 - [x] **Autosave**: every 20 s, unsaved code or graph edits are kept as a
       version in the history (the file itself untouched), so a crash loses
       at most that; File > History restores it.
-- [ ] **Drag and drop** onto the window - Dear PyGui takes no files from
-      the desktop; it would need a platform hook. Import is on File.
+- [x] **Drag and drop** onto the window (`native/dropfiles.py`): on
+      Windows the viewport's HWND gets DragAcceptFiles and a window
+      procedure in front of Dear PyGui's that answers WM_DROPFILES; the
+      loop takes the paths and sorts them - a graph or bundle opens, a
+      .cpp becomes a code effect, an image an Image node (copied to
+      assets/), an XYZ file or a ledmap the geometry, a WAV the audio.
+      Elsewhere the hook does nothing and the imports on File remain.
 - [x] **Context menus** on the two views and the code pane (screenshot,
       record, reset the camera, compare, full frame; the wiring; save,
       build, find, the external editor, history).
