@@ -1009,6 +1009,26 @@ static inline uint8_t cfx_lerp8(uint8_t A, uint8_t Bv, uint8_t f) {
 // all of this.
 #define CFX_WAVE_MODES 7
 
+// --- the PCM slot ------------------------------------------------------------
+// audioreactive (with the cube_fx block in it) publishes u_data[8]: the last
+// FFT batch's samples, 256 of them, int8. cfx_pcm() hands them over, or
+// nullptr on a build without the slot, and cfx_waveFromPcm() makes the
+// waveform Warp and Scope draw from them - the real one, where
+// cfx_waveRebuild() below makes a stand-in from the bins.
+#define CFX_PCM_N 256
+struct CfxPcmView { volatile uint8_t which; int8_t buf[2][CFX_PCM_N]; };
+static inline const int8_t *cfx_pcm(um_data_t *um) {
+  if (!um || um->u_size < 9 || !um->u_data[8]) return nullptr;
+  const CfxPcmView *p = (const CfxPcmView *)um->u_data[8];
+  return p->buf[p->which & 1];
+}
+static inline void cfx_waveFromPcm(const int8_t *pcm, float *W, int NS, float gain) {
+  for (int i = 0; i < NS; i++) {
+    const int j = (int)((uint32_t)i * CFX_PCM_N / (uint32_t)NS);
+    W[i] = (float)pcm[j] * (gain / 127.0f);
+  }
+}
+
 static inline void cfx_waveRebuild(const uint8_t *fft, const uint16_t *ph16, float *W, int NS) {
   float amp[16], ph[16], tot = 0.0f;
   for (int b = 0; b < 16; b++) {

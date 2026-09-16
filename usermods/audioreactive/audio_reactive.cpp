@@ -153,6 +153,33 @@ using FFTmathType = int32_t;
 #endif
 // These are the input and output vectors.  Input vectors receive computed results from FFT.
 static FFTsampleType* valFFT = nullptr;
+
+// --- cube_fx / cube_sim: PCM slot ------------------------------------------
+// The time-domain samples of each FFT batch, for effects that draw the
+// waveform itself (cube_fx Warp and Scope, which otherwise rebuild one from
+// the bins). Every batch is folded 2:1 to CFX_PCM_N points, scaled to
+// int8 by the batch's own peak with a floor so silence stays flat, and
+// written into the buffer the readers are NOT looking at; `which` then
+// flips. Readers take pcm.buf[pcm.which]. Published as u_data[8]; anything
+// reading it checks u_size >= 9 first, so a build without this block
+// still serves every effect (they fall back to the rebuilt waveform).
+#define CFX_PCM_N 256
+struct CfxPcm { volatile uint8_t which; int8_t buf[2][CFX_PCM_N]; };
+static CfxPcm cfxPcm = { 0, {{0}, {0}} };
+static float cfxPcmPeak = 0.0f;                  // the last batch's peak, smoothed
+static void cfxPcmCapture(const FFTsampleType *samples, uint16_t n, float peak) {
+  const uint8_t w = cfxPcm.which ^ 1;
+  const float scale = 127.0f / (peak > 2048.0f ? peak : 2048.0f);
+  const uint16_t step = n / CFX_PCM_N > 0 ? n / CFX_PCM_N : 1;
+  for (int i = 0; i < CFX_PCM_N; i++) {
+    const uint32_t j = (uint32_t)i * step;
+    float v = (j < n) ? (float)samples[j] * scale : 0.0f;
+    if (v > 127.0f) v = 127.0f; else if (v < -127.0f) v = -127.0f;
+    cfxPcm.buf[w][i] = (int8_t)v;
+  }
+  cfxPcm.which = w;
+}
+// --- end PCM slot ------------------------------------------------------------
 #ifdef UM_AUDIOREACTIVE_USE_ARDUINO_FFT
 static float* vImag = nullptr; // imaginary part of FFT results
 #endif
@@ -377,6 +404,10 @@ void FFTcode(void * parameter)
     // band pass filter - can reduce noise floor by a factor of 50 and avoid aliasing effects to base & high frequency bands
     // downside: frequencies below 100Hz will be ignored
     if (useMicFilter) runMicFilter(samplesFFT, valFFT);
+    // cube_fx / cube_sim PCM slot: the batch as it is, before the FFT
+    // (the peak below is not known yet; the previous batch's serves, the
+    // scale only sets the amplitude)
+    cfxPcmCapture(valFFT, samplesFFT, cfxPcmPeak);
     // find highest sample in the batch
     FFTsampleType maxSample = 0;                         // max sample from FFT batch
     for (int i=0; i < samplesFFT; i++) {
@@ -384,6 +415,7 @@ void FFTcode(void * parameter)
 	    if ((valFFT[i] <= (INT16_MAX - 1024)) && (valFFT[i] >= (INT16_MIN + 1024)))  //skip extreme values - normally these are artefacts
         if (FFTabs(valFFT[i]) > maxSample) maxSample = FFTabs(valFFT[i]);
     }
+    cfxPcmPeak = cfxPcmPeak * 0.8f + (float)maxSample * 0.2f;      // cube_fx PCM slot
     // release highest sample to volume reactive effects early - not strictly necessary here - could also be done at the end of the function
     // early release allows the filters (getSample() and agcAvg()) to work with fresh values - we will have matching gain and noise gate values when we want to process the FFT results.
     micDataReal = maxSample;
@@ -1353,9 +1385,11 @@ class AudioReactive : public Usermod {
         // usermod exchangeable data
         // we will assign all usermod exportable data here as pointers to original variables or arrays and allocate memory for pointers
         um_data = new um_data_t;
-        um_data->u_size = 8;
+        um_data->u_size = 9;                   // 8 of WLED's, plus the cube_fx PCM slot (u_data[8])
         um_data->u_type = new um_types_t[um_data->u_size];
         um_data->u_data = new void*[um_data->u_size];
+        um_data->u_data[8] = &cfxPcm;           // cube_fx / cube_sim PCM slot: a CfxPcm, see cfxPcmCapture
+        um_data->u_type[8] = UMT_BYTE_ARR;
         um_data->u_data[0] = &volumeSmth;      //*used (New)
         um_data->u_type[0] = UMT_FLOAT;
         um_data->u_data[1] = &volumeRaw;      // used (New)

@@ -151,7 +151,13 @@ static FX_RET mode_scope() {
   cfx_tumbleKeepAbove(M, 0.2f);                   // the figure stays on the solid
 
   float W[SC_NS];
-  cfx_waveRebuild(fft, s->ph, W, SC_NS);
+  {
+    // the real waveform when audioreactive publishes one (the PCM slot),
+    // the rebuilt one otherwise
+    const int8_t *pcm = cfx_pcm(um);
+    if (pcm) cfx_waveFromPcm(pcm, W, SC_NS, 0.9f);
+    else     cfx_waveRebuild(fft, s->ph, W, SC_NS);
+  }
 
   const float   T      = (float)s->t * (1.0f / 64.0f);
   const float   scale  = (0.6f + (float)sizeI * (0.9f / 255.0f)) * (1.0f + swell);

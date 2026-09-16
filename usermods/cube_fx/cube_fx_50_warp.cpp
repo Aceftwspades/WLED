@@ -241,7 +241,13 @@ static FX_RET mode_warp() {
   const uint8_t decay = trails ? 250 : 241;
 
   float W[WP_NS];
-  cfx_waveRebuild(fft, s->ph, W, WP_NS);
+  {
+    // the real waveform when audioreactive publishes one (the PCM slot),
+    // the rebuilt one otherwise
+    const int8_t *pcm = cfx_pcm(um);
+    if (pcm) cfx_waveFromPcm(pcm, W, WP_NS, 0.9f);
+    else     cfx_waveRebuild(fft, s->ph, W, WP_NS);
+  }
   const uint8_t hueOff = (uint8_t)(s->drift >> 8);
   const uint8_t drive  = cfx_drive(vol, 0.5f, 200);
 

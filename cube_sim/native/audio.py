@@ -95,6 +95,9 @@ class LiveAudio:
     def push(self, eng):
         return _push(self, eng)
 
+    def pcm(self):
+        return _pcm(self)
+
     def close(self):
         try:
             self.stream.stop_stream(); self.stream.close()
@@ -122,6 +125,19 @@ def _band_edges(chunk, rate, LO, HI, BANDS):
         e.append(min(n - 1, b))
         prev = e[-1]
     return e
+
+
+def _pcm(self):
+    """The newest 512 samples of the buffer folded 2:1 to 256, scaled by
+    the batch peak with a floor so silence stays flat - what the device's
+    PCM slot holds."""
+    buf = self._buf
+    if buf is None or len(buf) < 512:
+        return np.zeros(256, np.float32)
+    batch = buf[-512:]
+    peak = float(np.abs(batch).max())
+    scale = 127.0 / max(peak, 0.0625)
+    return np.clip(batch[::2] * scale, -127, 127)
 
 
 def _push(self, eng):
@@ -209,6 +225,9 @@ class LiveInput:
     def push(self, eng):
         return _push(self, eng)
 
+    def pcm(self):
+        return _pcm(self)
+
     def close(self):
         try:
             self.stream.stop(); self.stream.close()
@@ -269,6 +288,9 @@ class FileAudio:
         else:
             self._buf = np.concatenate([self.samples[n - (self.chunk - end):], self.samples[:end]])
         return _push(self, eng)
+
+    def pcm(self):
+        return _pcm(self)
 
     def close(self):
         pass
