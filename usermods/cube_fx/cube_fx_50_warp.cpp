@@ -154,7 +154,7 @@ static FX_RET mode_warp() {
   if (dt > 60) dt = 60;
 
   // --- parameters -----------------------------------------------------------
-  const int  fill   = (int)SEGMENT.intensity;
+  const int  tumbleI = (int)SEGMENT.intensity;       // how fast the pole wanders; 0 = locked on the lid
   const int  zoomI  = (int)SEGMENT.custom1;
   const int  warpI  = (int)SEGMENT.custom2;
   const bool trails = SEGMENT.check2;
@@ -201,8 +201,9 @@ static FX_RET mode_warp() {
     s->t     = (uint16_t)(s->t + r);
     s->warpT = (uint16_t)(s->warpT + r);
     s->cycle = (uint16_t)(s->cycle + (r * 3u) / 8u);
-    // the pole wanders: a leg of the walk in about 25 s at the default speed
-    cfx_tumbleStep(s->tumble, (uint16_t)((r * 7u) / 4u)); }
+    // The pole's wander is its own slider, not Speed: 0 holds it on the lid,
+    // full is a leg of the walk in about ten seconds.
+    if (tumbleI) cfx_tumbleStep(s->tumble, (uint16_t)(((uint32_t)tumbleI * (uint32_t)dt) / 38u)); }
   // Hue turns the wheel in about 2.5 s at the default: the trails only live
   // for half a second, so anything slower and every trail is one colour.
   s->drift = (uint16_t)(s->drift + ((uint32_t)dt * (uint32_t)(60 + SEGMENT.speed)) / 6u);
@@ -338,7 +339,7 @@ static FX_RET mode_warp() {
 
   // --- draw the wave on top ----------------------------------------------------
   {
-    const uint8_t wb = (uint8_t)(120 + (fill * 135) / 255);
+    const uint8_t wb = 210;                       // the wave's brightness, once the Wave slider
     float lx = 0.0f, ly = 0.0f; bool have = false;
     const float ang0 = T * 0.2f;
     const float pxStep = (1.5707963f / (float)(cube ? B : (cols < rows ? cols : rows) / 2)) / WP_CHART;
@@ -395,7 +396,7 @@ static FX_RET mode_warp() {
 }
 
 static const char _data_FX_MODE_WARP[] PROGMEM =
-  "Ace 3-D Warp@Speed,Wave,Zoom,Warp,Shape,Beat surge,Trails,Flat mode;;!;2f;sx=100,ix=170,c1=150,c2=110,c3=0,o1=1,o2=0,pal=11";
+  "Ace 3-D Warp@Speed,Tumble,Zoom,Warp,Shape,Beat surge,Trails,Flat mode;;!;2f;sx=100,ix=0,c1=150,c2=110,c3=0,o1=1,o2=0,pal=11";
 
 
 // ---------------------------------------------------------------------------

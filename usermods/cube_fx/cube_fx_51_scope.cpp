@@ -105,7 +105,7 @@ static FX_RET mode_scope() {
   if (dt > 60) dt = 60;
 
   // --- parameters -----------------------------------------------------------
-  const int  fill  = (int)SEGMENT.intensity;
+  const int  tumbleI = (int)SEGMENT.intensity;       // how fast the pole wanders; 0 = locked on the lid
   const int  sizeI = (int)SEGMENT.custom1;
   const int  spanI = (int)SEGMENT.custom2;           // hue span along the figure
   const bool dual  = SEGMENT.check2;
@@ -139,8 +139,9 @@ static FX_RET mode_scope() {
   { const uint32_t r = (uint32_t)(2 + (int)SEGMENT.speed / 3) * (uint32_t)dt / 23u;
     s->t     = (uint16_t)(s->t + r);
     s->cycle = (uint16_t)(s->cycle + (r * 3u) / 8u);
-    // the pole wanders: a leg of the walk in about 25 s at the default speed
-    cfx_tumbleStep(s->tumble, (uint16_t)((r * 7u) / 4u)); }
+    // The pole's wander is its own slider, not Speed: 0 holds it on the lid,
+    // full is a leg of the walk in about ten seconds.
+    if (tumbleI) cfx_tumbleStep(s->tumble, (uint16_t)(((uint32_t)tumbleI * (uint32_t)dt) / 38u)); }
   s->drift = (uint16_t)(s->drift + ((uint32_t)dt * (uint32_t)(60 + SEGMENT.speed)) / 12u);
   cfx_wavePhases(s->ph, dt);
   if (wmode >= CFX_WAVE_MODES) wmode = (int)(((uint32_t)s->cycle * CFX_WAVE_MODES) >> 16);
@@ -155,7 +156,7 @@ static FX_RET mode_scope() {
   const float   T      = (float)s->t * (1.0f / 64.0f);
   const float   scale  = (0.6f + (float)sizeI * (0.9f / 255.0f)) * (1.0f + swell);
   const uint8_t hueOff = (uint8_t)(s->drift >> 8);
-  const uint8_t wb     = (uint8_t)(140 + (fill * 115) / 255);
+  const uint8_t wb     = 230;                        // the figure's brightness, once the Bright slider
   const uint8_t drive  = cfx_drive(vol, 0.5f, 200);
   const float   px     = (1.5707963f / (float)(cube ? B : (cols < rows ? cols : rows) / 2)) / SC_CHART;
 
@@ -223,7 +224,7 @@ static FX_RET mode_scope() {
 }
 
 static const char _data_FX_MODE_SCOPE[] PROGMEM =
-  "Ace 3-D Scope@Speed,Bright,Size,Rainbow,Shape,Beat surge,Mirror,Flat mode;;!;2f;sx=100,ix=200,c1=150,c2=160,c3=0,o1=1,o2=1,pal=11";
+  "Ace 3-D Scope@Speed,Tumble,Size,Rainbow,Shape,Beat surge,Mirror,Flat mode;;!;2f;sx=100,ix=0,c1=150,c2=160,c3=0,o1=1,o2=1,pal=11";
 
 
 // ---------------------------------------------------------------------------
