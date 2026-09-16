@@ -1355,6 +1355,29 @@ def check():
         good = lit > 0.03 and (motion > 0.2 or name in STATIC)
         ok &= good
         print(f"  {name:14s} lit {lit*100:5.1f}%  motion {motion:6.2f}  {'ok' if good else 'FLAT'}")
+    # the scripted runtime: every example that the script subset can express
+    # runs in the Studio Script effect too, and must light something
+    from native.script import compile_script, settings_of, ScriptError
+    si = e.script_effect()
+    n_ok = n_no = 0
+    for fn in sorted(os.listdir(OUT)):
+        g = G.load(os.path.join(OUT, fn)); g.project_dir = HERE
+        try:
+            prog = compile_script(g)
+        except ScriptError as ex:
+            n_no += 1; continue
+        if si is None or not e.script(prog):
+            print(f"  script {g.name}: the engine did not take it"); ok = False; continue
+        st = settings_of(g); pal = st.pop("pal")
+        e.select(si, params=dict(st, pal=pal))
+        s2 = Synth()
+        for _ in range(60):
+            s2.push(e); e.frame(28)
+        lit = float((e.rgb().sum(axis=2) > 0).mean())
+        if lit < 0.02:
+            print(f"  script {g.name}: dark"); ok = False
+        n_ok += 1
+    print(f"  scripts: {n_ok} of {n_ok + n_no} examples run in the Studio Script effect")
     return ok
 
 

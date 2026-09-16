@@ -1745,6 +1745,8 @@ class App:
             "focus_mode":   lambda: gp.set_focus_mode(not gp.focus_mode),
             "history":      lambda: chrome.show_history(self),
             "compare":      lambda: self.stop_ab() if self.ab else chrome.show_compare(self),
+            "script_preview": self.preview_script,
+            "script_send":  self.send_script,
             "sweep":        lambda: self.stop_sweep() if self.sweep else chrome.show_sweep(self),
         }
         fn = table.get(action)
@@ -1978,6 +1980,59 @@ class App:
                                                       parent="seg_overlay", color=col, thickness=2))
             self._seg_items.append(dpg.draw_text((ox + x0 * sc + 4, oy + y0 * ry + 2), str(k), parent="seg_overlay",
                                                  color=col, size=14))
+
+    # --- the scripted runtime ---------------------------------------------------------
+    def compile_current_script(self):
+        """The current graph as bytecode, or None with the reason in the status."""
+        from native.script import compile_script, ScriptError
+        if not self.gp.graph:
+            self.gp.status("open a graph first"); return None
+        try:
+            self.gp.save()
+            return compile_script(self.gp.graph)         # flattens sub-graphs itself
+        except Exception as e:
+            self.gp.status(f"not scriptable - {e}"); return None
+
+    def preview_script(self):
+        """Run the current graph as a script in the sim's Studio Script
+        effect - what the device will run - with the graph's own settings."""
+        from native.script import settings_of
+        prog = self.compile_current_script()
+        if prog is None:
+            return
+        si = self.eng.script_effect()
+        if si is None:
+            self.gp.status("this engine build has no Studio Script effect"); return
+        if not self.eng.script(prog):
+            self.gp.status("the engine did not take the script"); return
+        st = settings_of(self.gp.graph)
+        pal = st.pop("pal")
+        self.eng.select(si, params=dict(st, pal=pal))
+        dpg.set_value("fx_combo", self.eng.names[si])
+        self.rebuild_params(); self.sync_palette_combo()
+        self.gp.status(f"running as a script: {len(prog)} bytes")
+
+    def send_script(self):
+        """The current graph to the device as /studio.bin, then the Studio
+        Script effect selected there with the graph's settings."""
+        from native import flash
+        from native.script import settings_of
+        host = self.project.options.get("device", "")
+        if not host.strip():
+            chrome.show_device(self); self.gp.status("set the device's address first"); return
+        prog = self.compile_current_script()
+        if prog is None:
+            return
+        ok, msg = flash.send_script(host, prog)
+        self.gp.status(msg)
+        if not ok:
+            return
+        st = settings_of(self.gp.graph)
+        params = {k: st[k] for k in ("sx", "ix", "c1", "c2", "c3")}
+        params.update({k: bool(st[k]) for k in ("o1", "o2", "o3")})
+        pal = self.palette_name_for(st["pal"])
+        ok2, msg2 = flash.push_settings(host, "Ace 3-D Studio Script", params, pal, self.seg_cols)
+        self.gp.status(msg + ("; " + msg2 if not ok2 else "; the device is running it"))
 
     def push_settings(self):
         """The effect on the cube here, with its sliders, checkboxes, palette
@@ -2560,6 +2615,8 @@ def service_command(app):
                         dpg.set_value(tag, o[k])
             if "gp_call" in c:                          # test hook: [method of the graph panel, args]
                 getattr(app.gp, c["gp_call"][0])(*c["gp_call"][1])
+            if c.get("script_preview"):
+                app.preview_script()
             if "seg" in c:                              # test hook: "add" | "remove" | k | {"k":..,"x0":..}
                 v = c["seg"]
                 if v == "add": app.seg_add()

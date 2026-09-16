@@ -458,4 +458,11 @@ SIM_API uint32_t simPalColor(int pal, int idx) {
 
 SIM_API uint32_t *simPixels() { return gPixels; }
 
+// The Studio Script effect (cube_fx_98_script.cpp) takes its program from
+// memory here; the studio compiles a graph to bytecode and hands it over.
+void simScriptLoad(const uint8_t *bytes, int n);
+int simScriptOk();
+SIM_API void simScript(const uint8_t *bytes, int n) { simScriptLoad(bytes, n); }
+SIM_API int simScriptValid() { return simScriptOk(); }
+
 } // extern "C"

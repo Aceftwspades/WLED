@@ -49,6 +49,8 @@ ACTIONS = [
     ("shortcuts",     "Keyboard shortcuts",                                  "F1",     "global"),
     ("flash",         "Build the firmware and flash the device",             "Ctrl+Shift+U", "global"),
     ("push",          "Send the current effect's settings to the device",     "Ctrl+Shift+P", "global"),
+    ("script_preview", "Run the graph as a script (what the device would run)", "Ctrl+Shift+R", "global"),
+    ("script_send",   "Send the graph to the device as a script",             "Ctrl+Shift+D", "global"),
     # the graph
     ("undo",          "Undo (the graph, or the code)",                       "Ctrl+Z", "global"),
     ("redo",          "Redo (the graph, or the code)",                       "Ctrl+Y", "global"),

@@ -473,6 +473,38 @@ class Graph:
         flat.links = [l for l in links if l[0] in flat.nodes and l[2] in flat.nodes]
         return flat
 
+    def plan(self):
+        """What both back ends need: the nodes in order with their
+        definitions, each one's scope (frame or pixel), the source of every
+        wired input, and the state slots. Raises GraphError as compile does."""
+        defs = {nid: self.node_def(n) for nid, n in self.nodes.items()}
+        order = [nid for nid in self._order() if not defs[nid].get("decor")]
+        src_of = {(b, inp): (a, out) for a, out, b, inp in self.links}
+        scope = {}
+        for nid in order:
+            d = defs[nid]
+            ups = [src_of[(nid, i["name"])][0] for i in d["inputs"] if (nid, i["name"]) in src_of]
+            per_pixel_in = any(scope.get(u) == "pixel" for u in ups)
+            if d.get("late") and per_pixel_in:
+                raise GraphError(f"{d['name']} #{nid} remembers one value for the next frame, so its input "
+                                 f"cannot come from a per-pixel node")
+            if d["scope"] == "frame":
+                if per_pixel_in and d.get("state"):
+                    raise GraphError(f"{d['name']} #{nid} keeps one value per frame, so its inputs "
+                                     f"cannot come from a per-pixel node (Coords, Noise...)")
+                scope[nid] = "pixel" if per_pixel_in else "frame"; continue
+            bare = re.sub(r"\$(in|out|p|st)\.[\w ]+", "", d["code"])
+            if PIXEL_NAMES.search(bare) or d.get("codegen"):
+                scope[nid] = "pixel"; continue
+            scope[nid] = "pixel" if per_pixel_in else "frame"
+        slots, nstate = {}, 0
+        for nid in order:
+            st = defs[nid].get("state")
+            if st:
+                slots[nid] = nstate
+                nstate += len(st) if isinstance(st, (list, tuple)) else int(st)
+        return order, defs, scope, src_of, slots, nstate
+
     def compile(self, title=None):
         """The effect as C++ text. Raises GraphError with a message worth
         showing when the graph cannot be compiled."""

@@ -104,3 +104,25 @@ def test_ledmap_is_the_firmwares_format():
     assert (back.phys == g.phys).all()
     wired = Geometry("cube", B=4, faces="T,N,E,S,W", rots="1,0,0,0,0", serpentine=True)
     assert len(set(wired.phys.tolist())) == 80
+
+
+def test_script_compiles_and_folds_choices():
+    from native.script import compile_script, MAGIC
+    g = starter()
+    c = g.add("Coords", (0, 0)); w = g.add("Wave", (100, 0)); p = g.add("Palette", (200, 0)); o = g.add("Output", (300, 0))
+    g.nodes[w]["params"]["shape"] = "triangle"
+    g.link(c, "u", w, "x"); g.link(w, "value", p, "index"); g.link(p, "color", o, "color")
+    prog = compile_script(g)
+    assert prog[:4] == MAGIC and len(prog) > 40
+
+
+def test_script_names_the_unscriptable_node():
+    from native.script import compile_script, ScriptError
+    g = starter()
+    c = g.add("Coords", (0, 0)); f = g.add("Field", (100, 0)); p = g.add("Palette", (200, 0)); o = g.add("Output", (300, 0))
+    g.link(c, "u", f, "u"); g.link(c, "v", f, "v"); g.link(f, "value", p, "index"); g.link(p, "color", o, "color")
+    try:
+        compile_script(g)
+        assert False, "Field should not be scriptable"
+    except ScriptError as e:
+        assert "Field" in str(e)

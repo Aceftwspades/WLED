@@ -338,6 +338,20 @@ class Engine:
         self._colors = (int(c0) & 0xFFFFFF, int(c1) & 0xFFFFFF, int(c2) & 0xFFFFFF)
         self.lib.simColors(*self._colors)
 
+    def script(self, prog):
+        """Load a script (bytes from script.compile_script) into the Studio
+        Script effect; True if the engine has it and took it."""
+        try:
+            f = self.lib.simScript
+        except AttributeError:
+            return False
+        buf = (C.c_uint8 * len(prog)).from_buffer_copy(prog)
+        f(buf, len(prog))
+        return bool(self.lib.simScriptValid())
+
+    def script_effect(self):
+        return next((i for i, n in enumerate(self.names) if "Studio Script" in n), None)
+
     def pcm(self, samples):
         """The waveform slot (u_data[8]) for effects that draw the wave
         itself: 256 int8 samples, as audioreactive's cube_fx block gives

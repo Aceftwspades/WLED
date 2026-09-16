@@ -74,6 +74,7 @@ def build_menus(app):
                 dpg.add_menu_item(label="Export usermod (folder + zip)", callback=lambda: app.export_usermod())
                 _mi(app, "Build firmware + flash the device...", "flash", callback=lambda: show_flash(app))
                 _mi(app, "Send the current effect's settings to the device", "push", callback=lambda: app.push_settings())
+                _mi(app, "Send the graph to the device as a script", "script_send", callback=lambda: app.send_script())
             dpg.add_menu_item(label="Import graph bundle...", callback=lambda: dpg.show_item("graph_import_dialog"))
             dpg.add_menu_item(label="Export graph bundle", callback=lambda: app.gp.export_bundle())
             dpg.add_separator()
@@ -140,6 +141,7 @@ def build_menus(app):
             _mi(app, "Sweep a slider...", "sweep", callback=lambda: app.run_action("sweep"))
             dpg.add_separator()
             _mi(app, "Compile + reload", "build", callback=lambda: app.build_current())
+            _mi(app, "Run the graph as a script (no build)", "script_preview", callback=lambda: app.preview_script())
             _mi(app, "Live: rebuild the graph as it changes", "live", check=True, tag="menu_live",
                               default_value=app.gp.auto, callback=lambda s, a: app.gp.set_auto(bool(a)))
             dpg.add_menu_item(label="Watch: rebuild when the code is saved outside", check=True, tag="edit_watch",

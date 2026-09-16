@@ -129,6 +129,8 @@ def effect_sizes(env):
 def stage(project, base_env, log, only=None):
     """Export (the effects chosen, or the list), copy the usermod into the
     tree, write the env. Returns the env name to build."""
+    from native.script import write_helpers
+    write_helpers()                              # the Script effect's copy of the gc_* helpers
     out = project.export(only)
     src = os.path.join(out, USERMOD)
     dst = os.path.join(ROOT, "usermods", USERMOD)
@@ -197,6 +199,27 @@ def upload(host, path, log, timeout=180):
     except Exception as e:
         return False, f"upload failed: {e}"
     return True, _message(page) or "sent - the device is rebooting"
+
+
+def send_script(host, prog, log=lambda m: None):
+    """The bytecode to the device as /studio.bin over /upload; the Studio
+    Script effect there picks it up within two seconds."""
+    host = (host or "").strip().rstrip("/")
+    if not host:
+        return False, "no device address"
+    if not host.startswith("http"):
+        host = "http://" + host
+    boundary = "----studio" + str(int(time.time()))
+    body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"data\"; filename=\"/studio.bin\"\r\n"
+            "Content-Type: application/octet-stream\r\n\r\n").encode() + bytes(prog) + f"\r\n--{boundary}--\r\n".encode()
+    req = urllib.request.Request(host + "/upload", data=body,
+                                 headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            r.read()
+    except Exception as e:
+        return False, f"upload failed: {e}"
+    return True, f"{len(prog)} bytes of script sent to {host} as /studio.bin"
 
 
 def _message(page):

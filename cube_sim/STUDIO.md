@@ -209,11 +209,12 @@ wiring model — per-face order for a cube, rings for a cylinder, a spiral for a
 sphere — with the imported XYZ case taking its order from the file. Export
 writes `ledmap.json` and a usermod folder ready to drop into `usermods/`.
 
-### Phase 4 — the scripted runtime
+### Phase 4 — the scripted runtime (done)
 
-A small interpreter usermod so an effect built in the editor can be sent to a
-device over the network and run without a firmware build. Designed after the
-composer exists, because the composer's recipe is the natural thing to ship.
+A small interpreter in the cube_fx usermod (the Studio Script effect) runs a
+program the studio compiled from a graph, sent to the device as a file over
+the network - no firmware build. See the roadmap entry for what it is and
+what it cannot express.
 
 ## Features remaining
 
@@ -603,8 +604,29 @@ them within each group; ticked when done.
       build errors tint their lines. The text still lives in the hidden
       "code" value, so undo, find, replace, metadata and history are as
       they were. The external editor remains for anyone who prefers it.
-- [ ] **The scripted runtime** (phase 4): an interpreter usermod so an
-      effect reaches a device without a firmware build.
+- [x] **The scripted runtime** (phase 4). `native/script.py` compiles a
+      graph to bytecode: a compiler for the C subset the node templates
+      use (expressions over floats, colours and 3-vectors, calls into a
+      table of known helpers, if/else and ternaries lowered to selects,
+      locals, statics as state, by-reference helpers), folding constant
+      parameters so a node's choice chain becomes one branch. The **Studio
+      Script** effect (`usermods/cube_fx/cube_fx_98_script.cpp`, in the
+      bank) runs it: a float register file, colour registers, a state
+      array kept between frames; a frame stream and a per-pixel stream; the
+      VM fills the fixed registers (coordinates, time, sliders, checks,
+      audio, the bands) and one switch runs the ops. On the device it
+      reads `/studio.bin` and again whenever the file changes; in the sim
+      the studio hands the program over in memory, so **Playback > Run the
+      graph as a script** shows exactly what the device will run, and
+      **File > Project > Send the graph to the device as a script** POSTs
+      it to `/upload` and selects the effect there with the graph's own
+      sliders and palette - no firmware build. `cube_fx_studio_helpers.h`
+      is generated from the library's HELPERS so the VM has the same gc_*
+      functions. 11 of the 22 examples are scriptable and match their C++
+      builds pixel for pixel where deterministic (Random hold differs, as
+      it must); the rest need per-pixel fields, state blocks, bitmaps or
+      hand-written C++, and the studio names the node. The check runs
+      every scriptable example in the VM. Compiled for the S3: +14 KB.
 - [x] **True PCM into audioreactive**: a ninth `u_data` slot. In
       `audio_reactive.cpp` (one marked block) every FFT batch is folded 2:1
       to 256 int8 samples, scaled by the batch peak with a floor, into the
