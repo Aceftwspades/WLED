@@ -327,16 +327,18 @@ within each group is the order to do them.
 
 **Types and maths**
 
-- [ ] **Vector socket type** — three floats on one wire, coercing to and
-      from separate floats and colour. Halves the pin count on Rotate, Dot 3,
-      Length, Direction to, Torus knot, Mirror fold, Emitters, Shells,
-      Position, Direction; the structural change everything below leans on.
-- [ ] **Vector Math** (add, scale, normalize, cross, distance, reflect,
-      project) and **Vector Rotate** about any axis.
-- [ ] **Math node with a mode dropdown** (Blender's design) covering the ops
-      we lack: sqrt, sign, round, ceil, truncate, snap, ping-pong, wrap,
-      compare, atan2, tangent, smooth min/max — one definition instead of
-      nine more nodes.
+- [x] **Vector socket type** — three floats on one wire (purple). Position,
+      Direction, Cube face, Gravity and Direction to give one beside their
+      parts; Dot 3, Length, Mirror fold, Torus knot, Shells, Emitters and
+      Position to uv take one. Float into vector fills all three, vector
+      into float is x, colour and vector convert as r, g, b. Vector / Vector
+      split join and take apart. Graphs saved before are migrated on load.
+- [x] **Vector math** (add, subtract, multiply, scale, normalize, cross, dot,
+      distance, length, reflect, project, min, max, abs, fract, floor) and
+      **Vector rotate** about any axis.
+- [x] **Math** — one node, every arithmetic op in a dropdown: the eight we
+      had plus sqrt, sign, round, ceil, snap, ping-pong, wrap, compare,
+      smooth min/max, the trig set in turns, log, exp.
 - [ ] **Map Range** with easing and stepped modes (Remap is linear only);
       **Float Curve** (a hand-drawn curve; DPG has no curve widget, so a
       small point list).
