@@ -909,6 +909,19 @@ e to the power x. A zoom that shrinks by the same proportion every second is Exp
 **Outputs**
 - `result` *(float)*: e^x
 
+### Float curve
+
+A curve you draw on the node: points along 0..1, each with a value, smoothly joined. Feed a gradient, a heat or a phase through it to reshape it by hand - a fade that lingers, a response that kicks in late, a bump in the middle.
+
+**Inputs**
+- `x` *(float)*: where to read, 0..1
+
+**Outputs**
+- `result` *(float)*: the curve's value there
+
+**Settings**
+- `points` *(curve)*: the points: position and value, any number from two
+
 ### Floor
 
 Rounds down to a whole number. Turns a smooth coordinate into cell numbers.

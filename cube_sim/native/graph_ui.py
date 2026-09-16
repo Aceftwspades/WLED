@@ -1028,6 +1028,9 @@ class GraphPanel:
         elif p["type"] == "ramp":
             self._ramp_widget(nid, n, p, v)
             return
+        elif p["type"] == "curve":
+            self._curve_widget(nid, n, p, v)
+            return
         elif p["type"] == "text":
             w = dpg.add_input_text(label=p["name"], width=self.px(100), default_value=str(v), user_data=ud, callback=cb)
         elif p["type"] == "file":
@@ -1131,6 +1134,61 @@ class GraphPanel:
                 if len(stops) > 2:
                     dpg.add_button(label="-", small=True, user_data=(nid, p["name"], k, "del"), callback=self._on_ramp)
         dpg.add_button(label="+ stop", small=True, user_data=(nid, p["name"], -1, "add"), callback=self._on_ramp)
+
+    def _curve_widget(self, nid, n, p, pts):
+        pts = sorted([list(q) for q in (pts or p["default"])], key=lambda q: q[0])
+        W, H = self.px(160), self.px(80)
+        with dpg.drawlist(width=W, height=H):
+            dpg.draw_rectangle((0, 0), (W - 1, H - 1), color=(70, 74, 82, 255))
+            prev = None
+            for x in range(0, W, 2):
+                t = x / max(1, W - 1)
+                y = (1.0 - max(0.0, min(1.0, self._curve_at(pts, t)))) * (H - 1)
+                if prev is not None:
+                    dpg.draw_line(prev, (x, y), color=(110, 190, 250, 255), thickness=1.5)
+                prev = (x, y)
+            for q in pts:
+                dpg.draw_circle((q[0] * (W - 1), (1.0 - q[1]) * (H - 1)), 3, color=(255, 255, 255, 255), fill=(255, 255, 255, 255))
+        for k, q in enumerate(pts):
+            with dpg.group(horizontal=True):
+                w1 = dpg.add_input_float(width=self.px(56), default_value=float(q[0]), step=0, format="%.2f",
+                                         user_data=(nid, p["name"], k, "x"), callback=self._on_curve)
+                w2 = dpg.add_input_float(width=self.px(56), default_value=float(q[1]), step=0, format="%.2f",
+                                         user_data=(nid, p["name"], k, "y"), callback=self._on_curve)
+                self._widgets.update((w1, w2))
+                if len(pts) > 2:
+                    dpg.add_button(label="-", small=True, user_data=(nid, p["name"], k, "del"), callback=self._on_curve)
+        dpg.add_button(label="+ point", small=True, user_data=(nid, p["name"], -1, "add"), callback=self._on_curve)
+
+    @staticmethod
+    def _curve_at(pts, t):
+        if t <= pts[0][0]:
+            return pts[0][1]
+        if t >= pts[-1][0]:
+            return pts[-1][1]
+        for i in range(len(pts) - 1):
+            a, b = pts[i], pts[i + 1]
+            if a[0] <= t <= b[0]:
+                f = (t - a[0]) / (b[0] - a[0]) if b[0] > a[0] else 0.0
+                f = f * f * (3 - 2 * f)
+                return a[1] + (b[1] - a[1]) * f
+        return pts[-1][1]
+
+    def _on_curve(self, sender, val, ud):
+        nid, name, k, what = ud
+        n = self.graph.nodes[nid]
+        pts = sorted([list(q) for q in n["params"].get(name) or []], key=lambda q: q[0])
+        self.touch(); self.snapshot(("curve", nid, name, k, what))
+        if what == "x":
+            pts[k][0] = max(0.0, min(1.0, float(val)))
+        elif what == "y":
+            pts[k][1] = float(val)
+        elif what == "del":
+            pts.pop(k)
+        elif what == "add":
+            pts.append([0.5, 0.5])
+        n["params"][name] = pts
+        self._sync_pos(); self.rebuild()
 
     @staticmethod
     def _ramp_colour(srt, t, mode):
@@ -1244,19 +1302,23 @@ class GraphPanel:
             for nid in list(self.graph.nodes):
                 if dpg.does_item_exist(f"gnode_{nid}") and dpg.is_item_hovered(f"gnode_{nid}"):
                     self.detach(nid); return
+        self._drag_kind = None
         for (nid, kind, name), tag in self._pins.items():
-            if kind == "out" and dpg.does_item_exist(tag) and dpg.is_item_hovered(tag):
+            if dpg.does_item_exist(tag) and dpg.is_item_hovered(tag):
                 self._drag_type = self._ptype.get(tag)
                 self._drag_from = (nid, name)
+                self._drag_kind = kind
                 self._press_at = dpg.get_mouse_pos(local=False)
                 break
         else:
             return
         th = self.themes()
+        other = "in" if self._drag_kind == "out" else "out"
         for (nid, kind, name), tag in self._pins.items():
-            if kind == "in" and dpg.does_item_exist(tag):
+            if kind == other and dpg.does_item_exist(tag):
                 t = self._ptype.get(tag)
-                dpg.bind_item_theme(tag, th.pin[t] if compatible(self._drag_type, t) else th.grey[t])
+                ok = compatible(self._drag_type, t) if self._drag_kind == "out" else compatible(t, self._drag_type)
+                dpg.bind_item_theme(tag, th.pin[t] if ok else th.grey[t])
 
     def on_release(self):
         # a clicked frame comes to the front and would then take the clicks
@@ -1272,11 +1334,12 @@ class GraphPanel:
         self._drag_type = self._drag_from = None
         th = self.themes()
         for (nid, kind, name), tag in self._pins.items():
-            if kind == "in" and dpg.does_item_exist(tag):
+            if dpg.does_item_exist(tag):
                 dpg.bind_item_theme(tag, th.pin[self._ptype.get(tag, "float")])
-        # A wire dropped on empty editor: offer the nodes it could feed, and
-        # wire the one chosen. Over a pin or a node the drop is DPG's (a link
-        # or nothing); a short drag is a click on the pin.
+        # A wire dropped on empty editor: offer the nodes it could feed (or,
+        # from an input, the nodes that could feed it), and wire the one
+        # chosen. Over a pin or a node the drop is DPG's (a link or nothing);
+        # a short drag is a click on the pin.
         mx, my = dpg.get_mouse_pos(local=False)
         if abs(mx - self._press_at[0]) + abs(my - self._press_at[1]) < 12:
             return
@@ -1290,8 +1353,12 @@ class GraphPanel:
                 return
         gx, gy = self._to_graph((mx, my))
         self._menu_pos = (gx - 20, gy - 10)
-        self._pending = (frm[0], frm[1], t)
-        self.show_add_menu((mx, my), only=self._consumers(t, limit=60))
+        if getattr(self, "_drag_kind", "out") == "in":
+            self._pending = ("into", frm[0], frm[1], t)
+            self.show_add_menu((mx, my), only=self._producers(t, limit=60))
+        else:
+            self._pending = (frm[0], frm[1], t)
+            self.show_add_menu((mx, my), only=self._consumers(t, limit=60))
 
     # --- the right-click menus -------------------------------------------------------------
     def open_menu(self):
@@ -1554,6 +1621,19 @@ class GraphPanel:
         self.graph.link(existing, out, nid, name)
         self.rebuild()
 
+    def _producers(self, t, limit=14):
+        """Node types with an output that can feed a pin of type t, most useful first."""
+        prefer = ["Noise", "Wave", "Coords", "Direction", "Position", "Time", "Audio", "Speed", "Intensity", "Palette",
+                  "HSV", "Colour ramp", "Number", "Colour", "Integrate", "Hash", "Voronoi", "Gradient"]
+        out = []
+        for name in prefer + sorted(self.lib):
+            d = self.lib.get(name)
+            if not d or name in out or not d["outputs"] or d.get("decor"):
+                continue
+            if any(compatible(o["type"], t) for o in d["outputs"]):
+                out.append(name)
+        return out[:limit]
+
     def _consumers(self, t, limit=14):
         """Node types with a first input this output can feed, most useful first."""
         prefer = ["Palette", "Blend", "Mask", "Scale", "HSV", "Add", "Multiply", "Mix", "Remap",
@@ -1680,7 +1760,15 @@ class GraphPanel:
         self._make_node(nid, self.graph.nodes[nid])
         if type_ == "Frame":
             self._sync_pos(); self.rebuild()      # behind the nodes it now covers
-        if self._pending:
+        if self._pending and self._pending[0] == "into":
+            _, b, inp, t = self._pending
+            self._pending = None
+            d = self.graph.node_def(self.graph.nodes[nid])
+            out = next((o["name"] for o in d["outputs"] if compatible(o["type"], t)), None)
+            if out and b in self.graph.nodes:
+                self.graph.link(nid, out, b, inp)
+                self.rebuild()
+        elif self._pending:
             a, out, t = self._pending
             self._pending = None
             d = self.graph.node_def(self.graph.nodes[nid])

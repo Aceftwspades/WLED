@@ -452,6 +452,10 @@ LIBRARY = [
        "  if ($in.steps >= 1.0f) t_ = floorf(t_ * $in.steps + 0.5f) / $in.steps;\n"
        "  $out.result = $in.out_lo + t_ * ($in.out_hi - $in.out_lo); }",
        "Remap with the ranges as pins, an easing curve, and optional steps: a slider into 2..8 stripes, eased, in whole numbers"),
+    dict(_n("Float curve", "maths", "pixel", [("x", F, 0.0)], [("result", F)],
+            [_p("points", "curve", [[0.0, 0.0], [0.5, 0.8], [1.0, 1.0]])],
+            "", "a curve you draw: points along 0..1 with a value each, read at x, smoothly joined - shape a gradient, a fade, a response, by hand"),
+         codegen="curve"),
     _n("Clamp", "maths", "pixel", [("x", F, 0.0)], [("result", F)], [_p("lo", "float", 0.0), _p("hi", "float", 1.0)],
        "$out.result = ($in.x < $p.lo) ? $p.lo : (($in.x > $p.hi) ? $p.hi : $in.x);"),
     _n("Fract", "maths", "pixel", [("x", F, 0.0)], [("result", F)], [], "$out.result = $in.x - floorf($in.x);"),
@@ -1200,4 +1204,17 @@ def codegen_path(n, project_dir=None):
             f"  total_ = acc_; $out.distance = best_; $out.along = total_ > 0.0f ? alongBest_ / total_ : 0.0f; $out.nearest = near_; }}")
 
 
-CODEGEN = {"image": codegen_image, "ramp": codegen_ramp, "path": codegen_path}
+def codegen_curve(n, project_dir=None):
+    pts = sorted([[float(q[0]), float(q[1])] for q in (n["params"].get("points") or [[0, 0], [1, 1]])], key=lambda q: q[0])
+    if len(pts) < 2:
+        pts = [[0.0, 0.0], [1.0, 1.0]]
+    k = len(pts)
+    xs = ",".join(f"{q[0]}f" for q in pts); ys = ",".join(f"{q[1]}f" for q in pts)
+    return (f"{{ static const float cx_[{k}] = {{{xs}}}, cy_[{k}] = {{{ys}}}; const float t_ = $in.x;\n"
+            f"  if (t_ <= cx_[0]) $out.result = cy_[0]; else if (t_ >= cx_[{k} - 1]) $out.result = cy_[{k} - 1];\n"
+            f"  else {{ int i_ = 0; while (i_ < {k} - 2 && cx_[i_ + 1] < t_) i_++;\n"
+            f"    float f_ = (cx_[i_ + 1] > cx_[i_]) ? (t_ - cx_[i_]) / (cx_[i_ + 1] - cx_[i_]) : 0.0f; f_ = f_ * f_ * (3.0f - 2.0f * f_);\n"
+            f"    $out.result = cy_[i_] + (cy_[i_ + 1] - cy_[i_]) * f_; }} }}")
+
+
+CODEGEN = {"image": codegen_image, "ramp": codegen_ramp, "path": codegen_path, "curve": codegen_curve}

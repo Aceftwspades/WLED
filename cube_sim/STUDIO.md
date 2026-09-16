@@ -341,8 +341,8 @@ within each group is the order to do them.
       smooth min/max, the trig set in turns, log, exp.
 - [x] **Map range** with the ranges on pins, five easings and steps (Remap
       stays as the small linear one).
-- [ ] **Float Curve** (a hand-drawn curve; DPG has no curve widget, so a
-      small point list).
+- [x] **Float Curve** - points drawn on the node (a plot, a row per point,
+      add / remove), smoothstep between them, baked into the C++ as a table.
 
 **Generators**
 
@@ -379,18 +379,19 @@ within each group is the order to do them.
 
 **Editor**
 
-- [ ] **Mute** a node (its first input passes to its first output).
-- [ ] **Duplicate with links.**
-- [ ] **Arrange** (a layered layout by depth) — worth more here than in
+- [x] **Mute** a node (its first input passes to its first output).
+- [x] **Duplicate with links** (Shift+D).
+- [x] **Arrange** (a layered layout by depth) — worth more here than in
       Blender, our nodes are wide.
-- [ ] **Hide unwired pins** on a node.
+- [x] **Hide unwired pins** on a node.
 - [ ] **Live values** on frame-scope pins (sliders, audio, Integrate) when
-      hovered.
-- [ ] Wire-drag from an *input* to an empty spot; Alt-drag to detach a node
-      from its wires; F to connect two selected nodes.
-- [ ] A **properties side panel** for the long params (Bitmap rows,
+      hovered - deferred: pin preview covers it for one pin at a time.
+- [x] Wire-drag from an *input* to an empty spot (the menu lists what could
+      feed it); Alt-click to detach a node from its wires; F to connect two
+      selected nodes.
+- [x] A **properties side panel** for the long params (Bitmap rows,
       Expression, Image file).
-- [ ] Preview thumbnails on nodes — the compile-to-C++ model does not give
+- [ ] Preview thumbnails on nodes - deferred: — the compile-to-C++ model does not give
       continuous per-node taps cheaply; the realistic version is a small
       image on the node being pin-previewed.
 

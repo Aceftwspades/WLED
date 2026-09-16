@@ -396,6 +396,13 @@ DOCS = {
         "out": {"result": "the remapped value"},
         "params": {"ease": "how it runs between the ends: linear, smooth, ease in, ease out, ease in-out",
                    "clamp": "hold the result inside the output range"}},
+    "Float curve": {
+        "doc": "A curve you draw on the node: points along 0..1, each with a value, smoothly joined. Feed a "
+               "gradient, a heat or a phase through it to reshape it by hand - a fade that lingers, a response "
+               "that kicks in late, a bump in the middle.",
+        "in": {"x": "where to read, 0..1"},
+        "out": {"result": "the curve's value there"},
+        "params": {"points": "the points: position and value, any number from two"}},
     "Clamp": {"doc": "Keeps a value between lo and hi.", "in": {"x": "the value to limit"}, "out": {"result": "x, held between lo and hi"},
               "params": {"lo": "the lowest allowed", "hi": "the highest allowed"}},
     "Fract": {"doc": "The part after the decimal point: 2.7 becomes 0.7. Turns a growing number into a 0..1 that wraps "

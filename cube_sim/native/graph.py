@@ -549,7 +549,7 @@ class Graph:
                         code = _sub(code, "p", f"{p['name']}_{k}", str(int(c)))
                 elif p["type"] in ("text", "file"):
                     code = _sub(code, "p", p["name"], str(v).replace('"', "'"))
-                elif p["type"] == "ramp":
+                elif p["type"] in ("ramp", "curve"):
                     pass                                      # the codegen reads it whole
                 elif p["type"] == "choice":
                     code = _sub(code, "p", p["name"], str(v))
