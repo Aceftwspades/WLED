@@ -126,6 +126,7 @@ class GraphPanel:
         self._zoom_themes = {}   # zoom -> node-editor style theme
         self._node_themes = {}   # (r,g,b) -> a node theme with that title bar
         self.focus_mode = False  # dim everything but the selection and its neighbours
+        self.edits = 0           # bumped by touch(); what the autosave watches
         self._focus_sel = None
         self._link_normal = {}   # dpg link id -> the theme it wears when not dimmed
         self._label_items = []   # the wire labels drawn last frame
@@ -761,6 +762,7 @@ class GraphPanel:
 
     def touch(self):
         self._dirty = time.time()
+        self.edits += 1                 # counts every edit; the autosave compares, never scans
 
     def set_auto(self, on):
         self.auto = bool(on)

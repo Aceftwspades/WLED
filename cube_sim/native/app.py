@@ -480,25 +480,40 @@ class App:
     AUTOSAVE_S = 20.0
 
     def poll_autosave(self):
-        """Every AUTOSAVE_S seconds, what is unsaved is kept as a version in
-        the history (the file itself is not touched), so a crash or a slip
-        loses at most those seconds: File > History has it."""
+        """Every AUTOSAVE_S seconds, what has CHANGED since the last time is
+        kept as a version in the history (the file itself is not touched),
+        so a crash or a slip loses at most those seconds. Nothing happens
+        unless an edit was made in between - an edit counter says so - and
+        the disk work runs on a thread; the main loop only takes the text."""
         now = time.time()
         if now - getattr(self, "_autosave_at", 0.0) < self.AUTOSAVE_S:
             return
         self._autosave_at = now
+        jobs = []
+        if self.edit_dirty and self.edit_file:
+            n = getattr(self, "_code_edits", 0)
+            if n != getattr(self, "_code_autosaved", -1):
+                self._code_autosaved = n
+                jobs.append(("effects", os.path.splitext(self.edit_file)[0], ".cpp", dpg.get_value("code")))
+        g = self.gp
+        if g.graph and g.file and g.edits != getattr(self, "_graph_autosaved", -1):
+            self._graph_autosaved = g.edits
+            import json
+            g._sync_pos()
+            jobs.append(("subgraphs" if g.cur_dir == g.sub_dir else "graphs", g.file[:-5], ".json",
+                         json.dumps(g.graph.to_json(), indent=1)))
+        if not jobs:
+            return
         from native import history
-        try:
-            if self.edit_dirty and self.edit_file:
-                history.keep(self.project, "effects", os.path.splitext(self.edit_file)[0], ".cpp", dpg.get_value("code"))
-            g = self.gp
-            if g.graph and g.file and g._dirty:
-                import json
-                g._sync_pos()
-                history.keep(self.project, "subgraphs" if g.cur_dir == g.sub_dir else "graphs", g.file[:-5], ".json",
-                             json.dumps(g.graph.to_json(), indent=1))
-        except Exception:
-            pass
+        project = self.project
+
+        def work():
+            for kind, stem, ext, text in jobs:
+                try:
+                    history.keep(project, kind, stem, ext, text)
+                except Exception:
+                    pass
+        threading.Thread(target=work, daemon=True).start()
 
     def set_gpu_cube(self, on):
         self.gpu_cube = bool(on)
@@ -959,6 +974,7 @@ class App:
     # and the key once the box is left.)
     def on_code_edit(self, s, v):
         self.edit_dirty = True
+        self._code_edits = getattr(self, "_code_edits", 0) + 1
         now = time.time()
         if now - self._code_t > 1.0:
             self._code_undo.append(self._code_text)
