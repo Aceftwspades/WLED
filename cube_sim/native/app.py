@@ -24,6 +24,7 @@ Two things here are deliberate and easy to undo by accident:
     a default like pal=11 lands on something unrelated.
 """
 import os
+import re
 import tempfile
 import time
 
@@ -444,6 +445,8 @@ class App:
         self.edit_dirty = False
         self._watch_mtime = self._mtime(fname)
         dpg.set_value("code", self.project.read_effect(fname))
+        if dpg.does_item_exist("meta_name"):
+            self.meta_read()
         dpg.set_value("edit_status", f"{fname}")
         dpg.configure_item("edit_file", items=self.project.effect_files())
         dpg.set_value("edit_file", fname)
@@ -601,6 +604,35 @@ class App:
             self.edit_dirty = True
         dpg.set_value("edit_status", f"replaced {n} occurrence(s)")
         self.find()
+
+    # --- the metadata string, as a form ----------------------------------------------
+    # Name@slider labels;colour labels;palette;flags;defaults - a line most
+    # people get wrong once. The form reads it out of the pane and writes it
+    # back, so the fields are edited by name.
+    META_FIELDS = ("meta_name", "meta_labels", "meta_colours", "meta_flags", "meta_defaults")
+
+    def meta_read(self):
+        m = re.search(r'PROGMEM\s*=\s*"([^"]*)"', dpg.get_value("code"))
+        if not m:
+            dpg.set_value("edit_status", "no metadata string in this file"); return
+        text = m.group(1)
+        name, _, rest = text.partition("@")
+        parts = (rest.split(";") + ["", "", "", "", ""])[:5]
+        for tag, v in zip(self.META_FIELDS, [name, parts[0], parts[1], parts[3], parts[4]]):
+            dpg.set_value(tag, v)
+        dpg.set_value("edit_status", "metadata read from the file")
+
+    def meta_write(self):
+        code = dpg.get_value("code")
+        m = re.search(r'(PROGMEM\s*=\s*")([^"]*)(")', code)
+        if not m:
+            dpg.set_value("edit_status", "no metadata string in this file"); return
+        name, labels, colours, flags, defaults = (dpg.get_value(t).replace('"', "'").replace(";", " ") if t == "meta_name"
+                                                  else dpg.get_value(t).replace('"', "'") for t in self.META_FIELDS)
+        new = f"{name}@{labels};{colours};!;{flags};{defaults}"
+        dpg.set_value("code", code[:m.start(2)] + new + code[m.end(2):])
+        self.edit_dirty = True
+        dpg.set_value("edit_status", f"metadata: {new[:100]}")
 
     def api_pick(self, snippet, label):
         dpg.set_clipboard_text(snippet)
@@ -1022,7 +1054,8 @@ class App:
         # this, typing into a box would also be driving the layout.
         if any(dpg.does_item_exist(t) and dpg.is_item_active(t) for t in self._inputs):
             return
-        if any(dpg.does_item_exist(t) and dpg.is_item_active(t) for t in ("find_text", "replace_text")):
+        if any(dpg.does_item_exist(t) and dpg.is_item_active(t)
+               for t in ("find_text", "replace_text", "project_name") + self.META_FIELDS):
             return
         if self.layout == "graph" and self.gp.typing():
             if app_data == dpg.mvKey_Return and dpg.does_item_exist("graph_search") and dpg.is_item_active("graph_search"):
@@ -1183,6 +1216,15 @@ def build(app):
                     dpg.add_button(label="find", callback=lambda: app.find())
                     dpg.add_input_text(tag="replace_text", hint="replace with", width=130)
                     dpg.add_button(label="replace all", callback=lambda: app.replace_all())
+                with dpg.collapsing_header(label="Metadata - name, labels, palette, flags, defaults", default_open=False):
+                    dpg.add_input_text(tag="meta_name", label="name", width=220)
+                    dpg.add_input_text(tag="meta_labels", label="slider labels (8, comma)", width=220)
+                    dpg.add_input_text(tag="meta_colours", label="colour labels (3, comma)", width=220)
+                    dpg.add_input_text(tag="meta_flags", label="flags: 1 2 12 + v/f", width=220)
+                    dpg.add_input_text(tag="meta_defaults", label="defaults sx=,ix=,c1=,pal=", width=220)
+                    with dpg.group(horizontal=True):
+                        dpg.add_button(label="read from file", callback=lambda: app.meta_read())
+                        dpg.add_button(label="apply to file", callback=lambda: app.meta_write())
                 with dpg.collapsing_header(label="API reference - click copies, Ctrl+V pastes", default_open=False):
                     for group, items in API:
                         with dpg.tree_node(label=group):
@@ -1416,6 +1458,10 @@ def service_command(app):
                 app.gp.rename(c["graph_rename"])
             if "project" in c:
                 app.new_project(c["project"])
+            if "meta" in c:
+                for k, v in c["meta"].items():
+                    dpg.set_value(k, v)
+                app.meta_write()
             if "find" in c:
                 dpg.set_value("find_text", c["find"]); app.find()
             if "replace" in c:

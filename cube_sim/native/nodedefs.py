@@ -59,20 +59,20 @@ def _p(name, type, default, lo=None, hi=None, choices=None):
 
 LIBRARY = [
     # ---- controls: the segment's sliders, checkboxes, colours -----------------
-    _n("Speed", "controls", "frame", [], [("value", F)], [_p("label", "text", "Speed")],
+    _n("Speed", "controls", "frame", [], [("value", F)], [_p("label", "text", "Speed"), _p("default", "int", 128, 0, 255)],
        "$out.value = SEGMENT.speed * (1.0f / 255.0f);", "the Speed slider, 0..1"),
-    _n("Intensity", "controls", "frame", [], [("value", F)], [_p("label", "text", "Intensity")],
+    _n("Intensity", "controls", "frame", [], [("value", F)], [_p("label", "text", "Intensity"), _p("default", "int", 128, 0, 255)],
        "$out.value = SEGMENT.intensity * (1.0f / 255.0f);", "the Intensity slider, 0..1"),
-    _n("Custom 1", "controls", "frame", [], [("value", F)], [_p("label", "text", "Custom 1")],
+    _n("Custom 1", "controls", "frame", [], [("value", F)], [_p("label", "text", "Custom 1"), _p("default", "int", 128, 0, 255)],
        "$out.value = SEGMENT.custom1 * (1.0f / 255.0f);", "the Custom 1 slider, 0..1"),
-    _n("Custom 2", "controls", "frame", [], [("value", F)], [_p("label", "text", "Custom 2")],
+    _n("Custom 2", "controls", "frame", [], [("value", F)], [_p("label", "text", "Custom 2"), _p("default", "int", 128, 0, 255)],
        "$out.value = SEGMENT.custom2 * (1.0f / 255.0f);", "the Custom 2 slider, 0..1"),
-    _n("Custom 3", "controls", "frame", [], [("value", F)], [_p("label", "text", "Custom 3")],
+    _n("Custom 3", "controls", "frame", [], [("value", F)], [_p("label", "text", "Custom 3"), _p("default", "int", 16, 0, 31)],
        "$out.value = SEGMENT.custom3 * (1.0f / 31.0f);",
        "the Custom 3 slider, 0..1 - FIVE BITS on the device, 32 steps"),
-    _n("Check 1", "controls", "frame", [], [("on", B)], [_p("label", "text", "Check 1")], "$out.on = SEGMENT.check1;", "checkbox 1"),
-    _n("Check 2", "controls", "frame", [], [("on", B)], [_p("label", "text", "Check 2")], "$out.on = SEGMENT.check2;", "checkbox 2"),
-    _n("Check 3", "controls", "frame", [], [("on", B)], [_p("label", "text", "Check 3")], "$out.on = SEGMENT.check3;", "checkbox 3"),
+    _n("Check 1", "controls", "frame", [], [("on", B)], [_p("label", "text", "Check 1"), _p("default", "bool", False)], "$out.on = SEGMENT.check1;", "checkbox 1"),
+    _n("Check 2", "controls", "frame", [], [("on", B)], [_p("label", "text", "Check 2"), _p("default", "bool", False)], "$out.on = SEGMENT.check2;", "checkbox 2"),
+    _n("Check 3", "controls", "frame", [], [("on", B)], [_p("label", "text", "Check 3"), _p("default", "bool", False)], "$out.on = SEGMENT.check3;", "checkbox 3"),
     _n("Colour 1", "controls", "frame", [], [("color", C)], [], "$out.color = SEGCOLOR(0);", "the segment's primary colour"),
     _n("Colour 2", "controls", "frame", [], [("color", C)], [], "$out.color = SEGCOLOR(1);", "the segment's secondary colour"),
     _n("Colour 3", "controls", "frame", [], [("color", C)], [], "$out.color = SEGCOLOR(2);", "the segment's tertiary colour"),
@@ -216,6 +216,16 @@ LIBRARY = [
     # ---- output ---------------------------------------------------------------------
     _n("Output", "output", "pixel", [("color", C, 0)], [], [],
        "gc_out = $in.color;", "what the pixel shows - exactly one of these"),
+    # The metadata string's other fields. One per graph; without it the
+    # defaults below apply. Slider defaults and labels sit on the control
+    # nodes themselves.
+    dict(_n("Effect settings", "output", "frame", [], [],
+            [_p("palette", "int", 11, 0, 255),
+             _p("dimensions", "choice", "both", choices=["both", "1-D", "2-D"]),
+             _p("audio", "choice", "none", choices=["none", "volume", "frequency"]),
+             _p("colours", "text", "")],
+            "", "the effect's metadata: default palette id, 1-D/2-D, audio flag, colour-slot labels"),
+         decor=True),
 
     # ---- sub-graph boundaries -----------------------------------------------------
     # A graph that contains these can be used as a NODE in another graph: each

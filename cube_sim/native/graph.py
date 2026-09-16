@@ -427,10 +427,22 @@ class Graph:
         labels = ["", "", "", "", "", "", "", ""]
         slot = {"Speed": 0, "Intensity": 1, "Custom 1": 2, "Custom 2": 3, "Custom 3": 4,
                 "Check 1": 5, "Check 2": 6, "Check 3": 7}
+        dkey = {"Speed": "sx", "Intensity": "ix", "Custom 1": "c1", "Custom 2": "c2", "Custom 3": "c3",
+                "Check 1": "o1", "Check 2": "o2", "Check 3": "o3"}
+        defaults = {"sx": 128, "ix": 128}
         for n in self.nodes.values():
             if n["type"] in slot:
                 labels[slot[n["type"]]] = str(n["params"].get("label", n["type"])).replace(",", " ").replace(";", " ")
-        meta = f'{title.replace(chr(34), chr(39))}@{",".join(labels)};;!;12;sx=128,ix=128,pal=11'
+                if "default" in n["params"]:
+                    v = n["params"]["default"]
+                    defaults[dkey[n["type"]]] = int(bool(v)) if isinstance(v, bool) else int(v)
+        settings = next((n["params"] for n in self.nodes.values() if n["type"] == "Effect settings"), {})
+        defaults["pal"] = int(settings.get("palette", 11))
+        dims = {"both": "12", "1-D": "1", "2-D": "2"}.get(str(settings.get("dimensions", "both")), "12")
+        aud = {"volume": "v", "frequency": "f"}.get(str(settings.get("audio", "none")), "")
+        cols = str(settings.get("colours", "")).replace(";", " ")
+        meta = (f'{title.replace(chr(34), chr(39))}@{",".join(labels)};{cols};!;{dims}{aud};'
+                + ",".join(f"{k}={v}" for k, v in defaults.items()))
 
         return GENERATED.format(title=title, ident=ident, upper=ident.upper(), helpers=HELPERS,
                                 frame=frame, pixel=pixel, meta=meta)

@@ -199,8 +199,12 @@ editor. Ticked when done; the order within a group is the order to do them.
       declared weak by the generated code with the segment's palette as the
       fallback, so the effect builds without that usermod. The audio-reactive
       palettes themselves are ordinary palettes: pick one on the Palette node.
-- [ ] **Effect metadata in the UI**: default slider values, default palette,
-      the flags string — hand-edited in the generated file today.
+- [x] **Effect metadata in the UI**. Graphs: each control node carries its
+      default beside its label, and an "Effect settings" node (one per graph)
+      sets the default palette, 1-D / 2-D / both, the audio flag and the
+      colour-slot labels; the compiler writes the whole string. Code: a
+      Metadata form under the code pane reads the string out of the file by
+      field and writes it back.
 - [ ] **Graph import / export** as one JSON carrying the sub-graphs it uses,
       so graphs can be traded.
 - [ ] **Export as a deliverable**: zip of the usermod folder, ledmap and a
