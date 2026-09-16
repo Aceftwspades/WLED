@@ -249,6 +249,44 @@ static inline void cfx_tumbleInit(CfxTumble &t) {
   t.leg = 0;
 }
 
+// The same walk, but starting upright: the first leg runs from the identity
+// - the pole on the lid's centre - out to the table. For an effect whose
+// figure is drawn about the pole, this is the difference between a picture
+// that starts centred and one that starts thirty degrees toward a corner.
+static inline void cfx_tumbleInitTop(CfxTumble &t) {
+  t.qi = CFX_TUMBLE_STRIDE;
+  t.qa[0] = 1.0f; t.qa[1] = 0.0f; t.qa[2] = 0.0f; t.qa[3] = 0.0f;
+  cfx_tumbleLoad(t.qi, t.qb);
+  t.leg = 0;
+}
+// Keep the frame's pole above a height on the cube. The walk visits every
+// orientation, and an effect drawn ABOUT the pole loses its figure when the
+// pole sinks under the open bottom. This lifts the pole to z = zmin along
+// the shortest arc and turns the whole frame with it, continuously, so the
+// figure slides along the rim instead of falling through it. M maps cube
+// directions into the pole's frame; its pole is M's third row.
+static inline void cfx_tumbleKeepAbove(float M[3][3], float zmin) {
+  const float px = M[2][0], py = M[2][1], pz = M[2][2];
+  if (pz >= zmin) return;
+  const float h = sqrtf(px * px + py * py);
+  float tx, ty, tz = zmin;
+  const float hh = sqrtf(1.0f - zmin * zmin);
+  if (h > 1e-6f) { tx = px / h * hh; ty = py / h * hh; } else { tx = hh; ty = 0.0f; }
+  // R takes p to t (Rodrigues); the new frame is M * R^T
+  float ax = py * tz - pz * ty, ay = pz * tx - px * tz, az = px * ty - py * tx;
+  const float sn = sqrtf(ax * ax + ay * ay + az * az);
+  if (sn < 1e-6f) return;
+  ax /= sn; ay /= sn; az /= sn;
+  const float c = px * tx + py * ty + pz * tz, s_ = sn, k = 1.0f - c;
+  float R[3][3] = {
+    { c + ax * ax * k,        ax * ay * k - az * s_,  ax * az * k + ay * s_ },
+    { ay * ax * k + az * s_,  c + ay * ay * k,        ay * az * k - ax * s_ },
+    { az * ax * k - ay * s_,  az * ay * k + ax * s_,  c + az * az * k       } };
+  float N[3][3];
+  for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++)
+    N[i][j] = M[i][0] * R[j][0] + M[i][1] * R[j][1] + M[i][2] * R[j][2];   // M * R^T
+  for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) M[i][j] = N[i][j];
+}
 static inline void cfx_tumbleStep(CfxTumble &t, uint16_t step) {
   if (!step) step = 1;
   const uint16_t nl = (uint16_t)(t.leg + step);

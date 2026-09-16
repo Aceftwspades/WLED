@@ -125,7 +125,7 @@ static FX_RET mode_warp() {
   if (SEGENV.call == 0 || s->mode != want) {
     s->mode = want; s->clk[0] = s->clk[1] = 0;
     s->surge = 0; s->warpMix = 0; s->bassS = s->trebS = 0;
-    cfx_tumbleInit(s->tumble);
+    cfx_tumbleInitTop(s->tumble);                   // the pole starts on the lid
     s->warpT = 0; s->kick = 0; s->drift = 0; s->cycle = 0; s->t = 0;
     for (int b = 0; b < 16; b++) s->ph[b] = (uint16_t)(b * 4111);
     memset(pix, 0, 3 * m);
@@ -158,7 +158,10 @@ static FX_RET mode_warp() {
   const int  zoomI  = (int)SEGMENT.custom1;
   const int  warpI  = (int)SEGMENT.custom2;
   const bool trails = SEGMENT.check2;
-  int wmode = SEGMENT.custom3;
+  // Shape: 0..31 in four steps a mode, the last four steps cycle. A slider
+  // that changed the figure over its first quarter and did the same thing
+  // for the rest was the erratic feel; every quarter-turn now means one shape.
+  int wmode = (int)SEGMENT.custom3 / 4;
 
   // --- audio ----------------------------------------------------------------
   um_data_t     *um  = cfx_getAudioData();
@@ -198,7 +201,8 @@ static FX_RET mode_warp() {
     s->t     = (uint16_t)(s->t + r);
     s->warpT = (uint16_t)(s->warpT + r);
     s->cycle = (uint16_t)(s->cycle + (r * 3u) / 8u);
-    cfx_tumbleStep(s->tumble, (uint16_t)(r / 7u)); }
+    // the pole wanders: a leg of the walk in about 25 s at the default speed
+    cfx_tumbleStep(s->tumble, (uint16_t)((r * 7u) / 4u)); }
   // Hue turns the wheel in about 2.5 s at the default: the trails only live
   // for half a second, so anything slower and every trail is one colour.
   s->drift = (uint16_t)(s->drift + ((uint32_t)dt * (uint32_t)(60 + SEGMENT.speed)) / 6u);
@@ -208,6 +212,7 @@ static FX_RET mode_warp() {
 
   float M[3][3];
   cfx_tumbleMatrix(s->tumble, M);
+  cfx_tumbleKeepAbove(M, 0.2f);                   // the figure stays on the solid
 
   // --- the field, once per frame -------------------------------------------
   // MilkDrop's numbers, with the usual preset idioms driving them: bass pushes

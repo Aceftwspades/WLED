@@ -94,7 +94,7 @@ static FX_RET mode_scope() {
   const uint8_t want = (uint8_t)(cube ? 1 : 2);
   if (SEGENV.call == 0 || s->mode != want) {
     s->mode = want; s->clk[0] = s->clk[1] = 0;
-    cfx_tumbleInit(s->tumble);
+    cfx_tumbleInitTop(s->tumble);                   // the pole starts on the lid
     s->kick = 0; s->drift = 0; s->cycle = 0; s->t = 0;
     for (int b = 0; b < 16; b++) s->ph[b] = (uint16_t)(b * 4111);
     memset(g, 0, 3 * m);
@@ -109,7 +109,10 @@ static FX_RET mode_scope() {
   const int  sizeI = (int)SEGMENT.custom1;
   const int  spanI = (int)SEGMENT.custom2;           // hue span along the figure
   const bool dual  = SEGMENT.check2;
-  int wmode = SEGMENT.custom3;
+  // Shape: 0..31 in four steps a mode, the last four steps cycle. A slider
+  // that changed the figure over its first quarter and did the same thing
+  // for the rest was the erratic feel; every quarter-turn now means one shape.
+  int wmode = (int)SEGMENT.custom3 / 4;
 
   // --- audio ----------------------------------------------------------------
   um_data_t     *um  = cfx_getAudioData();
@@ -136,13 +139,15 @@ static FX_RET mode_scope() {
   { const uint32_t r = (uint32_t)(2 + (int)SEGMENT.speed / 3) * (uint32_t)dt / 23u;
     s->t     = (uint16_t)(s->t + r);
     s->cycle = (uint16_t)(s->cycle + (r * 3u) / 8u);
-    cfx_tumbleStep(s->tumble, (uint16_t)(r / 6u)); }
+    // the pole wanders: a leg of the walk in about 25 s at the default speed
+    cfx_tumbleStep(s->tumble, (uint16_t)((r * 7u) / 4u)); }
   s->drift = (uint16_t)(s->drift + ((uint32_t)dt * (uint32_t)(60 + SEGMENT.speed)) / 12u);
   cfx_wavePhases(s->ph, dt);
   if (wmode >= CFX_WAVE_MODES) wmode = (int)(((uint32_t)s->cycle * CFX_WAVE_MODES) >> 16);
 
   float M[3][3];
   cfx_tumbleMatrix(s->tumble, M);
+  cfx_tumbleKeepAbove(M, 0.2f);                   // the figure stays on the solid
 
   float W[SC_NS];
   cfx_waveRebuild(fft, s->ph, W, SC_NS);
