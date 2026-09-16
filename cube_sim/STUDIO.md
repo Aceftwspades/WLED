@@ -341,7 +341,12 @@ editor. Ticked when done; the order within a group is the order to do them.
       gradient frame (`native/glow.py`: one conic texture, four strips
       whose texture coordinates rotate, plus a fainter glow outside) around
       the pane last clicked in and around every selected node, clipped to
-      the editor. The views sit centred in their panes.
+      the editor. The views sit centred in their panes. Settings > Selection
+      frames picks each frame's gradient - the studio's own, any WLED
+      palette (mirrored, so it is seamless round the frame), or one made in
+      the gradient creator there: stops with a position and a colour,
+      started from any of those, mirrored or cyclic, saved by name in
+      `studio.json`.
 - [x] **A keymap** (`native/keys.py`): every keyboard action with a default
       key and a context (anywhere / the graph), rebound under Settings >
       Keyboard shortcuts - click the key, press the new one; a key taken

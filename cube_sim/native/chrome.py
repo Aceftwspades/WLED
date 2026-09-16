@@ -422,7 +422,7 @@ def _strip(stops, mirror, width=260, height=14, parent=None):
 def build_frames_dialog(app):
     app._gc = {"name": "", "stops": [list(st) for st in glow.DEFAULT_STOPS], "mirror": False}
     with dpg.window(tag="frames_win", label="Selection frames", show=False, width=560, height=620, no_collapse=True):
-        dpg.add_text("The turning gradient frame around the selected nodes, and the one around the pane\n"
+        dpg.add_text("The turning gradient frame around the selected nodes, and the one around the pane "
                      "last clicked in. Pick a WLED palette, the studio's own, or one you made below.", color=DIM, wrap=530)
         dpg.add_group(tag="frames_choice")
         dpg.add_separator()
