@@ -58,18 +58,30 @@ SIDE_W = 340            # control column
 SECTION = (90, 169, 230)          # section titles in the side panel
 
 
-def apply_theme():
+def apply_theme(prefs=None):
     """A dark theme close to the browser build's, so switching between the two
     is not jarring. Default Dear PyGui is grey-blue and tightly packed; the
-    views want to sit on near-black or the LED colours read wrong against it."""
-    bg      = (14, 16, 20)
-    panel   = (21, 24, 30)
-    frame   = (29, 33, 41)
-    line    = (36, 41, 50)
-    text    = (222, 226, 234)
-    dim     = (128, 137, 152)
-    accent  = (90, 169, 230)
-    soft    = (90, 169, 230, 60)
+    views want to sit on near-black or the LED colours read wrong against it.
+    Settings > Appearance picks a light variant and the accent."""
+    th_pref = (prefs or {}).get("theme") or {}
+    light = bool(th_pref.get("light"))
+    accent = tuple(int(v) for v in (th_pref.get("accent") or (90, 169, 230)))[:3]
+    if light:
+        bg      = (232, 234, 238)
+        panel   = (246, 247, 249)
+        frame   = (222, 225, 231)
+        line    = (200, 205, 214)
+        text    = (30, 34, 42)
+        dim     = (110, 118, 132)
+    else:
+        bg      = (14, 16, 20)
+        panel   = (21, 24, 30)
+        frame   = (29, 33, 41)
+        line    = (36, 41, 50)
+        text    = (222, 226, 234)
+        dim     = (128, 137, 152)
+    soft    = accent + (60,)
+    lift = (lambda c, k: tuple(min(255, v + k) for v in c)) if not light else (lambda c, k: tuple(max(0, v - k) for v in c))
     with dpg.theme() as th:
         with dpg.theme_component(dpg.mvAll):
             # Flat: no bevels, no bright borders. A control is a slightly
@@ -77,7 +89,7 @@ def apply_theme():
             # switching it on paints it the accent.
             for t, c in ((dpg.mvThemeCol_WindowBg, bg),
                          (dpg.mvThemeCol_ChildBg, panel),
-                         (dpg.mvThemeCol_PopupBg, (24, 27, 34)),
+                         (dpg.mvThemeCol_PopupBg, lift(panel, 3)),
                          (dpg.mvThemeCol_MenuBarBg, bg),
                          (dpg.mvThemeCol_Border, line),
                          (dpg.mvThemeCol_BorderShadow, (0, 0, 0, 0)),
@@ -85,22 +97,22 @@ def apply_theme():
                          (dpg.mvThemeCol_TextDisabled, dim),
                          (dpg.mvThemeCol_TextSelectedBg, soft),
                          (dpg.mvThemeCol_FrameBg, frame),
-                         (dpg.mvThemeCol_FrameBgHovered, (38, 44, 54)),
-                         (dpg.mvThemeCol_FrameBgActive, (46, 54, 66)),
-                         (dpg.mvThemeCol_Button, (34, 39, 48)),
-                         (dpg.mvThemeCol_ButtonHovered, (46, 54, 68)),
+                         (dpg.mvThemeCol_FrameBgHovered, lift(frame, 9)),
+                         (dpg.mvThemeCol_FrameBgActive, lift(frame, 18)),
+                         (dpg.mvThemeCol_Button, lift(panel, 13)),
+                         (dpg.mvThemeCol_ButtonHovered, lift(panel, 26)),
                          (dpg.mvThemeCol_ButtonActive, accent),
                          (dpg.mvThemeCol_SliderGrab, accent),
-                         (dpg.mvThemeCol_SliderGrabActive, (140, 200, 250)),
+                         (dpg.mvThemeCol_SliderGrabActive, lift(accent, 40)),
                          (dpg.mvThemeCol_CheckMark, accent),
-                         (dpg.mvThemeCol_Header, (34, 42, 54)),
-                         (dpg.mvThemeCol_HeaderHovered, (44, 54, 70)),
-                         (dpg.mvThemeCol_HeaderActive, (50, 70, 96)),
+                         (dpg.mvThemeCol_Header, lift(panel, 14)),
+                         (dpg.mvThemeCol_HeaderHovered, lift(panel, 26)),
+                         (dpg.mvThemeCol_HeaderActive, lift(panel, 40)),
                          (dpg.mvThemeCol_TitleBg, panel),
-                         (dpg.mvThemeCol_TitleBgActive, (26, 30, 38)),
+                         (dpg.mvThemeCol_TitleBgActive, lift(panel, 6)),
                          (dpg.mvThemeCol_ScrollbarBg, (0, 0, 0, 0)),
-                         (dpg.mvThemeCol_ScrollbarGrab, (44, 50, 62)),
-                         (dpg.mvThemeCol_ScrollbarGrabHovered, (60, 68, 84)),
+                         (dpg.mvThemeCol_ScrollbarGrab, lift(panel, 24)),
+                         (dpg.mvThemeCol_ScrollbarGrabHovered, lift(panel, 40)),
                          (dpg.mvThemeCol_ScrollbarGrabActive, accent),
                          (dpg.mvThemeCol_Separator, line),
                          (dpg.mvThemeCol_ResizeGrip, (0, 0, 0, 0)),
@@ -130,17 +142,17 @@ def apply_theme():
             # The node editor: the same slabs, a quieter grid, the accent
             # for a box-select; a selected node's own frame is the gradient
             # (glow.py), so its title only lifts a little.
-            for t, c in ((dpg.mvNodeCol_GridBackground, (17, 19, 24)),
-                         (dpg.mvNodeCol_GridLine, (27, 30, 37)),
-                         (dpg.mvNodeCol_NodeBackground, (29, 33, 41)),
-                         (dpg.mvNodeCol_NodeBackgroundHovered, (34, 39, 48)),
-                         (dpg.mvNodeCol_NodeBackgroundSelected, (36, 42, 52)),
-                         (dpg.mvNodeCol_NodeOutline, (44, 50, 62)),
-                         (dpg.mvNodeCol_TitleBar, (40, 46, 58)),
-                         (dpg.mvNodeCol_TitleBarHovered, (50, 58, 72)),
-                         (dpg.mvNodeCol_TitleBarSelected, (56, 68, 88)),
-                         (dpg.mvNodeCol_BoxSelector, (90, 169, 230, 30)),
-                         (dpg.mvNodeCol_BoxSelectorOutline, (90, 169, 230, 180))):
+            for t, c in ((dpg.mvNodeCol_GridBackground, lift(bg, 3)),
+                         (dpg.mvNodeCol_GridLine, lift(bg, 13)),
+                         (dpg.mvNodeCol_NodeBackground, frame),
+                         (dpg.mvNodeCol_NodeBackgroundHovered, lift(frame, 6)),
+                         (dpg.mvNodeCol_NodeBackgroundSelected, lift(frame, 10)),
+                         (dpg.mvNodeCol_NodeOutline, lift(frame, 18)),
+                         (dpg.mvNodeCol_TitleBar, lift(frame, 12)),
+                         (dpg.mvNodeCol_TitleBarHovered, lift(frame, 24)),
+                         (dpg.mvNodeCol_TitleBarSelected, lift(frame, 36)),
+                         (dpg.mvNodeCol_BoxSelector, accent + (30,)),
+                         (dpg.mvNodeCol_BoxSelectorOutline, accent + (180,))):
                 dpg.add_theme_color(t, c, category=dpg.mvThemeCat_Nodes)
     dpg.bind_theme(th)
     return th
@@ -204,6 +216,7 @@ class App:
         self.focus = None            # the pane last clicked in: it wears the frame
         self.sweep = None            # {"key", "secs", "t0", "loop", "record"} while a slider is swept
         self.show_wiring = False     # the physical order drawn over the net
+        self.pane_menus = {}         # pane tag -> its right-click menu window (chrome.build_pane_menus)
         self._wiring_items = []
         self.frames = None           # (glow.Frames) - set in build()
         self.history_frames = []     # the last seconds of net frames, for scrubbing while paused
@@ -430,6 +443,51 @@ class App:
 
     def toggle_live(self):
         self.stop_live() if self.live else self.start_live()
+
+    def set_appearance(self, light=None, accent=None):
+        """Settings > Appearance: the theme is rebuilt and rebound; the
+        accent reaches the toolbar's tints and the frames' section titles
+        at the next start."""
+        t = dict(self.prefs.get("theme") or {})
+        if light is not None:
+            t["light"] = bool(light)
+        if accent is not None:
+            t["accent"] = [int(v) for v in accent[:3]]
+        self.prefs["theme"] = t
+        save_prefs(self.prefs)
+        self._themes["normal"] = apply_theme(self.prefs)
+        if self.ui:
+            dpg.bind_theme(self._themes["normal"])
+        acc = tuple(t.get("accent") or (90, 169, 230))
+        chrome.ACCENT = acc + (255,)
+        chrome.TEXT = (30, 34, 42, 255) if t.get("light") else (222, 226, 234, 255)
+        chrome.refresh(self)
+        light = bool(t.get("light"))
+        dpg.set_viewport_clear_color([232, 234, 238, 255] if light and self.ui else ([14, 16, 20, 255] if self.ui else [0, 0, 0, 255]))
+
+    # --- autosave: a version kept while there are unsaved edits -----------------
+    AUTOSAVE_S = 20.0
+
+    def poll_autosave(self):
+        """Every AUTOSAVE_S seconds, what is unsaved is kept as a version in
+        the history (the file itself is not touched), so a crash or a slip
+        loses at most those seconds: File > History has it."""
+        now = time.time()
+        if now - getattr(self, "_autosave_at", 0.0) < self.AUTOSAVE_S:
+            return
+        self._autosave_at = now
+        from native import history
+        try:
+            if self.edit_dirty and self.edit_file:
+                history.keep(self.project, "effects", os.path.splitext(self.edit_file)[0], ".cpp", dpg.get_value("code"))
+            g = self.gp
+            if g.graph and g.file and g._dirty:
+                import json
+                g._sync_pos()
+                history.keep(self.project, "subgraphs" if g.cur_dir == g.sub_dir else "graphs", g.file[:-5], ".json",
+                             json.dumps(g.graph.to_json(), indent=1))
+        except Exception:
+            pass
 
     def set_device_factor(self, v):
         try:
@@ -1321,8 +1379,9 @@ class App:
         th = self._themes.get("present" if not self.ui else "normal")
         if th:
             dpg.bind_theme(th)
+        light = bool((self.prefs.get("theme") or {}).get("light"))
         dpg.set_viewport_clear_color([0, 0, 0, 255] if not self.ui
-                                     else [17, 19, 24, 255])
+                                     else ([232, 234, 238, 255] if light else [14, 16, 20, 255]))
         for tag in ("net_win", "cube_win", "side_win"):
             dpg.configure_item(tag, border=self.ui)
         # The captions, the readout and the key hints are UI too - a clean
@@ -1474,6 +1533,12 @@ class App:
             self.gp.on_release()
 
     def on_right_click(self, sender, app_data):
+        for pane, tag in getattr(self, "pane_menus", {}).items():
+            if dpg.does_item_exist(pane) and dpg.is_item_shown(pane) and dpg.is_item_hovered(pane) and self.ui:
+                x, y = dpg.get_mouse_pos(local=False)
+                dpg.configure_item(tag, show=True)
+                dpg.set_item_pos(tag, [x, y])
+                return
         if self.layout == "graph":
             self.gp.open_menu()
 
@@ -1636,7 +1701,7 @@ class App:
         x, y = st.get("rect_min") or dpg.get_item_pos(tag)
         return (x, y, x + w, y + h)
 
-    FLOATING = ("frames_win", "keys_win", "flash_win", "where_win", "history_win", "compare_menu", "sweep_win", "wav_dialog", "name_dialog", "device_dialog", "editor_dialog", "about_win",
+    FLOATING = ("frames_win", "keys_win", "flash_win", "where_win", "history_win", "compare_menu", "sweep_win", "wav_dialog", "appearance_win", "name_dialog", "device_dialog", "editor_dialog", "about_win",
                 "open_menu", "graph_menu", "graph_ctx", "project_dialog", "graph_import_dialog", "xyz_dialog")
 
     def poll_glow(self):
@@ -2127,8 +2192,13 @@ def build(app):
           dpg.add_text("Q net    E 3-D    W both    C code    G graph    H presentation    space play/pause    "
                        "Help > Keyboard shortcuts has the rest", tag="hint1", color=(130, 140, 155))
     chrome.build_dialogs(app)
+    chrome.build_pane_menus(app)
 
-    app._themes['normal'] = apply_theme()
+    app._themes['normal'] = apply_theme(app.prefs)
+    _t = app.prefs.get("theme") or {}
+    if _t.get("light") or _t.get("accent"):
+        chrome.ACCENT = tuple(_t.get("accent") or (90, 169, 230))[:3] + (255,)
+        chrome.TEXT = (30, 34, 42, 255) if _t.get("light") else (222, 226, 234, 255)
     app._themes['present'] = present_theme()
     app.rebuild_params()
     app.rebuild_geom_fields()
@@ -2232,6 +2302,8 @@ def service_command(app):
                         dpg.set_value(tag, o[k])
             if "gp_call" in c:                          # test hook: [method of the graph panel, args]
                 getattr(app.gp, c["gp_call"][0])(*c["gp_call"][1])
+            if "appearance" in c:                       # test hook: {"light": bool, "accent": [r,g,b]}
+                app.set_appearance(c["appearance"].get("light"), c["appearance"].get("accent"))
             if "ledmap_file" in c:
                 app.import_ledmap(path=c["ledmap_file"])
             if "wiring" in c:
@@ -2490,6 +2562,7 @@ def main():
                 app.poll_watch()
                 chrome.poll(app)
                 chrome.poll_flash(app)
+                app.poll_autosave()
                 app.poll_glow()
                 app.step_sim()
                 app.draw()

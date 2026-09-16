@@ -62,6 +62,8 @@ def build_menus(app):
                     app, "New project", "a name, or a folder path", "", lambda v: app.new_project(v)))
                 with dpg.menu(label="Open", tag="menu_open_project"):
                     pass
+                with dpg.menu(label="Recent", tag="menu_recent_project"):
+                    pass
                 dpg.add_menu_item(label="Open folder...", callback=lambda: dpg.show_item("project_dialog"))
                 dpg.add_separator()
                 dpg.add_menu_item(label="Device address...", callback=lambda: show_device(app))
@@ -145,6 +147,7 @@ def build_menus(app):
         with dpg.menu(label="Settings"):
             dpg.add_menu_item(label="Keyboard shortcuts...", callback=lambda: show_keys(app))
             dpg.add_menu_item(label="Selection frames...", callback=lambda: show_frames(app))
+            dpg.add_menu_item(label="Appearance...", callback=lambda: show_appearance(app))
             dpg.add_menu_item(label="Device address...", callback=lambda: show_device(app))
             dpg.add_menu_item(label="External editor command...", callback=lambda: show_editor(app))
             dpg.add_menu_item(label="Device speed factor...", callback=lambda: ask(
@@ -277,6 +280,15 @@ def build_dialogs(app):
         pass
     with dpg.window(tag="compare_menu", show=False, no_title_bar=True, no_resize=True, no_move=True, autosize=True, popup=True):
         pass
+    th = app.prefs.get("theme") or {}
+    with dpg.window(tag="appearance_win", label="Appearance", show=False, width=380, height=170, no_collapse=True):
+        dpg.add_text("The look: dark or light, and the accent - the colour of whatever is on.", color=DIM, wrap=360)
+        dpg.add_combo(["dark", "light"], tag="app_light", width=120, default_value="light" if th.get("light") else "dark",
+                      callback=lambda s, v: app.set_appearance(light=(v == "light")))
+        dpg.add_color_edit(list(th.get("accent") or [90, 169, 230]) + [255], tag="app_accent", label="accent", width=200,
+                           no_alpha=True, callback=lambda s, v: app.set_appearance(accent=[int(round(c * 255)) if c <= 1.0 else int(c) for c in v[:3]]))
+        dpg.add_button(label="Studio blue", small=True, callback=lambda: (dpg.set_value("app_accent", [90, 169, 230, 255]),
+                                                                          app.set_appearance(accent=[90, 169, 230])))
     with dpg.window(tag="sweep_win", label="Sweep a slider", show=False, width=400, height=190, no_collapse=True):
         dpg.add_text("The slider goes 0 to full and back over the seconds given, so the whole range is seen; "
                      "record makes that one pass the GIF.", color=DIM, wrap=380)
@@ -830,6 +842,48 @@ def show_compare(app):
     dpg.set_item_pos("compare_menu", [vw // 2 - 130, vh // 4])
 
 
+# --- appearance, pane menus ----------------------------------------------------------------
+def show_appearance(app):
+    _centre("appearance_win", 380, 170)
+    dpg.show_item("appearance_win")
+
+
+def _pane_menu(app, pane, rows):
+    """A right-click menu on a pane: a popup window the app's right-click
+    handler shows at the pointer (dpg.popup wants a container stack the
+    build has already left, and a child window takes no item handlers)."""
+    tag = f"{pane}_menu"
+    with dpg.window(tag=tag, show=False, no_title_bar=True, no_resize=True, no_move=True, autosize=True, popup=True):
+        for label, fn in rows:
+            dpg.add_selectable(label=label, user_data=fn, callback=lambda s, a, u: (dpg.hide_item(tag), u()))
+
+    # a child window takes no item handlers: the app's right-click handler
+    # looks the panes up here
+    app.pane_menus[pane] = tag
+    app.FLOATING = tuple(app.FLOATING) + (tag,)
+
+
+def build_pane_menus(app):
+    """Right-click menus on the panes that had none: the two views and the
+    code. The graph has its own."""
+    _pane_menu(app, "cube_win", [
+        ("Screenshot", lambda: setattr(app, "shot_req", True)),
+        ("Record 15 s GIF", lambda: app.start_rec(15.0)),
+        ("Reset the camera", lambda: (setattr(app, "yaw", -0.6), setattr(app, "pitch", 0.75), setattr(app, "dist", 4.6))),
+        ("Compare with another effect...", lambda: app.run_action("compare")),
+        ("Full frame (E)", lambda: app.set_layout("cube"))])
+    _pane_menu(app, "net_win", [
+        ("Show / hide the wiring", lambda: setattr(app, "show_wiring", not app.show_wiring)),
+        ("Screenshot", lambda: setattr(app, "shot_req", True)),
+        ("Full frame (Q)", lambda: app.set_layout("net"))])
+    _pane_menu(app, "edit_win", [
+        ("Save", lambda: app.save_current()),
+        ("Compile + reload", lambda: app.build_current()),
+        ("Find / replace", lambda: app.focus_find()),
+        ("Open in the external editor", lambda: app.open_external()),
+        ("History...", lambda: show_history(app))])
+
+
 # --- sweep --------------------------------------------------------------------------------
 SWEEP_KEYS = ("sx", "ix", "c1", "c2", "c3")
 
@@ -867,9 +921,13 @@ def refresh_files(app):
         dpg.add_menu_item(label=app.project.effect_title(f), parent="menu_open_code", user_data=f,
                           callback=lambda s, a, u: app.open_code(u))
     dpg.delete_item("menu_open_project", children_only=True)
-    from native.project import list_projects
+    from native.project import list_projects, recent_projects
     for p in list_projects():
         dpg.add_menu_item(label=p, parent="menu_open_project", user_data=p, callback=lambda s, a, u: app.switch_project(u))
+    dpg.delete_item("menu_recent_project", children_only=True)
+    for p in recent_projects():
+        dpg.add_menu_item(label=os.path.basename(p), parent="menu_recent_project", user_data=p,
+                          callback=lambda s, a, u: app.switch_project(u))
     dpg.delete_item("menu_add", children_only=True)
     cats = {}
     for name, d in app.gp.lib.items():
@@ -900,6 +958,11 @@ def refresh(app):
     if not dpg.does_item_exist("toolbar"):
         return
     app._chrome_sig = _signature(app)
+    # every icon in the plain text colour first (the theme may have changed
+    # it), then the ones with a state of their own
+    for child in dpg.get_item_children("toolbar", 1) or []:
+        if "ImageButton" in dpg.get_item_type(child):
+            dpg.configure_item(child, tint_color=TEXT)
     for key, _, _ in LAYOUTS:
         on = app.layout == key and app.ui
         dpg.set_value(f"menu_view_{key}", on)

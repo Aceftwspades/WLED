@@ -544,15 +544,23 @@ them within each group; ticked when done.
 
 ### Polish and workflow
 
-- [ ] **Recent files and projects** in File.
-- [ ] **Autosave** with recovery.
-- [ ] **Drag and drop** a graph, a .cpp, an image or an XYZ file onto the
-      window.
-- [ ] **Context menus** on the panes and the toolbar (the graph has them).
-- [ ] **Theme choice**: a light variant and the accent colour, beside the
-      frame gradients in Settings.
-- [ ] **Tests** around `graph.py` (compile, migrate, problems, arrange) so
-      regressions show without launching the app.
+- [x] **Recent projects** (File > Project > Recent, the last ten); the
+      Open submenus list every graph and code effect.
+- [x] **Autosave**: every 20 s, unsaved code or graph edits are kept as a
+      version in the history (the file itself untouched), so a crash loses
+      at most that; File > History restores it.
+- [ ] **Drag and drop** onto the window - Dear PyGui takes no files from
+      the desktop; it would need a platform hook. Import is on File.
+- [x] **Context menus** on the two views and the code pane (screenshot,
+      record, reset the camera, compare, full frame; the wiring; save,
+      build, find, the external editor, history).
+- [x] **Theme choice** (Settings > Appearance): dark or light, and the
+      accent colour; the theme is rebuilt in place, the toolbar's icons
+      follow.
+- [x] **Tests** (`tests/test_graph.py`, plain functions - pytest or the
+      loop at the bottom of this section): compile, frame-scope hoisting,
+      the type rule, problems, exposed params, the state fallback, arrange,
+      JSON round-trip with wire meta, the ledmap format.
 
 ### Deferred from earlier lists
 

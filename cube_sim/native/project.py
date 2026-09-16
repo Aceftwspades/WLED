@@ -360,7 +360,15 @@ def last_project():
 
 
 def remember_project(path):
-    d = _studio(); d["last"] = path; _studio_save(d)
+    d = _studio(); d["last"] = path
+    recent = [p for p in d.get("recent", []) if p != path]
+    d["recent"] = [path] + recent[:9]
+    _studio_save(d)
+
+
+def recent_projects():
+    """The last ten projects opened, newest first, the ones still there."""
+    return [p for p in _studio().get("recent", []) if os.path.isdir(p)]
 
 
 def load_prefs():
