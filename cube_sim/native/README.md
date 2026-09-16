@@ -104,7 +104,7 @@ as an ordinary pointer.
 
 ## Recording a GIF
 
-**record 15 s GIF** in the control column captures the next fifteen seconds and
+**Record 15 s GIF** (the toolbar's red dot, or File) captures the next fifteen seconds and
 writes them beside the frame captures, named after the effect:
 
 ```

@@ -280,7 +280,6 @@ class GraphPanel:
                         open(p, "w", encoding="utf-8").write(txt.replace(f'"{G.SUB}{old_stem}"', f'"{G.SUB}{new_stem}"'))
         self.refresh_lib()
         self.open(self.file, sub=(d == self.sub_dir))
-        dpg.set_value("graph_new_name", "")
         self.status(f"renamed to {name}")
         if self.app.edit_file == old_cpp:
             self.app.edit_file = new_cpp if new_cpp in proj.effect_files() else None
@@ -1502,7 +1501,7 @@ class GraphPanel:
             if n["type"] == "Image":
                 row("convert to Bitmap + Colour pick", lambda: self.image_to_bitmap(nid))
             if dpg.get_selected_nodes("node_editor"):
-                row("fold selection into a sub-graph", lambda: self.make_sub_from_selection(dpg.get_value("graph_new_name")))
+                row("fold selection into a sub-graph", lambda: self.make_sub_from_selection(None))
                 row("copy selection", self.copy)
                 row("cut selection", self.cut)
             row("duplicate", lambda: self._dup(nid))
@@ -1966,37 +1965,17 @@ class GraphPanel:
 
 def build_panel(app, panel):
     """The graph pane's widgets. Called once from build()."""
+    # One row: which graph, and the status line. Everything else is on the
+    # menus and the toolbar (chrome.py) or the right-click menu.
     with dpg.group(horizontal=True):
         dpg.add_button(label="< back", tag="graph_back", show=False, callback=lambda: panel.back())
-        dpg.add_combo(panel.files(), tag="graph_file", width=170, default_value=panel.file or "",
+        dpg.add_combo(panel.files(), tag="graph_file", width=220, default_value=panel.file or "",
                       callback=lambda s, v: panel.open(v))
-        dpg.add_button(label="save", callback=lambda: panel.save())
-        dpg.add_button(label="compile + reload", callback=lambda: panel.compile())
-        dpg.add_checkbox(label="live", tag="graph_auto", default_value=panel.auto,
-                         callback=lambda s, v: panel.set_auto(v))
-        dpg.add_button(label="open as code", callback=lambda: app.open_graph_code())
-    with dpg.group(horizontal=True):
-        dpg.add_input_text(tag="graph_new_name", hint="new / renamed graph name", width=170,
-                           on_enter=True, callback=lambda s, v: panel.new(v))
-        dpg.add_button(label="new", callback=lambda: panel.new(dpg.get_value("graph_new_name")))
-        dpg.add_button(label="rename", callback=lambda: panel.rename(dpg.get_value("graph_new_name")))
-        dpg.add_button(label="import to list", tag="graph_import",
-                       callback=lambda: panel.import_effect())
-    with dpg.group(horizontal=True):
-        dpg.add_combo(panel.type_names(), tag="graph_add_type", width=190, default_value="generate / Noise",
-                      callback=lambda s, v: dpg.set_value("graph_status",
-                                                          panel.lib.get(v.split(" / ", 1)[1], {}).get("doc", "")))
-        dpg.add_button(label="add node", callback=lambda: panel.add_node(dpg.get_value("graph_add_type").split(" / ", 1)[1]))
-        dpg.add_button(label="delete selected", callback=lambda: panel.delete_selected())
-        dpg.add_button(label="fold into sub-graph",
-                       callback=lambda: panel.make_sub_from_selection(dpg.get_value("graph_new_name")))
-        dpg.add_button(label="export graph", callback=lambda: panel.export_bundle())
-        dpg.add_button(label="import graph", callback=lambda: dpg.show_item("graph_import_dialog"))
+        dpg.add_text("", tag="graph_status", color=DIM)
     with dpg.file_dialog(directory_selector=False, show=False, tag="graph_import_dialog", width=620, height=420,
                          callback=lambda s, a: panel.import_bundle(a.get("file_path_name", ""))):
         dpg.add_file_extension(".json", color=(120, 200, 120))
         dpg.add_file_extension(".*")
-    dpg.add_text("", tag="graph_status", color=DIM)
     dpg.add_text("", tag="graph_help", color=(170, 178, 192), wrap=0)
     with dpg.child_window(tag="graph_props", show=False, height=170, border=True):
         pass

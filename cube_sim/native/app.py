@@ -40,10 +40,12 @@ from native.geometry import Geometry, KINDS
 from native.project import (default_project, Project, list_projects, project_path, remember_project, PROJECTS,
                             load_prefs, save_prefs)
 from native.graph_ui import GraphPanel, build_panel
+from native import chrome
 from native import render, gif
 from native.apiref import API
 import shutil
 import subprocess
+import sys
 
 STEP = 23
 CUBE_MAX = 620          # cube render cost is quadratic in this, so it is capped
@@ -532,7 +534,6 @@ class App:
         if os.path.isdir(path):
             self.switch_project(path); return
         self.switch_project(path, create=True)
-        dpg.set_value("project_name", "")
 
     def refresh_project_list(self):
         if dpg.does_item_exist("project_combo"):
@@ -680,12 +681,9 @@ class App:
         dpg.set_value("edit_status", f"copied: {label} - Ctrl+V to paste at the cursor")
 
     def refresh_import_buttons(self):
-        """The import buttons say what pressing them does to the current file."""
-        for tag, fname in (("edit_import", self.edit_file), ("graph_import", self.gp.effect_file())):
-            if dpg.does_item_exist(tag):
-                on = bool(fname) and self.project.is_imported(fname)
-                dpg.configure_item(tag, label="remove from list" if on else "import to list",
-                                   enabled=bool(fname))
+        """The File menu says what it will do to the current file, and its
+        open lists follow the project."""
+        chrome.refresh_files(self)
 
     def toggle_import(self, fname):
         """A draft joins the effects list, or leaves it. Either way the engine
@@ -706,25 +704,23 @@ class App:
         if self.edit_file and self.project.effect_title(self.edit_file) not in self.eng.names:
             self.edit_build()
 
-    def edit_rename(self):
-        """The current effect takes the name typed in the new-name box."""
-        title = (dpg.get_value("new_name") or "").strip()
+    def edit_rename(self, title):
+        """The current effect takes a new name."""
+        title = (title or "").strip()
         if not title or not self.edit_file:
-            dpg.set_value("edit_status", "type the new name in the box first")
+            dpg.set_value("edit_status", "a name is needed to rename")
             return
         if self.edit_dirty:
             self.edit_save()
         new = self.project.rename_effect(self.edit_file, title)
-        dpg.set_value("new_name", "")
         self.edit_open(new)
         dpg.set_value("edit_status", f"renamed to {title} ({new})")
         self.edit_build()
 
-    def edit_new(self):
-        title = (dpg.get_value("new_name") or "").strip() or "New Effect"
+    def edit_new(self, title=None):
+        title = (title or "").strip() or "New Effect"
         fname = self.project.new_effect(title)
         self.edit_open(fname)
-        dpg.set_value("new_name", "")
 
     def edit_save(self):
         if not self.edit_file:
@@ -910,6 +906,163 @@ class App:
         """
         self._need_layout = True
 
+    # --- what the menus and the toolbar call ------------------------------------------
+    # Each is "the current thing": the graph when the graph pane is up, the
+    # code when the code pane is, and the graph otherwise - it is the
+    # primary editor. A pane's own row keeps only what names the thing in it.
+    def current_file(self):
+        """The effect file the current pane is about, or None."""
+        if self.layout == "edit":
+            return self.edit_file
+        return self.gp.effect_file() or self.edit_file
+
+    def save_current(self):
+        if self.layout == "edit":
+            self.edit_save()
+        else:
+            self.gp.save()
+            if self.edit_dirty:
+                self.edit_save()
+
+    def build_current(self):
+        if self.layout == "edit":
+            self.edit_build()
+        elif self.gp.graph:
+            self.gp.compile()
+        else:
+            self.edit_build()
+
+    def new_effect(self, kind=None):
+        kind = kind or ("code" if self.layout == "edit" else "graph")
+        if kind == "code":
+            chrome.ask(self, "New code effect", "a name for the effect", "", lambda v: (
+                self.edit_new(v), self.show_layout("edit")))
+        else:
+            chrome.ask(self, "New graph effect", "a name for the effect", "", lambda v: (
+                self.gp.new(v), self.show_layout("graph")))
+
+    def rename_current(self):
+        if self.layout == "edit" and self.edit_file:
+            chrome.ask(self, "Rename effect", "the new name", self.project.effect_title(self.edit_file),
+                       lambda v: self.edit_rename(v))
+        elif self.gp.graph:
+            chrome.ask(self, "Rename graph", "the new name", self.gp.graph.name, lambda v: self.gp.rename(v))
+
+    def toggle_import_current(self):
+        f = self.current_file()
+        if f and f not in self.project.effect_files() and self.gp.graph:
+            self.gp.compile()             # a graph never built has no .cpp yet
+        self.toggle_import(f)
+
+    def open_graph(self, fname):
+        self.gp.open(fname)
+        self.show_layout("graph")
+
+    def open_code(self, fname):
+        self.edit_open(fname)
+        self.ensure_built()
+        self.show_layout("edit")
+
+    def show_layout(self, which):
+        """A pane by name, controls shown - the menu and toolbar route."""
+        if which in ("net", "cube", "both"):
+            self.layout = which
+        else:
+            self.layout = which
+        self.ui = True
+        self.request_layout()
+
+    def toggle_ui(self):
+        self.ui = not self.ui
+        self.request_layout()
+
+    def toggle_play(self):
+        self.playing = not self.playing
+
+    def step_once(self):
+        self.audio_push(); self.eng.frame(STEP)
+
+    def duplicate_selected(self):
+        sel = self.gp._selected()
+        if sel:
+            self.gp._dup(sel[0], True)
+
+    def search_nodes(self):
+        """The add menu, at the middle of the graph pane."""
+        if self.layout != "graph":
+            self.show_layout("graph")
+            self.relayout()
+        if dpg.does_item_exist("node_editor"):
+            x, y = dpg.get_item_rect_min("node_editor")
+            w, h = dpg.get_item_rect_size("node_editor")
+            self.gp._menu_pos = self.gp._to_graph((x + w * 0.4, y + h * 0.3))
+            self.gp.show_add_menu((x + w * 0.4, y + h * 0.3))
+
+    def add_node_from_menu(self, type_):
+        if self.layout != "graph":
+            self.show_layout("graph")
+        self.gp.add_node(type_)
+
+    def enter_selected_sub(self):
+        sel = self.gp._selected()
+        if sel:
+            self.gp.enter_sub(sel[0])
+        else:
+            self.gp.status("select a sub-graph node first")
+
+    def focus_find(self):
+        self.show_layout("edit")
+        if dpg.does_item_exist("find_text"):
+            dpg.focus_item("find_text")
+
+    def show_api(self):
+        self.show_layout("edit")
+        if dpg.does_item_exist("api_header"):
+            dpg.set_value("api_header", True)
+
+    def export_usermod(self):
+        msg = "exported to " + self.project.export()
+        dpg.set_value("edit_status", msg); self.gp.status(msg)
+
+    def save_device(self):
+        self.project.options["device"] = dpg.get_value("device_host")
+        self.project.save()
+
+    def save_editor_cmd(self, cmd):
+        cmd = (cmd or "").strip()
+        if cmd:
+            self.project.options["editor"] = cmd
+        else:
+            self.project.options.pop("editor", None)
+        self.project.save()
+
+    def reset_layout(self):
+        self.splits = {"both": 0.5, "edit": 0.55, "graph": 0.7}
+        self.side_w = SIDE_W
+        self.prefs.pop("splits", None); self.prefs.pop("side_w", None)
+        save_prefs(self.prefs)
+        self.request_layout()
+
+    @staticmethod
+    def build_dir():
+        return os.path.join(os.path.dirname(PROJECTS), "build", "latest")
+
+    @staticmethod
+    def doc_path(name):
+        return os.path.join(os.path.dirname(PROJECTS), name)
+
+    def reveal(self, path):
+        """Open a file or folder with whatever the system uses for it."""
+        try:
+            if os.name == "nt":
+                os.startfile(path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception as e:
+            self.gp.status(f"could not open {path}: {e}")
+
     def relayout(self):
         """Size both views to whatever the window currently is.
 
@@ -941,8 +1094,15 @@ class App:
             # The footer is measured rather than assumed; before the first
             # frame it has no size yet and 102 px is what it comes to.
             fh = dpg.get_item_rect_size("footer")[1] if dpg.does_item_exist("footer") else 0
-            fh = fh if fh > 0 else 102
-            pane_h = max(VIEW_MIN, vh - 10 - fh - 8 - 10 - 34)
+            fh = fh if fh > 0 else 48
+            # The menu bar and the toolbar sit above the panes; where the
+            # toolbar ends is measured, since the menu bar's height is the
+            # font's business. Before the first frame it has no size: 59 px
+            # is what it comes to.
+            tb_y = dpg.get_item_rect_min("toolbar")[1] if dpg.does_item_exist("toolbar") else 0
+            tb_h = dpg.get_item_rect_size("toolbar")[1] if dpg.does_item_exist("toolbar") else 0
+            top = (tb_y + tb_h + 6) if tb_h > 0 else 59
+            pane_h = max(VIEW_MIN, vh - top - fh - 8 - 10 - 34)
             avail  = vw - self.side_w - (22 * nview + 24) - (8 * nview)   # splitter handles
             if nview == 2:
                 left_w = int(max(VIEW_MIN, min(avail - VIEW_MIN, avail * split)))
@@ -966,6 +1126,11 @@ class App:
         dpg.configure_item("edit_win", show=show_edit)
         dpg.configure_item("graph_win", show=show_graph)
         dpg.configure_item("side_win", show=self.ui)
+        # The menu bar is the window's: a hidden mvMenuBar still draws its
+        # strip, the window flag takes it away.
+        dpg.configure_item("root", menubar=self.ui)
+        if dpg.does_item_exist("toolbar"):
+            dpg.configure_item("toolbar", show=self.ui)
         dpg.configure_item("split_a", show=self.ui and nview == 2)
         dpg.configure_item("split_b", show=self.ui)
 
@@ -978,9 +1143,9 @@ class App:
             dpg.configure_item(tag, border=self.ui)
         # The captions, the readout and the key hints are UI too - a clean
         # picture means nothing left over the top of it.
-        for tag in ("net_cap", "cube_cap", "stat_txt", "hint1", "hint2",
-                    "rec_btn", "shot_btn", "rec_msg"):
+        for tag in ("net_cap", "cube_cap", "stat_txt", "hint1"):
             dpg.configure_item(tag, show=self.ui)
+        chrome.refresh(self)
 
         # The net is upscaled by a WHOLE number so the LED grid stays hard;
         # bilinear scaling of a 48-pixel image looks like a photograph of a cube
@@ -1005,7 +1170,7 @@ class App:
             dpg.configure_item("net_win", width=side_l + 22, height=pane_h + 34)
             dpg.configure_item("cube_win", width=side + 22, height=pane_h + 34)
             dpg.configure_item("edit_win", width=left_w + 22, height=pane_h + 34)
-            dpg.configure_item("code", width=left_w + 4, height=pane_h - 240)
+            dpg.configure_item("code", width=left_w + 4, height=pane_h - 130)
             dpg.configure_item("graph_win", width=left_w + 22, height=pane_h + 34)
             dpg.configure_item("side_win", width=self.side_w - 10, height=pane_h + 34)
             for tag in ("split_a", "split_b"):
@@ -1150,7 +1315,11 @@ class App:
         if any(dpg.does_item_exist(t) and dpg.is_item_active(t) for t in self._inputs):
             return
         if any(dpg.does_item_exist(t) and dpg.is_item_active(t)
-               for t in ("find_text", "replace_text", "project_name", "device_host") + self.META_FIELDS):
+               for t in ("find_text", "replace_text", "device_host", "name_input", "editor_cmd") + self.META_FIELDS):
+            return
+        if dpg.does_item_exist("name_dialog") and dpg.is_item_shown("name_dialog"):
+            if app_data == dpg.mvKey_Escape:
+                dpg.hide_item("name_dialog")
             return
         if self.layout == "graph" and self.gp.typing():
             if app_data == dpg.mvKey_Return and dpg.does_item_exist("graph_search") and dpg.is_item_active("graph_search"):
@@ -1159,6 +1328,16 @@ class App:
                 self.gp._hide_menus()
             return
         ctrl = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
+        if ctrl and app_data == dpg.mvKey_S:
+            self.save_current(); return
+        if ctrl and app_data == dpg.mvKey_N:
+            self.new_effect(); return
+        if ctrl and app_data == dpg.mvKey_F:
+            self.focus_find(); return
+        if app_data == dpg.mvKey_F5:
+            self.build_current(); return
+        if app_data == dpg.mvKey_F2:
+            self.rename_current(); return
         if ctrl and self.layout == "graph":
             if app_data == dpg.mvKey_Z:
                 self.gp.undo()
@@ -1304,29 +1483,17 @@ def build(app):
         dpg.add_key_press_handler(callback=app.on_key)
 
     with dpg.window(tag="root", no_scroll_with_mouse=True):
+        chrome.build_menus(app)
+        chrome.build_toolbar(app)
         with dpg.group(horizontal=True):
             with dpg.child_window(tag="net_win", width=420, height=470):
                 dpg.add_text("Logical view - what the effect draws", tag="net_cap", color=(139, 147, 163))
             with dpg.child_window(tag="edit_win", width=420, height=470, show=False):
                 with dpg.group(horizontal=True):
-                    dpg.add_combo(app.project.effect_files(), tag="edit_file", width=180,
+                    dpg.add_combo(app.project.effect_files(), tag="edit_file", width=220,
                                   default_value=app.edit_file or "",
                                   callback=lambda s, v: (app.edit_open(v), app.ensure_built()))
-                    dpg.add_button(label="save", callback=lambda: app.edit_save())
-                    dpg.add_button(label="compile + reload", callback=lambda: app.edit_build())
-                with dpg.group(horizontal=True):
-                    dpg.add_input_text(tag="new_name", hint="new / renamed effect name", width=180,
-                                       on_enter=True, callback=lambda s, v: app.edit_new())
-                    dpg.add_button(label="new", callback=lambda: app.edit_new())
-                    dpg.add_button(label="rename", callback=lambda: app.edit_rename())
-                    dpg.add_button(label="import to list", tag="edit_import",
-                                   callback=lambda: app.toggle_import(app.edit_file))
-                with dpg.group(horizontal=True):
-                    dpg.add_button(label="open in editor", callback=lambda: app.open_external())
-                    dpg.add_checkbox(label="watch: rebuild when saved outside", tag="edit_watch", default_value=False)
-                    dpg.add_button(label="export", callback=lambda: dpg.set_value(
-                        "edit_status", "exported to " + app.project.export()))
-                dpg.add_text("", tag="edit_status", color=(139, 147, 163))
+                    dpg.add_text("", tag="edit_status", color=(139, 147, 163))
                 dpg.add_input_text(tag="code", multiline=True, width=400, height=300,
                                    tab_input=True, callback=app.on_code_edit)
                 with dpg.group(horizontal=True):
@@ -1344,7 +1511,8 @@ def build(app):
                     with dpg.group(horizontal=True):
                         dpg.add_button(label="read from file", callback=lambda: app.meta_read())
                         dpg.add_button(label="apply to file", callback=lambda: app.meta_write())
-                with dpg.collapsing_header(label="API reference - click copies, Ctrl+V pastes", default_open=False):
+                with dpg.collapsing_header(label="API reference - click copies, Ctrl+V pastes", default_open=False,
+                                           tag="api_header"):
                     for group, items in API:
                         with dpg.tree_node(label=group):
                             for label, snippet, doc in items:
@@ -1365,19 +1533,9 @@ def build(app):
                              tag="cube_cap", color=(139, 147, 163))
             dpg.add_button(label="", tag="split_b", width=8, height=470)
             with dpg.child_window(tag="side_win", width=app.side_w - 10, height=470):
-                with dpg.group(horizontal=True):
-                    dpg.add_combo(list_projects(), label="project", tag="project_combo", width=200,
-                                  default_value=os.path.basename(app.project.path),
-                                  callback=lambda s, v: app.switch_project(v))
-                with dpg.group(horizontal=True):
-                    dpg.add_input_text(tag="project_name", hint="new project name or a folder", width=200,
-                                       on_enter=True, callback=lambda s, v: app.new_project(v))
-                    dpg.add_button(label="new / open", callback=lambda: app.new_project(dpg.get_value("project_name")))
-                with dpg.group(horizontal=True):
-                    dpg.add_input_text(tag="device_host", hint="device address, e.g. 192.168.1.50", width=200,
-                                       default_value=app.project.options.get("device", ""))
-                    dpg.add_button(label="send ledmap", callback=lambda: app.send_ledmap())
-                dpg.add_separator()
+                dpg.add_combo(list_projects(), label="project", tag="project_combo", width=200,
+                              default_value=os.path.basename(app.project.path),
+                              callback=lambda s, v: app.switch_project(v))
                 dpg.add_combo(app.eng.names, label="effect", tag="fx_combo",
                               default_value=app.eng.names[app.eng.idx], width=200,
                               callback=app.on_effect)
@@ -1422,13 +1580,6 @@ def build(app):
                                                     ("tertiary",  (0, 0, 0, 255)))):
                     dpg.add_color_edit(_rgb, label=_lbl, width=170, no_alpha=True,
                                        user_data=_ci, callback=app.on_color)
-                with dpg.group(horizontal=True):
-                    dpg.add_button(label="play/pause",
-                                   callback=lambda: setattr(app, "playing", not app.playing))
-                    dpg.add_button(label="step",
-                                   callback=lambda: (app.audio_push(), app.eng.frame(STEP)))
-                    dpg.add_button(label="restart fx",
-                                   callback=lambda: app.eng.select(app.eng.idx))
                 dpg.add_separator()
                 dpg.add_text("Parameters")
                 dpg.add_group(tag="params")
@@ -1477,16 +1628,10 @@ def build(app):
                 dpg.add_progress_bar(tag="lvl_bar", default_value=0.0, width=280)
                 dpg.add_text("", tag="live_msg", wrap=300)
         with dpg.group(tag="footer"):
-          with dpg.group(horizontal=True):
-            dpg.add_button(label="record 15 s GIF", tag="rec_btn",
-                           callback=lambda: app.start_rec(15.0))
-            dpg.add_button(label="screenshot", tag="shot_btn", callback=lambda: setattr(app, "shot_req", True))
-            dpg.add_text("", tag="rec_msg", color=(139, 147, 163))
           dpg.add_text("", tag="stat_txt")
-          dpg.add_text("Q net    E 3-D    W both    C code    G graph    H hide UI", tag="hint1",
-                     color=(130, 140, 155))
-          dpg.add_text("space = play/pause    F11 = fullscreen window", tag="hint2",
-                     color=(130, 140, 155))
+          dpg.add_text("Q net    E 3-D    W both    C code    G graph    H presentation    space play/pause    "
+                       "Help > Keyboard shortcuts has the rest", tag="hint1", color=(130, 140, 155))
+    chrome.build_dialogs(app)
 
     app._themes['normal'] = apply_theme()
     app._themes['present'] = present_theme()
@@ -1559,12 +1704,19 @@ def service_command(app):
                 app.on_effect(None, c["effect"])
                 dpg.set_value("fx_combo", c["effect"])
             if c.get("measure"):                        # test hook: print pane and content sizes
-                for t in ("root", "net_win", "cube_win", "edit_win", "graph_win", "side_win", "footer", "node_editor"):
+                for t in ("root", "toolbar", "net_win", "cube_win", "edit_win", "graph_win", "side_win", "footer", "node_editor"):
                     if dpg.does_item_exist(t):
                         print("measure", t, "pos", dpg.get_item_pos(t), "size", dpg.get_item_rect_size(t),
                               "conf", dpg.get_item_configuration(t).get("height"))
                 print("measure viewport", dpg.get_viewport_client_width(), dpg.get_viewport_client_height(),
                       "footer rect", dpg.get_item_rect_min("footer"), dpg.get_item_rect_max("footer"))
+            if "chrome" in c:                           # test hook: a chrome action by name
+                {"new": lambda: app.new_effect(), "rename": app.rename_current, "open": lambda: chrome.show_open(app),
+                 "device": lambda: chrome.show_device(app), "editor": lambda: chrome.show_editor(app),
+                 "shortcuts": lambda: dpg.show_item("shortcuts_win"), "about": lambda: dpg.show_item("about_win"),
+                 "search": app.search_nodes, "name_ok": lambda: chrome._name_ok(app)}[c["chrome"]]()
+            if "name_text" in c:
+                dpg.set_value("name_input", c["name_text"])
             if "graph_zoom" in c:                       # test hook: zoom level, optionally about a screen point
                 z = c["graph_zoom"]
                 app.gp.set_zoom(z[0], tuple(z[1])) if isinstance(z, list) else app.gp.set_zoom(z)
@@ -1582,7 +1734,7 @@ def service_command(app):
             if "open" in c:
                 app.edit_open(c["open"])
             if "new" in c:
-                dpg.set_value("new_name", c["new"]); app.edit_new()
+                app.edit_new(c["new"])
             if "code" in c:
                 dpg.set_value("code", c["code"]); app.edit_dirty = True
             if c.get("build"):
@@ -1618,7 +1770,7 @@ def service_command(app):
                 if f and app.project.is_imported(f):
                     app.toggle_import(f)
             if "rename" in c:
-                dpg.set_value("new_name", c["rename"]); app.edit_rename()
+                app.edit_rename(c["rename"])
             if "graph_rename" in c:
                 app.gp.rename(c["graph_rename"])
             if "project" in c:
@@ -1692,7 +1844,7 @@ def service_command(app):
             if "graph_paste" in c:
                 app.gp.paste()
             if "graph_auto" in c:
-                app.gp.set_auto(c["graph_auto"]); dpg.set_value("graph_auto", bool(c["graph_auto"]))
+                app.gp.set_auto(bool(c["graph_auto"]))
             if "graph_menu" in c:                       # test hook: the right-click menu at x, y
                 app.gp._menu_pos = tuple(c["graph_menu"])
                 app.gp._pending = None
@@ -1802,6 +1954,7 @@ def main():
                 app.poll_build()
                 app.gp.poll()
                 app.poll_watch()
+                chrome.poll(app)
                 app.step_sim()
                 app.draw()
             except Exception:

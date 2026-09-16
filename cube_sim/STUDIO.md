@@ -66,11 +66,11 @@ the geometry hands it; the effect code never knows the difference.
    an `export/` that receives the usermod folder and the ledmap.
 6. **Drafts and the effects list.** A file in `effects/` is a draft: it is
    built, and shows in the roster, only while it is the one being edited, so
-   trying things does not pile effects into the list. "import to list" (code
-   or graph pane) makes it a project effect — always built, in the roster,
-   exported; the same button removes it again. "rename" gives the current
-   effect (or graph) a new title, file name and identifiers; a renamed
-   sub-graph is rewritten in every graph that uses it.
+   trying things does not pile effects into the list. File > "Add to the
+   effects list" makes it a project effect — always built, in the roster,
+   exported; the same item removes it again. File > Rename (F2) gives the
+   current effect (or graph) a new title, file name and identifiers; a
+   renamed sub-graph is rewritten in every graph that uses it.
 
 ### Phase 2 — the node graph (done, first pass)
 
@@ -89,8 +89,8 @@ is the same JSON in `<project>/nodes/`. `native/graph.py` compiles a graph to
 one ordinary effect file — a topological sort, frame-scope nodes hoisted out
 of the pixel loop (a Multiply of two sliders is not 1,280 multiplies), types
 checked, defaults for unconnected pins — and it goes through the same build
-and reload as a hand-written one. "Open as code" hands the generated file to
-the code pane for anything the nodes cannot reach.
+and reload as a hand-written one. File > "Open graph as code" hands the
+generated file to the code pane for anything the nodes cannot reach.
 
 What the library reached by rebuilding twenty of the cube_fx effects as
 graphs (`examples/build_examples.py` writes them; `--check` compiles, builds
@@ -184,8 +184,8 @@ native/nodedocs.py` writes the whole reference as `NODES.md` - and refuses,
 naming them, while any node or pin is undocumented; the examples' `--check`
 refuses the same way. A new node is not finished until both pass.
 
-Sub-graphs: select some nodes and "fold into sub-graph" (toolbar or the
-node's right-click menu) and they become one node. Each wire that crossed the
+Sub-graphs: select some nodes and fold them (the toolbar, Edit > "Fold into
+sub-graph", or the node's right-click menu) and they become one node. Each wire that crossed the
 boundary becomes a pin — a "Graph input" node inside for every incoming one,
 a "Graph output" for every outgoing — named after the pin it fed, and the
 parent is rewired through the new node. The sub-graph is a file in
@@ -196,7 +196,7 @@ on the node, and a stale wire in a parent is dropped when it next opens. A
 sub-graph previews on its own: its first colour output stands in for Output.
 Compiling inlines the sub-graph wherever it is used — no call, no cost.
 
-Live preview: the "live" checkbox beside "compile + reload" rebuilds after
+Live preview: the bolt on the toolbar (Playback > Live) rebuilds after
 every edit — a wire, a value on a pin, a param, a new node — once the edits
 pause for half a second. The build runs on the worker while the 3-D view
 keeps showing the previous one, and the hot swap keeps the sliders, palette
@@ -290,7 +290,8 @@ editor. Ticked when done; the order within a group is the order to do them.
 ### Project and workflow
 
 - [x] **Multiple projects**: a project picker at the top of the side panel
-      lists `projects/`; the box takes a new name or any folder path. The
+      lists `projects/`; File > Project makes a new one by name, opens one
+      by name or picks any folder. The
       last project opened is remembered (`projects/studio.json`) and opens
       next time. Switching applies the project's geometry, effects list and
       graphs and rebuilds the engine for its list.
@@ -306,19 +307,32 @@ editor. Ticked when done; the order within a group is the order to do them.
       colour-slot labels; the compiler writes the whole string. Code: a
       Metadata form under the code pane reads the string out of the file by
       field and writes it back.
-- [x] **Graph import / export**: "export graph" writes
+- [x] **Graph import / export**: File > "Export graph bundle" writes
       `export/<graph>.graph.json` with every sub-graph it reaches and any
-      user nodes it uses; "import graph" (file dialog) unpacks one into the
-      project, keeping existing sub-graphs of the same name.
+      user nodes it uses; "Import graph bundle" (file dialog) unpacks one
+      into the project, keeping existing sub-graphs of the same name.
 - [x] **Export as a deliverable**: `export/` holds `ledmap.json`, a
       `usermod_studio/` folder that builds on its own (effects, the two
       headers, the bank's .cpp, a library.json, a README with the build
-      steps), and `studio_export.zip` of the lot. **send ledmap** uploads
-      ledmap.json to a device over `/upload` from the address in the side
-      panel (remembered per project).
-- [x] **Record GIF** works in every layout (the button under the views);
+      steps), and `studio_export.zip` of the lot (File > Project > Export
+      usermod). **Send ledmap** uploads ledmap.json to a device over
+      `/upload`, to the address set under File > Project > Device
+      (remembered per project).
+- [x] **Record GIF** works in every layout (the toolbar, or File);
       **screenshot** saves the 3-D view to `export/shots/`. MP4 is not
       offered: it would need ffmpeg on the path for no gain over the GIF.
+- [x] **Menus and a toolbar** (`native/chrome.py`). File / Edit / View /
+      Node / Playback / Settings / Help, every action with its shortcut
+      beside it, as any editor has them; a toolbar of icons for the ones
+      used all day (new, open, save; build, live; undo, redo; play, step,
+      restart; the five views; zoom; add, delete, arrange, fold; external
+      editor, screenshot, GIF). The icons are drawn in code
+      (`native/icons.py`: strokes on a unit square, rasterised at 4x) so
+      they match the theme on every platform without an icon font. The
+      panes keep only what names the thing in them - which file, the
+      status line, find / replace under the code - and names are asked for
+      in a small dialog instead of a box on the pane. Presentation mode
+      (H) hides the menus and toolbar with the rest.
 
 ### Against Blender's node editors
 
@@ -415,8 +429,9 @@ python build.py --native-only                          # once; the app rebuilds 
 python -m native.app
 ```
 
-Keys: **G** node graph, **C** code pane, **Q** logical view, **E** 3-D, **W** both,
-**H** hide the controls, **space** pause. In the graph: **Delete** removes selected nodes,
+Every action is on the menus with its shortcut, and Help > Keyboard
+shortcuts lists them. Keys: **G** node graph, **C** code pane, **Q** logical view, **E** 3-D, **W** both,
+**H** hide the controls, **space** pause, **Ctrl+N / Ctrl+S / F2 / F5** new, save, rename, build. In the graph: **Delete** removes selected nodes,
 **Ctrl+Z / Ctrl+Y** undo / redo, **Ctrl+C / X / V** copy, cut, paste, **wheel / Ctrl+= / Ctrl+- / Ctrl+0** zoom,
 **M** mute, **Shift+D** duplicate with inputs, **Ctrl+L** arrange, **Ctrl+H** hide unwired pins, **F** connect two
 selected nodes, **Alt+click** detach a node. Projects live in `cube_sim/projects/<name>/`;
