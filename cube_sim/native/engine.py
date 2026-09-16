@@ -254,6 +254,16 @@ class Engine:
         self._colors = (int(c0) & 0xFFFFFF, int(c1) & 0xFFFFFF, int(c2) & 0xFFFFFF)
         self.lib.simColors(*self._colors)
 
+    def probe(self, i):
+        """A live value the generated effect reported (see graph.py's probes);
+        0 if this build has no probes."""
+        try:
+            f = self.lib.simProbeGet
+            f.restype = C.c_float
+            return float(f(int(i)))
+        except AttributeError:
+            return 0.0
+
     def audio(self, vol, peak):
         self.last_audio = (float(vol), int(peak))
         self.lib.simAudioSet(C.c_float(vol), int(peak))

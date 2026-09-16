@@ -473,9 +473,11 @@ class GraphPanel:
                 d = self.graph.node_def(n)
                 pins = d["inputs"] if kind == "in" else d["outputs"]
                 p = next((x for x in pins if x["name"] == name), None)
+                live = self.live_value(nid, kind, name)
                 what = (p or {}).get("doc", "")
                 arrow = "<-" if kind == "in" else "->"
-                self.help(f"{d.get('label') or n['type']} {arrow} {name} ({(p or {}).get('type', '')})" + (f": {what}" if what else ""))
+                self.help(f"{d.get('label') or n['type']} {arrow} {name} ({(p or {}).get('type', '')})"
+                          + (f" = {live}" if live is not None else "") + (f": {what}" if what else ""))
                 return
         for nid, n in self.graph.nodes.items():
             tag = f"gnode_{nid}"
@@ -996,6 +998,34 @@ class GraphPanel:
         else:
             self.graph.link_meta.pop((b, inp), None)
         self.touch()
+
+    def live_value(self, nid, kind, name):
+        """The value on a pin as the running effect has it, when the effect on
+        the cube is this graph's last build; an input's is its source's, or
+        its own setting when unwired. None when there is nothing to say."""
+        probes = getattr(self, "_probes", None)
+        if not probes or not self.graph:
+            return None
+        eng = self.app.eng
+        want = self.app.project.effect_title(getattr(self, "_probes_for", "") or "") if getattr(self, "_probes_for", None) else None
+        if not want or eng.names[eng.idx] != want:
+            return None
+        if kind == "in":
+            src = next(((l[0], l[1]) for l in self.graph.links if l[2] == nid and l[3] == name), None)
+            if src is None:
+                n = self.graph.nodes[nid]
+                v = n.get("inputs", {}).get(name) if isinstance(n.get("inputs"), dict) else None
+                return None if v is None else (f"{v:.3f}" if isinstance(v, float) else str(v))
+            nid, name = src
+        k = next((k for k, v in probes.items() if v == (nid, name)), None)
+        if k is None:
+            return None
+        v = eng.probe(k)
+        d = self.graph.node_def(self.graph.nodes[nid])
+        t = next((o["type"] for o in d["outputs"] if o["name"] == name), "float")
+        if t == "bool":
+            return "true" if v > 0.5 else "false"
+        return f"{v:.3f}" + ("" if getattr(self, "_probe_scope", {}).get(nid) == "frame" else " (centre pixel)")
 
     def _pin_point(self, nid, kind, name):
         """Where a pin's circle is on screen: an attribute reports no
@@ -2234,6 +2264,9 @@ class GraphPanel:
                 fname = self.PREVIEW_FILE
         try:
             src = (g or self.graph).compile()
+            self._probes = dict(getattr(g or self.graph, "probes", {}) or {})
+            self._probe_scope = dict(getattr(g or self.graph, "last_scope", {}) or {})
+            self._probes_for = fname
         except G.GraphError as e:
             self.status(f"graph: {e}")
             self._mark_problems()

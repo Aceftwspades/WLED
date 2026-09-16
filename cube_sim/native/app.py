@@ -2403,7 +2403,9 @@ def service_command(app):
                 else:
                     pins = d["inputs"] if kind == "in" else d["outputs"]
                     p = next(x for x in pins if x["name"] == name)
-                    app.gp.help(f"{n['type']} {'<-' if kind == 'in' else '->'} {name} ({p['type']}): {p.get('doc', '')}")
+                    live = app.gp.live_value(int(nid), kind, name)
+                    app.gp.help(f"{n['type']} {'<-' if kind == 'in' else '->'} {name} ({p['type']})"
+                                + (f" = {live}" if live is not None else "") + f": {p.get('doc', '')}")
             if "graph_image_convert" in c:
                 app.gp.image_to_bitmap(int(c["graph_image_convert"]))
             if "graph_preview" in c:

@@ -259,6 +259,14 @@ SIM_API void simColors(uint32_t c0, uint32_t c1, uint32_t c2) {
 
 SIM_API uint8_t *simFftPtr() { return gFft; }
 
+// Probes: the studio's generated effects report the value on each pin here
+// (frame-scope pins every frame, per-pixel ones at the centre pixel), so the
+// editor can show live values on hover. Compiled out of the firmware:
+// the calls sit behind CFX_SIM in the generated code.
+static float gProbe[256];
+SIM_API void simProbeSet(int i, float v) { if ((unsigned)i < 256u) gProbe[i] = v; }
+SIM_API float simProbeGet(int i) { return ((unsigned)i < 256u) ? gProbe[i] : 0.0f; }
+
 SIM_API void simAudioSet(float vol, int peak) {
   gVolume = vol; gPeak = (uint8_t)peak;
 }

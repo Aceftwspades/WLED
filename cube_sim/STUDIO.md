@@ -564,8 +564,12 @@ them within each group; ticked when done.
 
 ### Deferred from earlier lists
 
-- [ ] **Live values on pins** when hovered - needs a readback channel from
-      the compiled effect; pin preview covers one pin at a time.
+- [x] **Live values on pins**: the compiler puts a `GC_PROBE` after every
+      number-like output - frame-scope ones as they are, per-pixel ones at
+      the centre pixel - which the sim's `simProbeSet` records and the
+      firmware compiles to nothing; hovering a pin shows `= value` in the
+      help line while the effect on the cube is this graph's build (an
+      unwired input shows its setting).
 - [ ] **Preview thumbnails on nodes** - the same readback; a small picture
       on the node being previewed.
 - [ ] **An in-app code editor widget** - only if the external hand-off
