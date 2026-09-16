@@ -22,6 +22,9 @@ from native.keys import ACTIONS, FIXED
 TEXT   = (215, 219, 227, 255)
 DIM    = (139, 147, 163, 255)
 ACCENT = (90, 169, 230, 255)
+AMBER  = (255, 184, 70, 255)
+RED    = (255, 96, 96, 255)
+GREEN  = (110, 220, 150, 255)
 ICON   = 16
 
 LAYOUTS = (("net", "Logical net", "view_net"), ("cube", "3-D view", "view_cube"), ("both", "Net and 3-D", "view_both"),
@@ -174,7 +177,7 @@ def build_toolbar(app):
         _btn(app, "open", "Open a graph or a code effect", lambda: show_open(app), tag="tb_open", action="open")
         _btn(app, "save", "Save", lambda: app.save_current(), action="save")
         _sep()
-        _btn(app, "build", "Compile + reload", lambda: app.build_current(), action="build")
+        _btn(app, "build", "Compile + reload", lambda: app.build_current(), tag="tb_build", action="build")
         _btn(app, "live", "Live: rebuild the graph as it changes", lambda: app.gp.set_auto(not app.gp.auto), tag="tb_live", action="live")
         _sep()
         _btn(app, "undo", "Undo", lambda: app.gp.undo(), action="undo")
@@ -409,9 +412,11 @@ def refresh(app):
     dpg.set_value("menu_present", not app.ui)
     dpg.set_value("menu_side", app.side)
     dpg.set_value("menu_live", app.gp.auto)
-    dpg.configure_item("tb_live", tint_color=ACCENT if app.gp.auto else TEXT)
-    dpg.configure_item("tb_play", show=not app.playing)
+    dpg.configure_item("tb_live", tint_color=AMBER if app.gp.auto else TEXT)
+    dpg.configure_item("tb_build", tint_color=AMBER if app.building else TEXT)
+    dpg.configure_item("tb_play", show=not app.playing, tint_color=GREEN)
     dpg.configure_item("tb_pause", show=app.playing)
+    dpg.configure_item("rec_btn", tint_color=RED)
     dpg.configure_item("tb_zoom", label=f"{int(app.gp.zoom * 100)}%")
 
 

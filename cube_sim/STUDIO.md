@@ -333,6 +333,15 @@ editor. Ticked when done; the order within a group is the order to do them.
       status line, find / replace under the code - and names are asked for
       in a small dialog instead of a box on the pane. Presentation mode
       (H) hides the menus and toolbar with the rest.
+- [x] **A flat dark look with a few pops of colour.** Slabs on a panel, no
+      bevels or bright borders, the accent blue wherever something is on
+      (the active view, a checked box, a slider's grab), amber for live and
+      for a build in progress, green play, a red record dot, section titles
+      in the side panel in the accent. Selection is a turning angular
+      gradient frame (`native/glow.py`: one conic texture, four strips
+      whose texture coordinates rotate, plus a fainter glow outside) around
+      the pane last clicked in and around every selected node, clipped to
+      the editor. The views sit centred in their panes.
 - [x] **A keymap** (`native/keys.py`): every keyboard action with a default
       key and a context (anywhere / the graph), rebound under Settings >
       Keyboard shortcuts - click the key, press the new one; a key taken

@@ -40,7 +40,7 @@ from native.geometry import Geometry, KINDS
 from native.project import (default_project, Project, list_projects, project_path, remember_project, PROJECTS,
                             load_prefs, save_prefs)
 from native.graph_ui import GraphPanel, build_panel
-from native import chrome
+from native import chrome, glow
 from native.keys import Keymap, combo as key_combo
 from native import render, gif
 from native.apiref import API
@@ -55,53 +55,93 @@ VIEW_MIN = 180
 SIDE_W = 340            # control column
 
 
+SECTION = (90, 169, 230)          # section titles in the side panel
+
+
 def apply_theme():
     """A dark theme close to the browser build's, so switching between the two
     is not jarring. Default Dear PyGui is grey-blue and tightly packed; the
     views want to sit on near-black or the LED colours read wrong against it."""
-    bg      = (17, 19, 24)
-    panel   = (24, 27, 34)
-    line    = (42, 47, 58)
-    text    = (215, 219, 227)
-    dim     = (139, 147, 163)
+    bg      = (14, 16, 20)
+    panel   = (21, 24, 30)
+    frame   = (29, 33, 41)
+    line    = (36, 41, 50)
+    text    = (222, 226, 234)
+    dim     = (128, 137, 152)
     accent  = (90, 169, 230)
+    soft    = (90, 169, 230, 60)
     with dpg.theme() as th:
         with dpg.theme_component(dpg.mvAll):
+            # Flat: no bevels, no bright borders. A control is a slightly
+            # lighter slab on the panel; hovering lifts it, pressing or
+            # switching it on paints it the accent.
             for t, c in ((dpg.mvThemeCol_WindowBg, bg),
                          (dpg.mvThemeCol_ChildBg, panel),
-                         (dpg.mvThemeCol_PopupBg, panel),
+                         (dpg.mvThemeCol_PopupBg, (24, 27, 34)),
+                         (dpg.mvThemeCol_MenuBarBg, bg),
                          (dpg.mvThemeCol_Border, line),
+                         (dpg.mvThemeCol_BorderShadow, (0, 0, 0, 0)),
                          (dpg.mvThemeCol_Text, text),
                          (dpg.mvThemeCol_TextDisabled, dim),
-                         (dpg.mvThemeCol_FrameBg, (32, 36, 45)),
-                         (dpg.mvThemeCol_FrameBgHovered, (44, 50, 62)),
-                         (dpg.mvThemeCol_FrameBgActive, (52, 60, 74)),
-                         (dpg.mvThemeCol_Button, (38, 43, 54)),
-                         (dpg.mvThemeCol_ButtonHovered, (52, 62, 78)),
+                         (dpg.mvThemeCol_TextSelectedBg, soft),
+                         (dpg.mvThemeCol_FrameBg, frame),
+                         (dpg.mvThemeCol_FrameBgHovered, (38, 44, 54)),
+                         (dpg.mvThemeCol_FrameBgActive, (46, 54, 66)),
+                         (dpg.mvThemeCol_Button, (34, 39, 48)),
+                         (dpg.mvThemeCol_ButtonHovered, (46, 54, 68)),
                          (dpg.mvThemeCol_ButtonActive, accent),
                          (dpg.mvThemeCol_SliderGrab, accent),
-                         (dpg.mvThemeCol_SliderGrabActive, (130, 195, 245)),
+                         (dpg.mvThemeCol_SliderGrabActive, (140, 200, 250)),
                          (dpg.mvThemeCol_CheckMark, accent),
-                         (dpg.mvThemeCol_Header, (40, 48, 60)),
-                         (dpg.mvThemeCol_HeaderHovered, (52, 62, 78)),
+                         (dpg.mvThemeCol_Header, (34, 42, 54)),
+                         (dpg.mvThemeCol_HeaderHovered, (44, 54, 70)),
+                         (dpg.mvThemeCol_HeaderActive, (50, 70, 96)),
                          (dpg.mvThemeCol_TitleBg, panel),
-                         (dpg.mvThemeCol_TitleBgActive, panel),
-                         (dpg.mvThemeCol_ScrollbarBg, panel),
-                         (dpg.mvThemeCol_ScrollbarGrab, line),
+                         (dpg.mvThemeCol_TitleBgActive, (26, 30, 38)),
+                         (dpg.mvThemeCol_ScrollbarBg, (0, 0, 0, 0)),
+                         (dpg.mvThemeCol_ScrollbarGrab, (44, 50, 62)),
+                         (dpg.mvThemeCol_ScrollbarGrabHovered, (60, 68, 84)),
+                         (dpg.mvThemeCol_ScrollbarGrabActive, accent),
                          (dpg.mvThemeCol_Separator, line),
-                         (dpg.mvThemeCol_PlotHistogram, accent)):
+                         (dpg.mvThemeCol_ResizeGrip, (0, 0, 0, 0)),
+                         (dpg.mvThemeCol_NavHighlight, soft),
+                         (dpg.mvThemeCol_PlotHistogram, accent),
+                         (dpg.mvThemeCol_ModalWindowDimBg, (0, 0, 0, 140))):
                 dpg.add_theme_color(t, c, category=dpg.mvThemeCat_Core)
-            for t, v in ((dpg.mvStyleVar_FrameRounding, 4),
-                         (dpg.mvStyleVar_ChildRounding, 6),
-                         (dpg.mvStyleVar_GrabRounding, 4),
-                         (dpg.mvStyleVar_WindowRounding, 6),
-                         (dpg.mvStyleVar_ScrollbarRounding, 6)):
+            for t, v in ((dpg.mvStyleVar_FrameRounding, 3),
+                         (dpg.mvStyleVar_ChildRounding, 5),
+                         (dpg.mvStyleVar_GrabRounding, 3),
+                         (dpg.mvStyleVar_WindowRounding, 5),
+                         (dpg.mvStyleVar_PopupRounding, 4),
+                         (dpg.mvStyleVar_ScrollbarRounding, 4),
+                         (dpg.mvStyleVar_ScrollbarSize, 10),
+                         (dpg.mvStyleVar_GrabMinSize, 10),
+                         (dpg.mvStyleVar_FrameBorderSize, 0),
+                         (dpg.mvStyleVar_WindowBorderSize, 0),
+                         (dpg.mvStyleVar_ChildBorderSize, 1),
+                         (dpg.mvStyleVar_PopupBorderSize, 1)):
                 dpg.add_theme_style(t, v, category=dpg.mvThemeCat_Core)
             for t, a, b in ((dpg.mvStyleVar_WindowPadding, 10, 10),
                             (dpg.mvStyleVar_FramePadding, 7, 4),
                             (dpg.mvStyleVar_ItemSpacing, 8, 6),
+                            (dpg.mvStyleVar_ItemInnerSpacing, 6, 4),
                             (dpg.mvStyleVar_CellPadding, 6, 3)):
                 dpg.add_theme_style(t, a, b, category=dpg.mvThemeCat_Core)
+            # The node editor: the same slabs, a quieter grid, the accent
+            # for a box-select; a selected node's own frame is the gradient
+            # (glow.py), so its title only lifts a little.
+            for t, c in ((dpg.mvNodeCol_GridBackground, (17, 19, 24)),
+                         (dpg.mvNodeCol_GridLine, (27, 30, 37)),
+                         (dpg.mvNodeCol_NodeBackground, (29, 33, 41)),
+                         (dpg.mvNodeCol_NodeBackgroundHovered, (34, 39, 48)),
+                         (dpg.mvNodeCol_NodeBackgroundSelected, (36, 42, 52)),
+                         (dpg.mvNodeCol_NodeOutline, (44, 50, 62)),
+                         (dpg.mvNodeCol_TitleBar, (40, 46, 58)),
+                         (dpg.mvNodeCol_TitleBarHovered, (50, 58, 72)),
+                         (dpg.mvNodeCol_TitleBarSelected, (56, 68, 88)),
+                         (dpg.mvNodeCol_BoxSelector, (90, 169, 230, 30)),
+                         (dpg.mvNodeCol_BoxSelectorOutline, (90, 169, 230, 180))):
+                dpg.add_theme_color(t, c, category=dpg.mvThemeCat_Nodes)
     dpg.bind_theme(th)
     return th
 
@@ -161,6 +201,8 @@ class App:
         self.splits.update({k: float(v) for k, v in self.prefs.get("splits", {}).items() if k in self.splits})
         self.side_w = int(self.prefs.get("side_w", SIDE_W))
         self.side = True             # the side panel shown (Ctrl+Shift+H hides it)
+        self.focus = None            # the pane last clicked in: it wears the frame
+        self.frames = None           # glow.Frames, once the viewport exists
         self.keys = Keymap(self.prefs)
         self._capture = None         # an action waiting for its key, in the shortcuts dialog
         self._split_drag = None      # ("a"|"b", mouse x at press, value at press) while a splitter is held
@@ -1203,6 +1245,22 @@ class App:
             self.remake_net_texture()
         if show_cube:
             self.remake_cube_texture()
+        self.centre_views()
+
+    def centre_views(self):
+        """A view sits in the middle of its pane, not in its top-left corner:
+        the panes are as tall as the window, the pictures are square."""
+        for win, img in (("net_win", "net_img"), ("cube_win", "cube_img")):
+            if not (dpg.does_item_exist(win) and dpg.does_item_exist(img)):
+                continue
+            cw = dpg.get_item_configuration(win).get("width") or 0
+            ch = dpg.get_item_configuration(win).get("height") or 0
+            iw = dpg.get_item_configuration(img).get("width") or 0
+            ih = dpg.get_item_configuration(img).get("height") or 0
+            if not (cw and ch and iw and ih):
+                continue
+            top = 36 if self.ui else 0                    # the caption row
+            dpg.configure_item(img, pos=(max(0, (cw - iw) // 2), top + max(0, (ch - top - ih) // 2)))
 
     def remake_net_texture(self):
         img = self.net_image()
@@ -1215,7 +1273,7 @@ class App:
         with dpg.texture_registry():
             dpg.add_raw_texture(w, h, np.zeros(w * h * 4, np.float32),
                                 format=dpg.mvFormat_Float_rgba, tag="net_tex")
-        dpg.add_image("net_tex", tag="net_img", parent="net_win")
+        dpg.add_image("net_tex", tag="net_img", parent="net_win", width=w, height=h)
         self._bufs.pop("net", None)
 
     def remake_cube_texture(self):
@@ -1255,6 +1313,10 @@ class App:
         if dpg.is_item_hovered("cube_img"):
             self._dragging = True
             self._yaw0, self._pitch0 = self.yaw, self.pitch
+        for tag in ("net_win", "cube_win", "edit_win", "graph_win", "side_win"):
+            if dpg.does_item_exist(tag) and dpg.is_item_shown(tag) and dpg.is_item_hovered(tag):
+                self.focus = tag
+                break
         if self.layout == "graph":
             self.gp.on_press()
 
@@ -1410,6 +1472,53 @@ class App:
         fn = table.get(action)
         if fn:
             fn()
+
+    @staticmethod
+    def _screen_rect(tag):
+        """(x0, y0, x1, y1) on screen, or None. A child window reports no
+        rect_min; its pos is in the root window, which is the screen."""
+        if not dpg.does_item_exist(tag):
+            return None
+        st = dpg.get_item_state(tag)
+        w, h = st.get("rect_size", (0, 0))
+        if w <= 0 or h <= 0:
+            return None
+        x, y = st.get("rect_min") or dpg.get_item_pos(tag)
+        return (x, y, x + w, y + h)
+
+    def poll_glow(self):
+        """The gradient frames: the pane in focus, and the selected nodes
+        (clipped to the editor). None while presenting, or while a menu is
+        up over the graph - the frame would draw over it."""
+        if self.frames is None:
+            return
+        rects = []
+        if self.ui:
+            shown = [t for t in ("graph_win", "edit_win", "net_win", "cube_win", "side_win")
+                     if dpg.does_item_exist(t) and dpg.is_item_shown(t)]
+            if self.focus not in shown:
+                self.focus = shown[0] if shown else None
+            if self.focus:
+                r = self._screen_rect(self.focus)
+                if r:
+                    rects.append(r + (None, 0.55))
+            pane = self._screen_rect("graph_win")
+            if self.layout == "graph" and self.gp.graph and pane and dpg.does_item_exist("node_editor") \
+                    and not (dpg.is_item_shown("graph_menu") or dpg.is_item_shown("graph_ctx")):
+                # The editor reports no position of its own; it is the
+                # bottom of its pane, its height from its size.
+                eh = dpg.get_item_rect_size("node_editor")[1]
+                clip = (pane[0] + 9, pane[3] - 9 - eh, pane[2] - 9, pane[3] - 9)
+                pad = self.gp.px(8)
+                for nid in self.gp._selected()[:8]:
+                    tag = f"gnode_{nid}"
+                    if not dpg.does_item_exist(tag):
+                        continue
+                    st = dpg.get_item_state(tag)
+                    (x0, y0), (x1, y1) = st.get("rect_min", (0, 0)), st.get("rect_max", (0, 0))
+                    if x1 > x0 and y1 > y0:          # the content rect; the node is a padding wider
+                        rects.append((x0 - pad, y0 - pad, x1 + pad, y1 + pad, clip, 1.0))
+        self.frames.update(rects)
 
     def toggle_pane(self, which):
         """C and G: the pane, or back to the two views if it is already up."""
@@ -1590,7 +1699,7 @@ def build(app):
                               default_value=app.palette_name_for(app.eng.pal_source),
                               callback=app.on_pal_source)
                 dpg.add_separator()
-                dpg.add_text("Geometry")
+                dpg.add_text("GEOMETRY", color=SECTION)
                 dpg.add_combo(list(KINDS), label="shape", tag="geom_kind", width=120,
                               default_value=app.project.geometry.kind, callback=app.on_geom_kind)
                 dpg.add_group(tag="geom_fields")
@@ -1621,10 +1730,10 @@ def build(app):
                     dpg.add_color_edit(_rgb, label=_lbl, width=170, no_alpha=True,
                                        user_data=_ci, callback=app.on_color)
                 dpg.add_separator()
-                dpg.add_text("Parameters")
+                dpg.add_text("PARAMETERS", color=SECTION)
                 dpg.add_group(tag="params")
                 dpg.add_separator()
-                dpg.add_text("Audio")
+                dpg.add_text("AUDIO", color=SECTION)
                 dpg.add_group(tag="audio_rows")
                 for key, lab, val, lo, hi, attr in (
                         ("vol",  "volume", 90,  0,  255, "vol"),
@@ -1684,6 +1793,7 @@ def build(app):
     if gfiles:
         app.gp.open(gfiles[0])
     dpg.set_primary_window("root", True)
+    app.frames = glow.Frames()
     # Callbacks are taken off Dear PyGui's own schedule and run at the top of
     # each pass of the loop below, before the frame is drawn. Otherwise they
     # run inside render_dearpygui_frame() - a callback that changes the
@@ -1757,6 +1867,8 @@ def service_command(app):
                 app.run_action(c["action"])
             if "bind" in c:                             # test hook: [action, binding]
                 app.keys.set(*c["bind"]); chrome.refresh_keys(app)
+            if "state" in c:                            # test hook: print an item's state
+                print("state", c["state"], dpg.get_item_state(c["state"]), "pos", dpg.get_item_pos(c["state"]))
             if "chrome" in c:                           # test hook: a chrome action by name
                 {"new": lambda: app.new_effect(), "rename": app.rename_current, "open": lambda: chrome.show_open(app),
                  "device": lambda: chrome.show_device(app), "editor": lambda: chrome.show_editor(app),
@@ -2002,6 +2114,7 @@ def main():
                 app.gp.poll()
                 app.poll_watch()
                 chrome.poll(app)
+                app.poll_glow()
                 app.step_sim()
                 app.draw()
             except Exception:
