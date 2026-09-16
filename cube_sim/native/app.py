@@ -1561,6 +1561,9 @@ class App:
     # moved from where the drag began. A spin control, not a grab, exactly as it
     # felt.
     def on_mouse_click(self, sender, app_data):
+        if dpg.does_item_exist("help_split") and dpg.is_item_shown("help_split") and dpg.is_item_hovered("help_split"):
+            self._split_drag = ("help_split", dpg.get_mouse_pos(local=False)[1], int(self.prefs.get("help_h", 46)))
+            return
         for tag in ("split_a", "split_b"):
             if dpg.does_item_exist(tag) and dpg.is_item_shown(tag) and dpg.is_item_hovered(tag):
                 mx = dpg.get_mouse_pos(local=False)[0]
@@ -1600,6 +1603,13 @@ class App:
             tag, x0, v0 = self._split_drag
             mx = dpg.get_mouse_pos(local=False)[0]
             vw = max(640, dpg.get_viewport_client_width())
+            if tag == "help_split":
+                my = dpg.get_mouse_pos(local=False)[1]
+                new = int(max(20, min(240, v0 + (my - x0))))
+                if new != int(self.prefs.get("help_h", 46)):
+                    self.prefs["help_h"] = new
+                    dpg.configure_item("graph_help_box", height=new)
+                return
             if tag == "split_a":
                 avail = max(200, vw - self.side_w - 100)
                 new = max(0.15, min(0.85, v0 + (mx - x0) / avail))

@@ -31,6 +31,7 @@ CHAR_W = 7.2            # the default font at 13 px, near enough to right-align 
 NARROW_W = 46           # a knot: just wide enough for its two pin names
 ZOOMS = (0.5, 0.6, 0.7, 0.85, 1.0, 1.2, 1.4, 1.7, 2.0)
 BASE_FONT = 13          # the size everything above is laid out for
+HELP_H = 46             # the description box, px: two lines
 THUMB = 96              # the preview thumbnail on a node, layout px
 THUMB_PX = 96           # its texture
 
@@ -2371,7 +2372,13 @@ def build_panel(app, panel):
                          callback=lambda s, a: panel.import_bundle(a.get("file_path_name", ""))):
         dpg.add_file_extension(".json", color=(120, 200, 120))
         dpg.add_file_extension(".*")
-    dpg.add_text("", tag="graph_help", color=(170, 178, 192), wrap=0)
+    # The description box: a fixed height, whatever the text - a line that
+    # grew and shrank with each hover moved the editor under the pointer.
+    # The bar under it drags to resize; the height is remembered.
+    with dpg.child_window(tag="graph_help_box", height=int(app.prefs.get("help_h", HELP_H)), border=False,
+                          no_scrollbar=True, no_scroll_with_mouse=True):
+        dpg.add_text("", tag="graph_help", color=(170, 178, 192), wrap=0)
+    dpg.add_button(label="", tag="help_split", width=-1, height=5)
     with dpg.child_window(tag="graph_props", show=False, height=170, border=True):
         pass
     with dpg.node_editor(tag="node_editor", callback=panel.on_link, delink_callback=panel.on_delink,
