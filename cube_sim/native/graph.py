@@ -39,7 +39,7 @@ import re
 
 from native.nodedefs import library, HELPERS
 
-PIXEL_NAMES = re.compile(r"\b(px|py|u|v|cx|cy|r|ang|nx|ny|nz|W|H|N|gc_out)\b")
+PIXEL_NAMES = re.compile(r"\b(px|py|u|v|cx|cy|r|ang|nx|ny|nz|X3|Y3|Z3|W|H|N|gc_out)\b")
 TYPES = {"float": "float", "color": "uint32_t", "bool": "bool"}
 
 
@@ -370,15 +370,37 @@ class Graph:
         scope = {}
         for nid in order:
             d = defs[nid]
+            ups = [src_of[(nid, i["name"])][0] for i in d["inputs"] if (nid, i["name"]) in src_of]
+            per_pixel_in = any(scope.get(u) == "pixel" for u in ups)
             if d["scope"] == "frame":
-                scope[nid] = "frame"; continue
+                # a frame node fed a per-pixel value follows it down, unless it
+                # keeps state - one value for the whole effect cannot be per pixel
+                if per_pixel_in and d.get("state"):
+                    raise GraphError(f"{d['name']} #{nid} keeps one value per frame, so its inputs "
+                                     f"cannot come from a per-pixel node (Coords, Noise...)")
+                scope[nid] = "pixel" if per_pixel_in else "frame"; continue
             if PIXEL_NAMES.search(d["code"]):
                 scope[nid] = "pixel"; continue
-            ups = [src_of[(nid, i["name"])][0] for i in d["inputs"] if (nid, i["name"]) in src_of]
-            scope[nid] = "frame" if all(scope.get(u) == "frame" for u in ups) else "pixel"
+            scope[nid] = "pixel" if per_pixel_in else "frame"
 
         def var(nid, out):
             return f"n{nid}_{re.sub(r'[^A-Za-z0-9]', '_', out)}"
+
+        # Persistent state: a node's definition names how many floats it keeps
+        # between frames ("state": ["acc"] or "state": 16). They live in one
+        # array in SEGENV.data; $st.name and $st[k] address a node's own slots.
+        slots, nstate = {}, 0
+        for nid in order:
+            st = defs[nid].get("state")
+            if st:
+                slots[nid] = nstate
+                nstate += len(st) if isinstance(st, (list, tuple)) else int(st)
+        # Fields: a float per pixel kept between frames, double-buffered (read
+        # last frame's, write this frame's), as many as the Field nodes name.
+        nfields = 0
+        for nid in order:
+            if defs[nid].get("field"):
+                nfields = max(nfields, int(self.nodes[nid]["params"].get("field", 0)) + 1)
 
         def expand(nid):
             n = self.nodes[nid]; d = defs[nid]
@@ -413,8 +435,16 @@ class Graph:
                     code = code.replace(f"$p.{p['name']}", str(v))
                 else:
                     code = code.replace(f"$p.{p['name']}", _lit(p["type"], v))
-            if "$in." in code or "$out." in code or "$p." in code:
-                m = re.search(r"\$(in|out|p)\.\w+", code)
+            st = d.get("state")
+            if st:
+                base = slots[nid]
+                if isinstance(st, (list, tuple)):
+                    for k, name in enumerate(st):
+                        code = code.replace(f"$st.{name}", f"gc_st[{base + k}]")
+                code = re.sub(r"\$st(?![.\w])", f"(gc_st + {base})", code)
+            code = code.replace("$first", "gc_first")
+            if "$in." in code or "$out." in code or "$p." in code or "$st." in code:
+                m = re.search(r"\$(in|out|p|st)\.\w+", code)
                 raise GraphError(f"node {n['type']}: template refers to unknown {m.group(0)}")
             code = code.replace("$$", "$")
             decl = "".join(f"{TYPES[o['type']]} {var(nid, o['name'])} = 0; " for o in d["outputs"])
@@ -444,8 +474,23 @@ class Graph:
         meta = (f'{title.replace(chr(34), chr(39))}@{",".join(labels)};{cols};!;{dims}{aud};'
                 + ",".join(f"{k}={v}" for k, v in defaults.items()))
 
+        state = ""
+        if nstate or nfields:
+            state = (f"  // --- state kept between frames: {nstate} floats, {nfields} field(s) of N ------\n"
+                     f"  const bool gc_first = (SEGENV.call == 0);\n"
+                     f"  float *gc_st = nullptr;\n"
+                     f"  if (SEGENV.allocateData(({nstate} + 2 * {nfields} * N) * sizeof(float))) gc_st = (float *)SEGENV.data;\n")
+            if nfields:
+                state += "  if (!gc_st) { SEGMENT.fill(0); FX_DONE; }   // no room for the fields\n"
+                for k in range(nfields):
+                    state += (f"  float *gc_fr{k} = gc_st + {nstate} + (2 * {k} + (SEGENV.call & 1)) * N;\n"
+                              f"  float *gc_fw{k} = gc_st + {nstate} + (2 * {k} + ((SEGENV.call + 1) & 1)) * N;\n"
+                              f"  if (gc_first) memset(gc_fr{k}, 0, N * sizeof(float));\n")
+            else:
+                state += f"  static float gc_st_fallback[{max(1, nstate)}]; if (!gc_st) gc_st = gc_st_fallback;\n"
+            state += "  (void)gc_first;\n"
         return GENERATED.format(title=title, ident=ident, upper=ident.upper(), helpers=HELPERS,
-                                frame=frame, pixel=pixel, meta=meta)
+                                frame=frame, pixel=pixel, meta=meta, state=state)
 
 
 GENERATED = r'''#include "wled.h"
@@ -471,7 +516,7 @@ static FX_RET mode_{ident}() {{
   const uint16_t dt = fx_dt8(clk_);
   const float t = (float)strip.now * 0.001f;
   (void)N; (void)dt; (void)t;
-
+{state}
   // --- frame scope -----------------------------------------------------------
 {frame}
   // --- per pixel ---------------------------------------------------------------
@@ -486,17 +531,18 @@ static FX_RET mode_{ident}() {{
       const float cx = u * 2.0f - 1.0f, cy = 1.0f - v * 2.0f;
       const float r = sqrtf(cx * cx + cy * cy);
       const float ang = cfx_atan2f(cy, cx);
-      float nx, ny, nz;
+      float nx, ny, nz, X3, Y3, Z3;                 // direction (unit) and position (-1..1 box)
       if (cube) {{
-        float X, Y, Z; cfx_pos(px, py, W, H, B, true, X, Y, Z);
-        const float L = sqrtf(X * X + Y * Y + Z * Z); const float iL = L > 1e-6f ? 1.0f / L : 1.0f;
-        nx = X * iL; ny = Y * iL; nz = Z * iL;
+        cfx_pos(px, py, W, H, B, true, X3, Y3, Z3);
+        const float L = sqrtf(X3 * X3 + Y3 * Y3 + Z3 * Z3); const float iL = L > 1e-6f ? 1.0f / L : 1.0f;
+        nx = X3 * iL; ny = Y3 * iL; nz = Z3 * iL;
       }} else {{
+        X3 = cx; Y3 = cy; Z3 = 0.0f;
         const float Z = 1.0f - (cx * cx + cy * cy) * 0.5f;
         const float L = sqrtf(cx * cx + cy * cy + Z * Z); const float iL = L > 1e-6f ? 1.0f / L : 1.0f;
         nx = cx * iL; ny = cy * iL; nz = Z * iL;
       }}
-      (void)u; (void)v; (void)r; (void)ang; (void)nx; (void)ny; (void)nz;
+      (void)u; (void)v; (void)r; (void)ang; (void)nx; (void)ny; (void)nz; (void)X3; (void)Y3; (void)Z3;
       uint32_t gc_out = 0;
 {pixel}
       if (is2d) SEGMENT.setPixelColorXY(px, py, gc_out); else SEGMENT.setPixelColor(px, gc_out);

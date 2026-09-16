@@ -101,6 +101,49 @@ LIBRARY = [
     acc_ += (float)g * $in.throw * (1.0f / 620.0f); owed_ = (uint16_t)(owed_ - g); }
   $out.phase = acc_; }""",
        "a phase that lurches forward on each beat and settles over ~140 ms - add it to a position"),
+    # --- state between frames -------------------------------------------------------
+    dict(_n("Integrate", "signals", "frame", [("rate", F, 1.0), ("reset", B, False)], [("value", F)],
+            [_p("wrap", "float", 1.0)],
+            "if ($first || $in.reset) $st.acc = 0.0f;\n"
+            "$st.acc += $in.rate * ((float)dt * 0.001f);\n"
+            "if ($p.wrap > 0.0f) $st.acc -= floorf($st.acc / $p.wrap) * $p.wrap;\n"
+            "$out.value = $st.acc;",
+            "a running total of rate per second - a phase that keeps going; wrap 0 = never"),
+         state=["acc"]),
+    dict(_n("Envelope", "signals", "frame", [("x", F, 0.0)], [("value", F)],
+            [_p("attack", "float", 20.0), _p("release", "float", 250.0)],
+            "if ($first) $st.y = $in.x;\n"
+            "{ const float tau_ = ($in.x > $st.y) ? $p.attack : $p.release;\n"
+            "  const float k_ = tau_ > 0.0f ? 1.0f - expf(-(float)dt / tau_) : 1.0f;\n"
+            "  $st.y += ($in.x - $st.y) * k_; }\n"
+            "$out.value = $st.y;",
+            "smooths a signal: fast up (attack ms), slow down (release ms)"),
+         state=["y"]),
+    dict(_n("Random hold", "signals", "frame", [("trigger", B, False)], [("value", F), ("changed", B)],
+            [],
+            "if ($first) { $st.val = gc_rnd(); $st.prev = 0.0f; }\n"
+            "$out.changed = $in.trigger && $st.prev < 0.5f;\n"
+            "if ($out.changed) $st.val = gc_rnd();\n"
+            "$st.prev = $in.trigger ? 1.0f : 0.0f;\n"
+            "$out.value = $st.val;",
+            "a random 0..1 that holds until the trigger goes on - re-aim on the beat"),
+         state=["val", "prev"]),
+    dict(_n("Rising edge", "signals", "frame", [("x", B, False)], [("pulse", B)], [],
+            "$out.pulse = $in.x && $st.prev < 0.5f; $st.prev = $in.x ? 1.0f : 0.0f;",
+            "true for one frame when x turns on"),
+         state=["prev"]),
+    dict(_n("Spectrum", "signals", "pixel", [("index", F, 0.0)], [("level", F)],
+            [_p("smooth", "float", 0.5, 0.0, 0.99), _p("interpolate", "bool", True)],
+            "{ float *S_ = $st;\n"
+            "  if (S_[16] != (float)(SEGENV.call & 0xFFFF) || $first) {\n"
+            "    um_data_t *um_ = cfx_getAudioData(); const uint8_t *fft_ = (const uint8_t *)um_->u_data[2];\n"
+            "    const float k_ = $first ? 1.0f : 1.0f - gc_sat($p.smooth);\n"
+            "    for (int i_ = 0; i_ < 16; i_++) S_[i_] += ((float)fft_[i_] * (1.0f / 255.0f) - S_[i_]) * k_;\n"
+            "    S_[16] = (float)(SEGENV.call & 0xFFFF); }\n"
+            "  const float fi_ = gc_sat($in.index) * 15.0f; const int i0_ = (int)fi_; const int i1_ = i0_ < 15 ? i0_ + 1 : 15;\n"
+            "  $out.level = $p.interpolate ? S_[i0_] + (S_[i1_] - S_[i0_]) * (fi_ - (float)i0_) : S_[i0_]; }",
+            "the 16 FFT bins, smoothed, read at index 0..1 - a spectrum along a coordinate"),
+         state=17),
     _n("Number", "signals", "frame", [], [("value", F)], [_p("value", "float", 1.0, -1000.0, 1000.0)],
        "$out.value = $p.value;", "a constant"),
     _n("Toggle", "signals", "frame", [], [("on", B)], [_p("on", "bool", True)],
@@ -116,6 +159,28 @@ LIBRARY = [
     _n("Direction", "coords", "pixel", [], [("nx", F), ("ny", F), ("nz", F)], [],
        "$out.nx = nx; $out.ny = ny; $out.nz = nz;",
        "the pixel's outward direction on the cube (a dome elsewhere) - seamless across faces"),
+    _n("Position", "coords", "pixel", [], [("x", F), ("y", F), ("z", F)], [],
+       "$out.x = X3; $out.y = Y3; $out.z = Z3;",
+       "the pixel's position in the cube's -1..1 box (z up, 1 on the lid); x, y on a matrix"),
+    _n("Cube face", "coords", "pixel", [], [("face", F), ("a", F), ("b", F)], [],
+       "{ const float ax_ = fabsf(X3), ay_ = fabsf(Y3), az_ = fabsf(Z3);\n"
+       "  float m_, pa_, pb_;\n"
+       "  if (cube && az_ >= ax_ && az_ >= ay_) { $out.face = Z3 >= 0 ? 4.0f : 5.0f; m_ = az_; pa_ = X3; pb_ = Y3; }\n"
+       "  else if (cube && ay_ >= ax_)          { $out.face = Y3 >= 0 ? 2.0f : 3.0f; m_ = ay_; pa_ = X3; pb_ = Z3; }\n"
+       "  else if (cube)                         { $out.face = X3 >= 0 ? 0.0f : 1.0f; m_ = ax_; pa_ = Y3; pb_ = Z3; }\n"
+       "  else                                   { $out.face = 4.0f; m_ = 1.0f; pa_ = X3; pb_ = Y3; }\n"
+       "  if (m_ < 1e-3f) m_ = 1e-3f;\n"
+       "  $out.a = pa_ / m_ * 0.5f + 0.5f; $out.b = pb_ / m_ * 0.5f + 0.5f; }",
+       "which face (0..5: +x -x +y -y top bottom) and where on it, a and b 0..1 - tiles per face"),
+    _n("Cube ring", "coords", "pixel", [], [("around", F), ("depth", F)], [],
+       "{ if (cube) {\n"
+       "    $out.around = cfx_atan2f(Y3, X3) * (0.5f / 3.14159265f) + 0.5f;\n"
+       "    $out.depth = (Z3 > 0.999f) ? (fmaxf(fabsf(X3), fabsf(Y3)) * 0.5f) : (0.5f + (1.0f - Z3) * 0.25f);\n"
+       "  } else { $out.around = u; $out.depth = v; } }",
+       "the lid-and-walls ruler: around the cube 0..1, depth 0 at the lid's centre, 0.5 at the rim, 1 at the bottom edge"),
+    _n("Ring to uv", "coords", "pixel", [("around", F, 0.0), ("depth", F, 0.5)], [("u", F), ("v", F)], [],
+       "gc_ring_uv($in.around, $in.depth, W, H, B, cube, $out.u, $out.v);",
+       "Cube ring backwards: a point on the ring as the u, v Previous at reads - step depth to read up the walls"),
     _n("Pixel", "coords", "pixel", [], [("x", F), ("y", F), ("i", F)], [],
        "$out.x = (float)px; $out.y = (float)py; $out.i = (float)(py * W + px);", "integer pixel and index"),
 
@@ -138,6 +203,9 @@ LIBRARY = [
        [("value", F)], [],
        "{ const float d_ = sqrtf(($in.cx - cx) * ($in.cx - cx) + ($in.cy - cy) * ($in.cy - cy)); float f_ = d_ * $in.rings - $in.phase; f_ -= floorf(f_); $out.value = 0.5f + 0.5f * cfx_sinf16(f_ * 6.28318531f); }",
        "rings radiating from a point (cx, cy in -1..1)"),
+    _n("Hash", "generate", "pixel", [("x", F, 0.0), ("y", F, 0.0), ("seed", F, 0.0)], [("value", F)], [],
+       "$out.value = gc_hash($in.x, $in.y, $in.seed);",
+       "a random 0..1 that is the same every frame for the same x, y, seed - one per cell or column"),
     _n("Sparkle", "generate", "pixel", [("density", F, 0.1), ("seed", F, 0.0)], [("value", F)], [],
        "{ uint32_t h_ = (uint32_t)(px * 73856093u) ^ (uint32_t)(py * 19349663u) ^ (uint32_t)($in.seed * 83492791.0f); h_ ^= h_ >> 13; h_ *= 0x5bd1e995u; h_ ^= h_ >> 15; $out.value = ((h_ & 0xFFFFu) * (1.0f / 65535.0f) < $in.density) ? 1.0f : 0.0f; }",
        "random pixels lit, a fraction `density` of them; change seed over time to twinkle"),
@@ -163,6 +231,28 @@ LIBRARY = [
     _n("Abs", "maths", "pixel", [("x", F, 0.0)], [("result", F)], [], "$out.result = fabsf($in.x);"),
     _n("Power", "maths", "pixel", [("x", F, 0.0), ("e", F, 2.0)], [("result", F)], [],
        "$out.result = powf($in.x < 0.0f ? 0.0f : $in.x, $in.e);"),
+    _n("Floor", "maths", "pixel", [("x", F, 0.0)], [("result", F)], [], "$out.result = floorf($in.x);", "round down"),
+    _n("Modulo", "maths", "pixel", [("x", F, 0.0), ("m", F, 1.0)], [("result", F)], [],
+       "$out.result = ($in.m != 0.0f) ? $in.x - floorf($in.x / $in.m) * $in.m : 0.0f;", "x mod m, always 0..m"),
+    _n("Cosine", "maths", "pixel", [("x", F, 0.0)], [("result", F)], [],
+       "$out.result = 0.5f + 0.5f * cosf($in.x * 6.2831853f);", "0..1 cosine, one cycle per unit of x"),
+    _n("Band", "maths", "pixel", [("x", F, 0.0), ("sharp", F, 1.0)], [("result", F)], [],
+       "{ const float c_ = 0.5f + 0.5f * cosf($in.x * 6.2831853f); $out.result = powf(c_, fmaxf(0.01f, $in.sharp)); }",
+       "a soft band around every whole number of x, narrower as sharp rises - slabs, stripes"),
+    _n("Dot 3", "maths", "pixel", [("ax", F, 0.0), ("ay", F, 0.0), ("az", F, 0.0), ("bx", F, 1.0), ("by", F, 0.0), ("bz", F, 0.0)],
+       [("result", F)], [],
+       "$out.result = $in.ax * $in.bx + $in.ay * $in.by + $in.az * $in.bz;",
+       "dot product - a position against a direction gives the distance along it (slabs, sweeps)"),
+    _n("Rotate", "maths", "pixel", [("x", F, 0.0), ("y", F, 0.0), ("turns", F, 0.0)], [("x", F), ("y", F)], [],
+       "{ const float a_ = $in.turns * 6.2831853f; const float c_ = cosf(a_), s_ = sinf(a_);\n"
+       "  $out.x = $in.x * c_ - $in.y * s_; $out.y = $in.x * s_ + $in.y * c_; }",
+       "turn a pair of coordinates by `turns` (1 = a full turn) - a tumble is three of these"),
+    _n("Length", "maths", "pixel", [("x", F, 0.0), ("y", F, 0.0), ("z", F, 0.0)], [("result", F)], [],
+       "$out.result = sqrtf($in.x * $in.x + $in.y * $in.y + $in.z * $in.z);", "distance from the origin"),
+    _n("Direction to", "maths", "pixel", [("turns_a", F, 0.0), ("turns_b", F, 0.0)], [("x", F), ("y", F), ("z", F)], [],
+       "{ const float a_ = $in.turns_a * 6.2831853f, b_ = $in.turns_b * 6.2831853f;\n"
+       "  $out.x = cosf(a_) * cosf(b_); $out.y = sinf(a_) * cosf(b_); $out.z = sinf(b_); }",
+       "a unit direction from two angles (turns) - the normal of a tumbling slab"),
     _n("Sine", "maths", "pixel", [("x", F, 0.0)], [("result", F)], [],
        "$out.result = cfx_sinf16($in.x * 6.28318531f);", "sin of x turns, -1..1"),
     _n("Smoothstep", "maths", "pixel", [("x", F, 0.0)], [("result", F)], [_p("e0", "float", 0.0), _p("e1", "float", 1.0)],
@@ -193,6 +283,23 @@ LIBRARY = [
        "layer `over` onto `under` - the layering node"),
     _n("Mask", "colour", "pixel", [("color", C, 0), ("mask", F, 1.0)], [("color", C)], [],
        "$out.color = mq_scale($in.color, (uint8_t)(gc_sat($in.mask) * 255.0f));", "multiply a colour by a 0..1 field"),
+    _n("Previous at", "colour", "pixel", [("u", F, 0.0), ("v", F, 0.0)], [("color", C)], [],
+       "$out.color = gc_prev_at($in.u, $in.v, W, H, is2d);",
+       "last frame's colour at a logical position (0..1) - read below to make things rise, beside to smear"),
+    # A field is a number per pixel kept between frames - heat, height, age -
+    # separate from the colour, so a simulation is not bent by its palette.
+    # Read last frame's value anywhere (a neighbour, a step down the ring);
+    # write this pixel's value for next frame. Two per graph, 0 and 1.
+    dict(_n("Field", "colour", "pixel", [("u", F, 0.0), ("v", F, 0.0)], [("value", F)],
+            [_p("field", "int", 0, 0, 1)],
+            "{ const int x_ = (int)floorf(gc_sat($in.u) * (float)(W - 1) + 0.5f), y_ = (int)floorf(gc_sat($in.v) * (float)(H - 1) + 0.5f);\n"
+            "  $out.value = gc_fr$p.field[y_ * W + x_]; }",
+            "last frame's value of the field at a logical position (0..1) - a simulation's memory"),
+         field=True),
+    dict(_n("Field write", "colour", "pixel", [("value", F, 0.0)], [], [_p("field", "int", 0, 0, 1)],
+            "gc_fw$p.field[py * W + px] = $in.value;",
+            "this pixel's value of the field for next frame - what Field will read"),
+         field=True),
     _n("Previous", "colour", "pixel", [], [("color", C)], [],
        "$out.color = SEGMENT.is2D() ? SEGMENT.getPixelColorXY(px, py) : SEGMENT.getPixelColor(px);",
        "this pixel's colour from the LAST frame - feedback, for trails and fades"),
@@ -260,6 +367,43 @@ LIBRARY = [
 # they cannot collide with anything in wled.h or cube_fx_common.h.
 HELPERS = r'''
 static inline float gc_sat(float x) { return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); }
+static inline float gc_fract(float x) { return x - floorf(x); }
+static inline float gc_rnd() { return (float)hw_random16() * (1.0f / 65535.0f); }
+// A stable 0..1 from a position and a seed - the same every frame for the same
+// inputs, so cells, tiles and columns can each own a random number.
+static inline float gc_hash(float x, float y, float seed) {
+  uint32_t h = (uint32_t)(int32_t)floorf(x * 4096.0f) * 374761393u
+             ^ (uint32_t)(int32_t)floorf(y * 4096.0f) * 668265263u
+             ^ (uint32_t)(int32_t)floorf(seed * 4096.0f) * 2246822519u;
+  h ^= h >> 13; h *= 1274126177u; h ^= h >> 16;
+  return (float)(h & 0xFFFFFFu) * (1.0f / 16777215.0f);
+}
+// Last frame's colour at a logical position (0..1, 0..1). On a matrix that is
+// a neighbour read for trails and flows; the pixels already written this
+// frame read as this frame's, as WLED's own fire effects accept.
+// The inverse of the lid-and-walls ruler: (around, depth) back to the logical
+// pixel, as u, v - the exact inverse of cfx_pos, so a read there lands on the
+// pixel Cube ring would call that. Lets a feedback read step along the ring.
+static inline int gc_q(float t, int B) { int i = (int)floorf((t + 1.0f) * 0.5f * (float)B); return i < 0 ? 0 : (i > B - 1 ? B - 1 : i); }
+static inline void gc_ring_uv(float around, float depth, int W, int H, int B, bool cube, float &u, float &v) {
+  around -= floorf(around);
+  if (!cube) { u = around; v = gc_sat(depth); return; }
+  const float a = (around - 0.5f) * 6.2831853f;
+  float cx_ = cosf(a), sy_ = sinf(a);
+  const float m = fmaxf(fabsf(cx_), fabsf(sy_)); if (m > 1e-6f) { cx_ /= m; sy_ /= m; }
+  int px_, py_;
+  if (depth < 0.5f) { const float r = depth * 2.0f; px_ = B + gc_q(cx_ * r, B); py_ = B + gc_q(-sy_ * r, B); }
+  else {
+    const float Z = 1.0f - (depth - 0.5f) * 4.0f;
+    if (fabsf(sy_) >= fabsf(cx_)) { px_ = B + gc_q(cx_, B); py_ = (sy_ > 0) ? gc_q(Z, B) : 2 * B + gc_q(-Z, B); }
+    else                          { py_ = B + gc_q(-sy_, B); px_ = (cx_ < 0) ? gc_q(Z, B) : 2 * B + gc_q(-Z, B); }
+  }
+  u = (W > 1) ? (float)px_ / (float)(W - 1) : 0.5f; v = (H > 1) ? (float)py_ / (float)(H - 1) : 0.5f;
+}
+static inline uint32_t gc_prev_at(float u, float v, int W, int H, bool is2d) {
+  int x = (int)floorf(gc_sat(u) * (float)(W - 1) + 0.5f), y = (int)floorf(gc_sat(v) * (float)(H - 1) + 0.5f);
+  return is2d ? SEGMENT.getPixelColorXY(x, y) : SEGMENT.getPixelColor(x);
+}
 // The palette-source colour lives in the cube_fx palettes usermod. Weak, so a
 // build without that usermod still links and the node falls back to the
 // segment's own palette.

@@ -92,6 +92,37 @@ checked, defaults for unconnected pins — and it goes through the same build
 and reload as a hand-written one. "Open as code" hands the generated file to
 the code pane for anything the nodes cannot reach.
 
+What the library reached by rebuilding five of the cube_fx effects as
+graphs (`examples/build_examples.py` writes them; `--check` compiles, builds
+and runs them; a new project starts with them in `graphs/`):
+
+- **State between frames.** A node definition may name floats it keeps
+  (`state`), held in `SEGENV.data`; `$st.name`, `$first`. Integrate (a
+  running phase), Envelope (attack/release smoothing), Random hold (a random
+  that re-rolls on a trigger - re-aim on the beat), Rising edge, Spectrum
+  (the 16 bins, smoothed, read at an index - a spectrum along a coordinate).
+  A frame-scope node fed a per-pixel value follows it down to per pixel; a
+  stateful one refuses, with a message.
+- **Fields.** A number per pixel kept between frames, double-buffered, up to
+  two per graph: Field (read last frame's value at any u, v) and Field
+  write. Cellular effects - fire, ripples, ageing - keep their simulation
+  here instead of bending it through the palette.
+- **Cube coordinates.** Position (the -1..1 box), Cube face (which face, and
+  a, b on it - tiles per face), Cube ring (the lid-and-walls ruler: around,
+  depth) and Ring to uv (its inverse, so a feedback read can step along the
+  ring). Previous at reads last frame's colour at any position.
+- **Maths.** Floor, Modulo, Cosine, Band (a soft band around every whole
+  number), Dot 3, Rotate, Length, Direction to (a unit vector from two
+  angles), Hash (a stable random per cell, column or tile).
+
+The five: **Slab Cut** (Cube Slice - spectrum slabs through the solid at a
+tumbling normal), **Cell Weave** (Cube Cell - nested sines over the position,
+one axis per band, the fold drawing the walls), **Truchet Cube** (tiles per
+face, arcs turned by a hash the beat re-rolls), **Ring Rain** (Matrix Rain
+on the ring with no drop state - a hash per column), **Box Fire** (Cube Fire
+- a heat field rising up the walls into the lid). Readings of the originals
+in nodes, not ports; the ones that were particle systems are shader-style.
+
 Sub-graphs: select some nodes and "fold into sub-graph" (toolbar or the
 node's right-click menu) and they become one node. Each wire that crossed the
 boundary becomes a pin — a "Graph input" node inside for every incoming one,

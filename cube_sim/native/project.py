@@ -107,6 +107,16 @@ class Project:
         os.makedirs(os.path.join(self.path, "effects"), exist_ok=True)
         os.makedirs(os.path.join(self.path, "recipes"), exist_ok=True)
         os.makedirs(os.path.join(self.path, "export"), exist_ok=True)
+        # a new project starts with the example graphs, so the node editor has
+        # something to open and take apart; an existing graphs/ is left alone
+        gdir = os.path.join(self.path, "graphs")
+        if not os.path.isdir(gdir):
+            os.makedirs(gdir, exist_ok=True)
+            ex = os.path.join(HERE, "examples", "graphs")
+            if os.path.isdir(ex):
+                for f in os.listdir(ex):
+                    if f.endswith(".json"):
+                        shutil.copyfile(os.path.join(ex, f), os.path.join(gdir, f))
         self.load()
 
     # --- persistence ----------------------------------------------------------------
