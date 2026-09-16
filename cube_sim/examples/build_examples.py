@@ -1262,9 +1262,47 @@ def smiley():
     return b.save("smiley.json")
 
 
+def fireworks():
+    """Fireworks: on each beat a burst of sparks leaves the middle of the lid
+    with a random spread, falls down the walls under gravity and fades; a
+    trickle of embers in between. The colour is the bin that was loudest at
+    the burst; the wake is last frame faded."""
+    b = GB("Fireworks")
+    sp = b.n("Speed", 0, 0, {"label": "Launch speed", "default": 140})
+    it = b.n("Intensity", 0, 1, {"label": "Burst size", "default": 150})
+    c1 = b.n("Custom 1", 0, 2, {"label": "Gravity", "default": 120})
+    c2 = b.n("Custom 2", 0, 3, {"label": "Trail", "default": 150})
+    k1 = b.n("Check 1", 0, 4, {"label": "Bursts on the beat", "default": True})
+    au = b.n("Audio", 0, 5)
+    b.n("Effect settings", 0, 6, {"palette": 11, "audio": "frequency"})
+    pos = b.n("Position", 1, 6)
+    lb = b.n("Loudest bin", 1, 5)
+    bb = b.n("Select", 1, 4, inputs={"a": False, "b": True}); b.l(k1, "on", bb, "on")
+    burst = b.n("Multiply", 2, 4); b.l(au, "beat", burst, "a"); b.l(bb, "result", burst, "b")
+    n = b.n("Remap", 1, 1, {"out_lo": 3.0, "out_hi": 24.0}); b.l(it, "value", n, "x")
+    spd = b.n("Remap", 1, 0, {"out_lo": 0.4, "out_hi": 2.5}); b.l(sp, "value", spd, "x")
+    grav = b.n("Remap", 1, 2, {"out_lo": -0.2, "out_hi": -3.0}); b.l(c1, "value", grav, "x")
+    gv = b.n("Vector", 2, 2, inputs={"x": 0.0, "y": 0.0}); b.l(grav, "result", gv, "z")
+    pt = b.n("Particles", 3, 3, {"max": 48, "random_pos": False, "on_surface": True, "floor": "die"},
+             inputs={"rate": 2.0, "pos": [0.0, 0.0, 1.0], "velocity": [0.0, 0.0, 0.3], "drag": 0.3, "life": 2.5})
+    b.l(burst, "result", pt, "burst"); b.l(n, "result", pt, "burst_count"); b.l(spd, "result", pt, "spread")
+    b.l(gv, "v", pt, "gravity"); b.l(lb, "bin", pt, "tag")
+    spr = b.n("Sprites", 4, 5, {"falloff": "soft"}, inputs={"size": 0.3}); b.l(pt, "slots", spr, "slots"); b.l(pos, "pos", spr, "pos")
+    fade = b.n("Subtract", 5, 6, inputs={"a": 1.0}); b.l(spr, "age", fade, "b")
+    hot = b.n("Smoothstep", 5, 5, {"e0": 0.0, "e1": 0.5}); b.l(spr, "value", hot, "x")
+    bri = b.n("Multiply", 6, 5); b.l(hot, "result", bri, "a"); b.l(fade, "result", bri, "b")
+    pal = b.n("Palette", 7, 5); b.l(spr, "tag", pal, "index"); b.l(bri, "result", pal, "brightness")
+    prev = b.n("Previous", 6, 7)
+    keep = b.n("Remap", 1, 3, {"out_lo": 0.5, "out_hi": 0.92}); b.l(c2, "value", keep, "x")
+    fd = b.n("Fade", 7, 7); b.l(prev, "color", fd, "color"); b.l(keep, "result", fd, "keep")
+    mix = b.n("Blend", 8, 6, {"mode": "max"}); b.l(fd, "color", mix, "under"); b.l(pal, "color", mix, "over")
+    out = b.n("Output", 9, 6); b.l(mix, "color", out, "color")
+    return b.save("fireworks.json")
+
+
 ALL = [slab_cut, cell_weave, truchet, ring_rain, box_fire, maelstrom, kaleidoscope, mandelbrot, watershed, moire,
        ripples, chladni, candy_knot, gyro_sand, breakout, cube_axes, liquid_tunnel, question_block, feigenbaum, liquid,
-       smiley]
+       smiley, fireworks]
 STATIC_EXTRA = {"Smiley"}
 
 

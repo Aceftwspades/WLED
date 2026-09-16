@@ -370,9 +370,10 @@ within each group is the order to do them.
 - [x] **Ease** (glides to its target over N seconds) and **Sequencer** (up
       to four timed phases, triggered or looping: phase, progress, since).
 - [x] **Statistics** (min / max / mean of a field over every pixel).
-- [ ] **Particles** — N particles with position, velocity, age and a brush
-      that accumulates them into a field: sparks, rain, fireworks. The one
-      real capability gap; the largest item here.
+- [x] **Particles** (up to 48: rate and bursts, velocity and spread,
+      gravity, drag, life, tag, kept on the surface, die / bounce / wrap at
+      the bottom) and **Sprites** (soft / hard / spark dots per pixel, with
+      the nearest one's tag, age and speed). Example: Fireworks.
 - [x] **Path** (points typed on the node, open or closed: distance to it,
       position along it, the nearest point).
 

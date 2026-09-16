@@ -220,6 +220,39 @@ LIBRARY = [
             "  $out.min = N ? mn_ : 0.0f; $out.max = N ? mx_ : 0.0f; $out.mean = N ? sum_ / (float)N : 0.0f; }",
             "the least, the most and the average of a field over every pixel, from last frame - normalise a simulation, or let the whole picture answer 'how much is lit'"),
          fields=["field"]),
+    # Particles: up to 48 points flying through the box, each with a
+    # position, a velocity, an age, a life and a tag; spawned at a rate and
+    # in bursts, pulled by gravity, slowed by drag, kept on the surface if
+    # asked. Sprites reads them per pixel. 9 floats a particle + a spawn
+    # accumulator.
+    dict(_n("Particles", "signals", "frame",
+            [("rate", F, 10.0), ("burst", B, False), ("burst_count", F, 8.0), ("pos", V, [0.0, 0.0, 1.0]),
+             ("velocity", V, [0.0, 0.0, 0.0]), ("spread", F, 0.5), ("gravity", V, [0.0, 0.0, -1.0]), ("drag", F, 0.2),
+             ("life", F, 2.0), ("tag", F, 0.0)],
+            [("slots", F), ("count", F)],
+            [_p("max", "int", 32, 1, 48), _p("random_pos", "bool", False), _p("on_surface", "bool", True), _p("floor", "choice", "die", choices=["die", "bounce", "wrap"])],
+            "{ float *P_ = $st; const int n_ = $p.max; const float h_ = (float)dt * 0.001f;\n"
+            "  if ($first) { for (int k_ = 0; k_ < 48; k_++) P_[1 + k_ * 9 + 6] = -1.0f; P_[0] = 0.0f; }\n"
+            "  int alive_ = 0;\n"
+            "  for (int k_ = 0; k_ < n_; k_++) { float *q_ = P_ + 1 + k_ * 9; if (q_[6] < 0.0f) continue;\n"
+            "    q_[6] += h_; if (q_[6] > q_[7]) { q_[6] = -1.0f; continue; }\n"
+            "    q_[3] += $in.gravity.x * h_; q_[4] += $in.gravity.y * h_; q_[5] += $in.gravity.z * h_;\n"
+            "    const float dg_ = 1.0f - gc_sat($in.drag * h_); q_[3] *= dg_; q_[4] *= dg_; q_[5] *= dg_;\n"
+            "    q_[0] += q_[3] * h_; q_[1] += q_[4] * h_; q_[2] += q_[5] * h_;\n"
+            "    if ($p.on_surface) { const float m_ = fmaxf(fabsf(q_[0]), fmaxf(fabsf(q_[1]), fabsf(q_[2]))); if (m_ > 1e-6f && m_ < 1.0f) { q_[0] /= m_; q_[1] /= m_; q_[2] /= m_; }\n"
+            "      if (fabsf(q_[0]) > 1.0f) q_[0] = q_[0] > 0.0f ? 1.0f : -1.0f; if (fabsf(q_[1]) > 1.0f) q_[1] = q_[1] > 0.0f ? 1.0f : -1.0f; if (q_[2] > 1.0f) q_[2] = 1.0f; }\n"
+            "    if (q_[2] < -1.0f) { const char *f_ = \"$p.floor\"; if (f_[0] == 'd') { q_[6] = -1.0f; continue; } else if (f_[0] == 'b') { q_[2] = -1.0f; q_[5] = -q_[5] * 0.6f; } else { q_[2] = 1.0f; } }\n"
+            "    alive_++; }\n"
+            "  float want_ = $in.rate * h_ + ($in.burst ? $in.burst_count : 0.0f); P_[0] += want_;\n"
+            "  while (P_[0] >= 1.0f) { P_[0] -= 1.0f; int slot_ = -1; for (int k_ = 0; k_ < n_; k_++) if (P_[1 + k_ * 9 + 6] < 0.0f) { slot_ = k_; break; } if (slot_ < 0) break;\n"
+            "    float *q_ = P_ + 1 + slot_ * 9; float px_ = $in.pos.x, py_ = $in.pos.y, pz_ = $in.pos.z;\n"
+            "    if ($p.random_pos) { px_ = gc_rnd() * 2.0f - 1.0f; py_ = gc_rnd() * 2.0f - 1.0f; pz_ = gc_rnd() * 2.0f - 1.0f; const float m_ = fmaxf(fabsf(px_), fmaxf(fabsf(py_), fabsf(pz_))); if (m_ > 1e-6f) { px_ /= m_; py_ /= m_; pz_ /= m_; } if (pz_ < -0.99f) pz_ = 1.0f; }\n"
+            "    q_[0] = px_; q_[1] = py_; q_[2] = pz_;\n"
+            "    q_[3] = $in.velocity.x + (gc_rnd() * 2.0f - 1.0f) * $in.spread; q_[4] = $in.velocity.y + (gc_rnd() * 2.0f - 1.0f) * $in.spread; q_[5] = $in.velocity.z + (gc_rnd() * 2.0f - 1.0f) * $in.spread;\n"
+            "    q_[6] = 0.0f; q_[7] = $in.life > 0.01f ? $in.life : 0.01f; q_[8] = $in.tag; alive_++; }\n"
+            "  $out.slots = (float)(P_ - gc_st); $out.count = (float)alive_; }",
+            "sparks, rain, fireworks: up to 48 points that fly through the box with a velocity, gravity and drag, born at a rate or in bursts, living `life` seconds; feed `slots` to Sprites to draw them"),
+         state=1 + 48 * 9),
     _n("Number", "signals", "frame", [], [("value", F)], [_p("value", "float", 1.0, -1000.0, 1000.0)],
        "$out.value = $p.value;", "a constant"),
     _n("Toggle", "signals", "frame", [], [("on", B)], [_p("on", "bool", True)],
@@ -309,6 +342,16 @@ LIBRARY = [
        [_p("iterations", "int", 40, 4, 200), _p("julia", "bool", False)],
        "$out.value = $p.julia ? gc_mandel($in.jx, $in.jy, $in.x, $in.y, $p.iterations) : gc_mandel($in.x, $in.y, 0.0f, 0.0f, $p.iterations);",
        "escape time at the point x, y as 0..1 (1 = inside); Julia mode uses jx, jy as the constant and x, y as the start"),
+    _n("Sprites", "generate", "pixel", [("slots", F, 0.0), ("pos", V, [0.0, 0.0, 0.0]), ("size", F, 0.15)],
+       [("value", F), ("tag", F), ("age", F), ("speed", F)], [_p("falloff", "choice", "soft", choices=["soft", "hard", "spark"])],
+       "{ const float *P_ = gc_st + (int)$in.slots; float sum_ = 0.0f, best_ = 0.0f, tag_ = 0.0f, age_ = 0.0f, spd_ = 0.0f; const char *f_ = \"$p.falloff\";\n"
+       "  for (int k_ = 0; k_ < 48; k_++) { const float *q_ = P_ + 1 + k_ * 9; if (q_[6] < 0.0f) continue;\n"
+       "    const float dx_ = $in.pos.x - q_[0], dy_ = $in.pos.y - q_[1], dz_ = $in.pos.z - q_[2]; const float d_ = sqrtf(dx_ * dx_ + dy_ * dy_ + dz_ * dz_);\n"
+       "    if (d_ >= $in.size) continue; const float t_ = 1.0f - d_ / $in.size;\n"
+       "    const float v_ = f_[0] == 'h' ? 1.0f : (f_[0] == 's' && f_[1] == 'p') ? t_ * t_ * t_ : t_ * t_ * (3.0f - 2.0f * t_);\n"
+       "    sum_ += v_; if (v_ > best_) { best_ = v_; tag_ = q_[8]; age_ = q_[7] > 0.0f ? q_[6] / q_[7] : 1.0f; spd_ = sqrtf(q_[3] * q_[3] + q_[4] * q_[4] + q_[5] * q_[5]); } }\n"
+       "  $out.value = sum_ > 1.0f ? 1.0f : sum_; $out.tag = tag_; $out.age = age_; $out.speed = spd_; }",
+       "draws the Particles: at each pixel, how much of a particle is here (a soft dot of `size`), plus the nearest one's tag, age (0 new .. 1 dying) and speed"),
     _n("Shells", "generate", "pixel", [("slots", F, 0.0), ("pos", V, [0.0, 0.0, 0.0]), ("speed", F, 1.0), ("width", F, 0.2)],
        [("value", F), ("tag", F), ("age", F)], [],
        "{ const float *E_ = gc_st + (int)$in.slots; float sum_ = 0.0f, best_ = 0.0f, tag_ = 0.0f, age_ = 0.0f;\n"

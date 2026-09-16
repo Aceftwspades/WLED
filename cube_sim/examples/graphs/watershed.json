@@ -432,7 +432,10 @@
     960,
     560
    ],
-   "params": {},
+   "params": {
+    "octaves": 1,
+    "roughness": 0.5
+   },
    "inputs": {
     "scale": 3.0
    }

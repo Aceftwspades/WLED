@@ -110,6 +110,12 @@ def compatible(a, b):
     return not ({a, b} == {"color", "float"} or {a, b} == {"color", "bool"})
 
 
+def _sub(code, kind, name, repl):
+    """Replace $kind.name in a template, whole-name only: $in.burst must not
+    eat the front of $in.burst_count."""
+    return re.sub(r"\$" + kind + r"\." + re.escape(name) + r"(?![A-Za-z0-9_])", lambda m: repl, code)
+
+
 SUB = "sub:"          # node type prefix for a sub-graph used as a node
 
 
@@ -421,7 +427,10 @@ class Graph:
                     raise GraphError(f"{d['name']} #{nid} keeps one value per frame, so its inputs "
                                      f"cannot come from a per-pixel node (Coords, Noise...)")
                 scope[nid] = "pixel" if per_pixel_in else "frame"; continue
-            if PIXEL_NAMES.search(d["code"]) or d.get("codegen"):
+            # the template's own words decide, not its pins: a pin called v or r
+            # is not the pixel's v or r
+            bare = re.sub(r"\$(in|out|p|st)\.[\w ]+", "", d["code"])
+            if PIXEL_NAMES.search(bare) or d.get("codegen"):
                 scope[nid] = "pixel"; continue
             scope[nid] = "pixel" if per_pixel_in else "frame"
 
@@ -468,29 +477,29 @@ class Graph:
                     # the value typed on the node stands in for the wire
                     v = n.get("inputs", {}).get(i["name"], i.get("default", 0))
                     expr = _lit(i["type"], v)
-                code = code.replace(f"$in.{i['name']}", expr)
+                code = _sub(code, "in", i["name"], expr)
             for o in d["outputs"]:
-                code = code.replace(f"$out.{o['name']}", var(nid, o["name"]))
+                code = _sub(code, "out", o["name"], var(nid, o["name"]))
             for p in d["params"]:
                 v = n["params"].get(p["name"], p["default"])
                 if p["type"] == "color":
                     rgb = list(v)[:3] if isinstance(v, (list, tuple)) else [255, 255, 255]
                     for k, c in zip("rgb", rgb):
-                        code = code.replace(f"$p.{p['name']}_{k}", str(int(c)))
+                        code = _sub(code, "p", f"{p['name']}_{k}", str(int(c)))
                 elif p["type"] in ("text", "file"):
-                    code = code.replace(f"$p.{p['name']}", str(v).replace('"', "'"))
+                    code = _sub(code, "p", p["name"], str(v).replace('"', "'"))
                 elif p["type"] == "ramp":
                     pass                                      # the codegen reads it whole
                 elif p["type"] == "choice":
-                    code = code.replace(f"$p.{p['name']}", str(v))
+                    code = _sub(code, "p", p["name"], str(v))
                 else:
-                    code = code.replace(f"$p.{p['name']}", _lit(p["type"], v))
+                    code = _sub(code, "p", p["name"], _lit(p["type"], v))
             st = d.get("state")
             if st:
                 base = slots[nid]
                 if isinstance(st, (list, tuple)):
                     for k, name in enumerate(st):
-                        code = code.replace(f"$st.{name}", f"gc_st[{base + k}]")
+                        code = _sub(code, "st", name, f"gc_st[{base + k}]")
                 code = re.sub(r"\$st(?![.\w])", f"(gc_st + {base})", code)
             code = code.replace("$first", "gc_first")
             if "$in." in code or "$out." in code or "$p." in code or "$st." in code:

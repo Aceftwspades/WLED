@@ -142,7 +142,10 @@
     500,
     690
    ],
-   "params": {},
+   "params": {
+    "octaves": 1,
+    "roughness": 0.5
+   },
    "inputs": {
     "scale": 6.0
    }
@@ -260,7 +263,10 @@
     500,
     820
    ],
-   "params": {},
+   "params": {
+    "octaves": 1,
+    "roughness": 0.5
+   },
    "inputs": {
     "y": 0.3,
     "scale": 8.0

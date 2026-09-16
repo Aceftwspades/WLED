@@ -171,6 +171,18 @@ DOCS = {
                "its max to keep it in range whatever it does, or use the mean to know how much of the cube is lit.",
         "out": {"min": "the smallest value anywhere", "max": "the largest", "mean": "the average"},
         "params": {"field": "which field to measure"}},
+    "Particles": {
+        "doc": "Sparks, rain, fireworks, embers. Points are born at `rate` a second (and `burst_count` at once when "
+               "burst is true), fly with a velocity plus some random spread, fall with gravity, slow with drag, and "
+               "die after `life` seconds. They stay on the cube's surface unless you say otherwise. Wire slots to "
+               "Sprites to see them.",
+        "in": {"rate": "how many are born a second", "burst": "true births a burst (the beat)", "burst_count": "how many in a burst",
+               "pos": "where they are born (unless random)", "velocity": "the speed and direction they start with",
+               "spread": "how much random is added to that", "gravity": "the pull, e.g. (0, 0, -1) for down",
+               "drag": "how quickly they slow, 0 never", "life": "seconds each lives", "tag": "a number kept with each - a hue"},
+        "out": {"slots": "the particles - wire this to Sprites", "count": "how many are alive"},
+        "params": {"max": "the most alive at once (up to 48)", "random_pos": "born anywhere on the surface instead of at pos",
+                   "on_surface": "keep them on the cube's surface", "floor": "at the bottom edge: die, bounce, or wrap to the lid"}},
     "Number": {"doc": "A fixed number you type in. Most pins can be typed straight on the node instead; this is for a "
                       "value you want to send to several places.",
                "out": {"value": "the number"}, "params": {"value": "the number"}},
@@ -281,6 +293,13 @@ DOCS = {
         "out": {"value": "0 (escaped at once) .. 1 (inside the set)"},
         "params": {"iterations": "how carefully to look - more shows finer detail, costs more",
                    "julia": "draw a Julia set instead"}},
+    "Sprites": {
+        "doc": "Draws Particles as dots. At each pixel: how much particle is here (a soft dot `size` across), and "
+               "the nearest one's tag (colour it), age (fade it as it dies) and speed (stretch or brighten it).",
+        "in": {"slots": "from Particles", "pos": "this pixel's position (Position's pos)", "size": "how big each dot is"},
+        "out": {"value": "how much particle is here, 0..1", "tag": "the nearest particle's tag", "age": "its age, 0 born .. 1 dying",
+                "speed": "how fast it is going"},
+        "params": {"falloff": "soft (a smooth dot), hard (a disc), spark (a bright pin with a faint halo)"}},
     "Shells": {
         "doc": "Spheres growing out of every Emitter: at each pixel, how much of a shell is passing through. Wire "
                "Emitters' slots here and Position into x, y, z, and each beat becomes a ring that crosses every "

@@ -271,6 +271,32 @@ A fixed number you type in. Most pins can be typed straight on the node instead;
 **Settings**
 - `value` *(float)*: the number
 
+### Particles
+
+Sparks, rain, fireworks, embers. Points are born at `rate` a second (and `burst_count` at once when burst is true), fly with a velocity plus some random spread, fall with gravity, slow with drag, and die after `life` seconds. They stay on the cube's surface unless you say otherwise. Wire slots to Sprites to see them.
+
+**Inputs**
+- `rate` *(float)*: how many are born a second
+- `burst` *(bool)*: true births a burst (the beat)
+- `burst_count` *(float)*: how many in a burst
+- `pos` *(vector)*: where they are born (unless random)
+- `velocity` *(vector)*: the speed and direction they start with
+- `spread` *(float)*: how much random is added to that
+- `gravity` *(vector)*: the pull, e.g. (0, 0, -1) for down
+- `drag` *(float)*: how quickly they slow, 0 never
+- `life` *(float)*: seconds each lives
+- `tag` *(float)*: a number kept with each - a hue
+
+**Outputs**
+- `slots` *(float)*: the particles - wire this to Sprites
+- `count` *(float)*: how many are alive
+
+**Settings**
+- `max` *(int)*: the most alive at once (up to 48)
+- `random_pos` *(bool)*: born anywhere on the surface instead of at pos
+- `on_surface` *(bool)*: keep them on the cube's surface
+- `floor` *(choice)*: at the bottom edge: die, bounce, or wrap to the lid
+
 ### Random hold
 
 A random number that stays put until the trigger fires, then picks a new one. Feed it the beat and something changes direction, colour or place on every kick and holds in between.
@@ -693,6 +719,24 @@ Random pixels lit. density is what fraction; change seed (Time through a Floor f
 
 **Outputs**
 - `value` *(float)*: 1 where lit, else 0
+
+### Sprites
+
+Draws Particles as dots. At each pixel: how much particle is here (a soft dot `size` across), and the nearest one's tag (colour it), age (fade it as it dies) and speed (stretch or brighten it).
+
+**Inputs**
+- `slots` *(float)*: from Particles
+- `pos` *(vector)*: this pixel's position (Position's pos)
+- `size` *(float)*: how big each dot is
+
+**Outputs**
+- `value` *(float)*: how much particle is here, 0..1
+- `tag` *(float)*: the nearest particle's tag
+- `age` *(float)*: its age, 0 born .. 1 dying
+- `speed` *(float)*: how fast it is going
+
+**Settings**
+- `falloff` *(choice)*: soft (a smooth dot), hard (a disc), spark (a bright pin with a faint halo)
 
 ### Stripes
 
