@@ -92,7 +92,7 @@ checked, defaults for unconnected pins — and it goes through the same build
 and reload as a hand-written one. "Open as code" hands the generated file to
 the code pane for anything the nodes cannot reach.
 
-What the library reached by rebuilding five of the cube_fx effects as
+What the library reached by rebuilding ten of the cube_fx effects as
 graphs (`examples/build_examples.py` writes them; `--check` compiles, builds
 and runs them; a new project starts with them in `graphs/`):
 
@@ -111,17 +111,28 @@ and runs them; a new project starts with them in `graphs/`):
   a, b on it - tiles per face), Cube ring (the lid-and-walls ruler: around,
   depth) and Ring to uv (its inverse, so a feedback read can step along the
   ring). Previous at reads last frame's colour at any position.
-- **Maths.** Floor, Modulo, Cosine, Band (a soft band around every whole
-  number), Dot 3, Rotate, Length, Direction to (a unit vector from two
-  angles), Hash (a stable random per cell, column or tile).
+- **Maths.** Floor, Modulo, Cosine, Log, Exp, Band (a soft band around
+  every whole number), Dot 3, Rotate, Length, Direction to (a unit vector
+  from two angles), Hash (a stable random per cell, column or tile).
+- **The heavy ones.** Mirror fold (a direction reflected into one
+  fundamental domain of a finite mirror group - dihedral, tetrahedral,
+  octahedral, icosahedral - so a picture is mirrored 6 to 120 times),
+  Mandelbrot (escape time, or a Julia set), Drain (watershed drainage on
+  the pixel grid over two fields: the water flowing into a pixel from the
+  neighbours that drain to it).
 
 The five: **Slab Cut** (Cube Slice - spectrum slabs through the solid at a
 tumbling normal), **Cell Weave** (Cube Cell - nested sines over the position,
 one axis per band, the fold drawing the walls), **Truchet Cube** (tiles per
 face, arcs turned by a hash the beat re-rolls), **Ring Rain** (Matrix Rain
 on the ring with no drop state - a hash per column), **Box Fire** (Cube Fire
-- a heat field rising up the walls into the lid). Readings of the originals
-in nodes, not ports; the ones that were particle systems are shader-style.
+- a heat field rising up the walls into the lid); then **Maelstrom** (the
+log spiral, with the unwind when the kicks stop), **Kaleidoscope** (spin,
+fold, cut by drifting planes), **Mandelbrot** (stereographic from the
+bottom pole, a breathing zoom at a boundary point), **Watershed** (height
+and water fields, Drain, erosion, storms on the beat) and **Moire** (funnel,
+warp, two lattices). Readings of the originals in nodes, not ports; the
+ones that were particle systems are shader-style.
 
 Sub-graphs: select some nodes and "fold into sub-graph" (toolbar or the
 node's right-click menu) and they become one node. Each wire that crossed the

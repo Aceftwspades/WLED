@@ -203,6 +203,10 @@ LIBRARY = [
        [("value", F)], [],
        "{ const float d_ = sqrtf(($in.cx - cx) * ($in.cx - cx) + ($in.cy - cy) * ($in.cy - cy)); float f_ = d_ * $in.rings - $in.phase; f_ -= floorf(f_); $out.value = 0.5f + 0.5f * cfx_sinf16(f_ * 6.28318531f); }",
        "rings radiating from a point (cx, cy in -1..1)"),
+    _n("Mandelbrot", "generate", "pixel", [("x", F, 0.0), ("y", F, 0.0), ("jx", F, 0.0), ("jy", F, 0.0)], [("value", F)],
+       [_p("iterations", "int", 40, 4, 200), _p("julia", "bool", False)],
+       "$out.value = $p.julia ? gc_mandel($in.jx, $in.jy, $in.x, $in.y, $p.iterations) : gc_mandel($in.x, $in.y, 0.0f, 0.0f, $p.iterations);",
+       "escape time at the point x, y as 0..1 (1 = inside); Julia mode uses jx, jy as the constant and x, y as the start"),
     _n("Hash", "generate", "pixel", [("x", F, 0.0), ("y", F, 0.0), ("seed", F, 0.0)], [("value", F)], [],
        "$out.value = gc_hash($in.x, $in.y, $in.seed);",
        "a random 0..1 that is the same every frame for the same x, y, seed - one per cell or column"),
@@ -253,6 +257,19 @@ LIBRARY = [
        "{ const float a_ = $in.turns_a * 6.2831853f, b_ = $in.turns_b * 6.2831853f;\n"
        "  $out.x = cosf(a_) * cosf(b_); $out.y = sinf(a_) * cosf(b_); $out.z = sinf(b_); }",
        "a unit direction from two angles (turns) - the normal of a tumbling slab"),
+    _n("Log", "maths", "pixel", [("x", F, 1.0)], [("result", F)], [],
+       "$out.result = logf($in.x > 1e-6f ? $in.x : 1e-6f);", "natural log; a log spiral is density * log(radius) + arms * angle"),
+    _n("Exp", "maths", "pixel", [("x", F, 0.0)], [("result", F)], [],
+       "$out.result = expf($in.x < 60.0f ? $in.x : 60.0f);", "e to the x - a zoom that is the same proportion per second"),
+    _n("Mirror fold", "maths", "pixel", [("x", F, 0.0), ("y", F, 0.0), ("z", F, 1.0)], [("x", F), ("y", F), ("z", F)],
+       [_p("symmetry", "choice", "octahedral",
+           choices=["dihedral 3", "dihedral 4", "dihedral 5", "dihedral 6", "dihedral 7", "dihedral 8", "dihedral 9", "dihedral 10",
+                    "tetrahedral", "octahedral", "icosahedral"])],
+       "{ float fx_ = $in.x, fy_ = $in.y, fz_ = $in.z;\n"
+       "  static const char *syms_[] = {\"dihedral 3\", \"dihedral 4\", \"dihedral 5\", \"dihedral 6\", \"dihedral 7\", \"dihedral 8\", \"dihedral 9\", \"dihedral 10\", \"tetrahedral\", \"octahedral\", \"icosahedral\"};\n"
+       "  int sym_ = 9; for (int k_ = 0; k_ < 11; k_++) if (!strcmp(syms_[k_], \"$p.symmetry\")) sym_ = k_;\n"
+       "  gc_fold(sym_, fx_, fy_, fz_); $out.x = fx_; $out.y = fy_; $out.z = fz_; }",
+       "a kaleidoscope: reflects a direction into one fundamental domain of a finite mirror group, so whatever is drawn from the result is mirrored 6 to 120 times over the solid"),
     _n("Sine", "maths", "pixel", [("x", F, 0.0)], [("result", F)], [],
        "$out.result = cfx_sinf16($in.x * 6.28318531f);", "sin of x turns, -1..1"),
     _n("Smoothstep", "maths", "pixel", [("x", F, 0.0)], [("result", F)], [_p("e0", "float", 0.0), _p("e1", "float", 1.0)],
@@ -300,6 +317,31 @@ LIBRARY = [
             "gc_fw$p.field[py * W + px] = $in.value;",
             "this pixel's value of the field for next frame - what Field will read"),
          field=True),
+    # Drainage on the pixel grid: every pixel drains to its lowest neighbour
+    # in a height field, and the water that arrives here is the sum of last
+    # frame's water on the neighbours that drain to this pixel. Gather, not
+    # scatter, so it fits a per-pixel graph; convergence falls out.
+    dict(_n("Drain", "colour", "pixel", [], [("water", F), ("sink", B), ("height", F)],
+            [_p("height_field", "int", 0, 0, 1), _p("water_field", "int", 1, 0, 1)],
+            "{ const float *Hf_ = gc_fr$p.height_field; const float *Wf_ = gc_fr$p.water_field;\n"
+            "  const int me_ = py * W + px; float sum_ = 0.0f; const float h0_ = Hf_[me_];\n"
+            "  static const int dx_[4] = {1, -1, 0, 0}, dy_[4] = {0, 0, 1, -1};\n"
+            "  float lowest_ = h0_; $out.sink = true;\n"
+            "  for (int k_ = 0; k_ < 4; k_++) {\n"
+            "    const int nx_ = px + dx_[k_], ny_ = py + dy_[k_];\n"
+            "    if (nx_ < 0 || ny_ < 0 || nx_ >= W || ny_ >= H) continue;\n"
+            "    const int n_ = ny_ * W + nx_; const float hn_ = Hf_[n_];\n"
+            "    if (hn_ < lowest_) { lowest_ = hn_; $out.sink = false; }\n"
+            "    /* does n drain to me? me must be n's lowest neighbour */\n"
+            "    float nl_ = hn_; int best_ = -1;\n"
+            "    for (int j_ = 0; j_ < 4; j_++) {\n"
+            "      const int mx_ = nx_ + dx_[j_], my_ = ny_ + dy_[j_];\n"
+            "      if (mx_ < 0 || my_ < 0 || mx_ >= W || my_ >= H) continue;\n"
+            "      const int m_ = my_ * W + mx_; if (Hf_[m_] < nl_) { nl_ = Hf_[m_]; best_ = m_; } }\n"
+            "    if (best_ == me_) sum_ += Wf_[n_]; }\n"
+            "  $out.water = sum_; $out.height = h0_; }",
+            "watershed: the water flowing into this pixel from the neighbours that drain to it (their last-frame water), whether it is a sink, and its height - write the height and the water back with Field write"),
+         fields=["height_field", "water_field"]),
     _n("Previous", "colour", "pixel", [], [("color", C)], [],
        "$out.color = SEGMENT.is2D() ? SEGMENT.getPixelColorXY(px, py) : SEGMENT.getPixelColor(px);",
        "this pixel's colour from the LAST frame - feedback, for trails and fades"),
@@ -399,6 +441,62 @@ static inline void gc_ring_uv(float around, float depth, int W, int H, int B, bo
     else                          { py_ = B + gc_q(-sy_, B); px_ = (cx_ < 0) ? gc_q(Z, B) : 2 * B + gc_q(-Z, B); }
   }
   u = (W > 1) ? (float)px_ / (float)(W - 1) : 0.5f; v = (H > 1) ? (float)py_ / (float)(H - 1) : 0.5f;
+}
+// A finite reflection group's mirrors, each normal pointed at one generic
+// direction so every set is the positive roots of a single chamber and the
+// fold terminates (see cube_fx_39_kaleidoscope.cpp for the reasoning).
+//   sym 0..7  dihedral D(n), n = sym + 3 (with the equator)
+//   sym 8     tetrahedral   sym 9  octahedral   sym 10  icosahedral
+static int gc_mirrors(int sym, float m[16][3]) {
+  int n = 0;
+  const float gx = 0.2374f, gy = 0.4451f, gz = 0.8632f;
+  #define GC_MIR(a, b, c) { if (n < 16) { m[n][0] = (a); m[n][1] = (b); m[n][2] = (c); n++; } }
+  if (sym <= 7) {
+    const int k = sym + 3;
+    for (int i = 0; i < k; i++) { const float a = (float)i * 3.14159265f / (float)k; GC_MIR(-sinf(a), cosf(a), 0.0f); }
+    GC_MIR(0.0f, 0.0f, 1.0f);
+  } else if (sym <= 9) {
+    if (sym == 9) { GC_MIR(1, 0, 0); GC_MIR(0, 1, 0); GC_MIR(0, 0, 1); }
+    GC_MIR(1, -1, 0); GC_MIR(1, 1, 0); GC_MIR(0, 1, -1); GC_MIR(0, 1, 1); GC_MIR(1, 0, -1); GC_MIR(1, 0, 1);
+  } else {
+    const float P = 1.61803399f, Q = 0.61803399f;
+    GC_MIR(1, 0, 0); GC_MIR(0, 1, 0); GC_MIR(0, 0, 1);
+    for (int a = 0; a < 2; a++) for (int b = 0; b < 2; b++) {
+      const float sa = a ? -1.0f : 1.0f, sb = b ? -1.0f : 1.0f;
+      GC_MIR(1.0f, sa * P, sb * Q); GC_MIR(sa * P, sb * Q, 1.0f); GC_MIR(sb * Q, 1.0f, sa * P);
+    }
+  }
+  #undef GC_MIR
+  for (int j = 0; j < n; j++) {
+    const float L = sqrtf(m[j][0] * m[j][0] + m[j][1] * m[j][1] + m[j][2] * m[j][2]);
+    float sgn = (m[j][0] * gx + m[j][1] * gy + m[j][2] * gz) < 0.0f ? -1.0f : 1.0f;
+    if (L > 0.0f) sgn /= L;
+    m[j][0] *= sgn; m[j][1] *= sgn; m[j][2] *= sgn;
+  }
+  return n;
+}
+// Reflect a direction into the group's fundamental domain: bounce off any
+// mirror it is behind until nothing moves. Two or three sweeps in practice.
+static inline void gc_fold(int sym, float &x, float &y, float &z) {
+  static float mir[16][3]; static int nm = 0, have = -1;
+  if (have != sym) { nm = gc_mirrors(sym, mir); have = sym; }
+  for (int pass = 0; pass < 4; pass++) {
+    bool moved = false;
+    for (int j = 0; j < nm; j++) {
+      const float d = x * mir[j][0] + y * mir[j][1] + z * mir[j][2];
+      if (d < 0.0f) { const float t = 2.0f * d; x -= t * mir[j][0]; y -= t * mir[j][1]; z -= t * mir[j][2]; moved = true; }
+    }
+    if (!moved) break;
+  }
+}
+// Escape time of z -> z^2 + c, smoothed, as 0..1 (1 = never escaped); a
+// Julia set when jx, jy are given instead of the point itself.
+static inline float gc_mandel(float cx, float cy, float zx, float zy, int maxit) {
+  int i = 0; float x2 = zx * zx, y2 = zy * zy;
+  while (i < maxit && x2 + y2 < 16.0f) { zy = 2.0f * zx * zy + cy; zx = x2 - y2 + cx; x2 = zx * zx; y2 = zy * zy; i++; }
+  if (i >= maxit) return 1.0f;
+  const float nu = (float)i + 1.0f - logf(logf(sqrtf(x2 + y2)) / 0.6931472f) / 0.6931472f;
+  return gc_sat(nu / (float)maxit);
 }
 static inline uint32_t gc_prev_at(float u, float v, int W, int H, bool is2d) {
   int x = (int)floorf(gc_sat(u) * (float)(W - 1) + 0.5f), y = (int)floorf(gc_sat(v) * (float)(H - 1) + 0.5f);

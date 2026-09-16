@@ -1594,8 +1594,14 @@ def service_command(app):
                 app.gp.snapshot(); app.gp.graph.nodes[int(nid)]["params"][name] = val; app.gp.rebuild()
             if c.get("graph_build"):
                 app.gp.compile()
-            if "import" in c:                           # test hook: toggle the current file's import
-                app.toggle_import(c["import"] or app.edit_file)
+            if "import" in c:                           # test hook: put a file on the effects list
+                f = c["import"] or app.edit_file
+                if f and not app.project.is_imported(f):
+                    app.toggle_import(f)
+            if "unimport" in c:
+                f = c["unimport"] or app.edit_file
+                if f and app.project.is_imported(f):
+                    app.toggle_import(f)
             if "rename" in c:
                 dpg.set_value("new_name", c["rename"]); app.edit_rename()
             if "graph_rename" in c:

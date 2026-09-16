@@ -399,8 +399,9 @@ class Graph:
         # last frame's, write this frame's), as many as the Field nodes name.
         nfields = 0
         for nid in order:
-            if defs[nid].get("field"):
-                nfields = max(nfields, int(self.nodes[nid]["params"].get("field", 0)) + 1)
+            names = defs[nid].get("fields") or (["field"] if defs[nid].get("field") else [])
+            for pn in names:
+                nfields = max(nfields, int(self.nodes[nid]["params"].get(pn, 0)) + 1)
 
         def expand(nid):
             n = self.nodes[nid]; d = defs[nid]
