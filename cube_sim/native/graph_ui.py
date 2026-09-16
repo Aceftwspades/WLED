@@ -427,7 +427,11 @@ class GraphPanel:
     def _font(self):
         if not self._font_file:
             return None
-        size = max(8, self.px(BASE_FONT))
+        # Never larger than the zoom asks for: text that outgrows the boxes
+        # widens every node, so 50% came out a little bigger than 50%. A
+        # 6 px font at the far end is for seeing the shape of a graph, not
+        # reading it.
+        size = max(6, int(BASE_FONT * self.zoom))
         f = self._fonts.get(size)
         if f is None:
             try:

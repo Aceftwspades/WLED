@@ -1282,7 +1282,7 @@ def build(app):
         dpg.add_mouse_release_handler(button=dpg.mvMouseButton_Middle, callback=lambda s, a: app.gp.on_mid_release())
         dpg.add_key_press_handler(callback=app.on_key)
 
-    with dpg.window(tag="root"):
+    with dpg.window(tag="root", no_scroll_with_mouse=True):
         with dpg.group(horizontal=True):
             with dpg.child_window(tag="net_win", width=420, height=470):
                 dpg.add_text("Logical view - what the effect draws", tag="net_cap", color=(139, 147, 163))
@@ -1330,7 +1330,12 @@ def build(app):
                                 dpg.add_selectable(label=f"{label:34s} {doc}"[:110], user_data=(snippet, label),
                                                    callback=lambda s, a, u: app.api_pick(*u))
                 dpg.add_group(tag="edit_errors")
-            with dpg.child_window(tag="graph_win", width=420, height=470, show=False):
+            # The wheel over the graph zooms it; the pane must not also scroll
+            # (its toolbar rows plus the editor can overrun its height by a
+            # few pixels, and ImGui scrolls a window on the wheel whether or
+            # not a handler also took the event).
+            with dpg.child_window(tag="graph_win", width=420, height=470, show=False,
+                                  no_scrollbar=True, no_scroll_with_mouse=True):
                 build_panel(app, app.gp)
             # A splitter is a tall, thin button; dragging it moves the split.
             dpg.add_button(label="", tag="split_a", width=8, height=470)
