@@ -39,6 +39,9 @@ from native.geometry import Geometry, KINDS
 from native.project import default_project
 from native.graph_ui import GraphPanel, build_panel
 from native import render, gif
+from native.apiref import API
+import shutil
+import subprocess
 
 STEP = 23
 CUBE_MAX = 620          # cube render cost is quadratic in this, so it is capped
@@ -147,6 +150,8 @@ class App:
         self.edit_dirty = False
         self.build_q = queue.Queue()  # worker -> main thread: BuildReport
         self.building = False
+        self._watch_mtime = None     # the edit file's mtime when last read, for the watcher
+        self._watch_at = 0.0
         self.build_msg = ""
         self.gp = GraphPanel(self)    # the node editor
         global PALETTES
@@ -437,11 +442,118 @@ class App:
             return
         self.edit_file = fname
         self.edit_dirty = False
+        self._watch_mtime = self._mtime(fname)
         dpg.set_value("code", self.project.read_effect(fname))
         dpg.set_value("edit_status", f"{fname}")
         dpg.configure_item("edit_file", items=self.project.effect_files())
         dpg.set_value("edit_file", fname)
         self.refresh_import_buttons()
+
+    # --- the external editor and the file watcher -------------------------------------
+    # The in-app box is for quick fixes. For real editing the file opens in
+    # whatever editor the system has - VS Code if it is on the path, else the
+    # .cpp association - and the watcher reloads the pane (and rebuilds, when
+    # "watch" is ticked) each time the file is saved there. Click-to-line
+    # goes to the same editor, since the in-app box cannot move its cursor.
+    def _mtime(self, fname):
+        try:
+            return os.path.getmtime(self.project.effect_path(fname))
+        except OSError:
+            return None
+
+    def editor_command(self):
+        """The command that opens a file at a line, as a list with {file} and
+        {line} holes; from project options, else VS Code, else none."""
+        cmd = self.project.options.get("editor")
+        if cmd:
+            return cmd if isinstance(cmd, list) else cmd.split()
+        code = shutil.which("code") or shutil.which("code.cmd")
+        if code:
+            return [code, "-g", "{file}:{line}"]
+        return None
+
+    def open_external(self, line=1):
+        if not self.edit_file:
+            return
+        if self.edit_dirty:
+            self.edit_save()
+        path = self.project.effect_path(self.edit_file)
+        cmd = self.editor_command()
+        try:
+            if cmd:
+                subprocess.Popen([c.replace("{file}", path).replace("{line}", str(line)) for c in cmd])
+                dpg.set_value("edit_status", f"opened in {os.path.basename(cmd[0])} - saves there reload here")
+            elif hasattr(os, "startfile"):
+                os.startfile(path)
+                dpg.set_value("edit_status", "opened in the system's .cpp editor - saves there reload here")
+            else:
+                opener = shutil.which("xdg-open") or shutil.which("open")
+                if opener:
+                    subprocess.Popen([opener, path])
+                dpg.set_value("edit_status", "opened externally - saves there reload here")
+        except Exception as e:
+            dpg.set_value("edit_status", f"could not open an editor: {e}")
+        if dpg.does_item_exist("edit_watch"):
+            dpg.set_value("edit_watch", True)
+
+    def poll_watch(self):
+        """Twice a second: has the file been saved outside? Then the pane
+        takes the new text, unless it has unsaved edits of its own, and a
+        watched file rebuilds."""
+        now = time.time()
+        if now - self._watch_at < 0.5 or not self.edit_file:
+            return
+        self._watch_at = now
+        m = self._mtime(self.edit_file)
+        if m is None or m == self._watch_mtime:
+            return
+        self._watch_mtime = m
+        if self.edit_dirty:
+            dpg.set_value("edit_status", f"{self.edit_file} changed on disk - unsaved edits here, not reloaded")
+            return
+        dpg.set_value("code", self.project.read_effect(self.edit_file))
+        dpg.set_value("edit_status", f"{self.edit_file} reloaded from disk")
+        if dpg.does_item_exist("edit_watch") and dpg.get_value("edit_watch") and not self.building:
+            self.edit_build()
+
+    def goto_line(self, line):
+        """An error row was clicked: the external editor at that line, and
+        the line's text in the status either way."""
+        text = dpg.get_value("code").split("\n")
+        if 1 <= line <= len(text):
+            dpg.set_value("edit_status", f"line {line}: {text[line - 1].strip()[:90]}")
+        if self.editor_command() or dpg.get_value("edit_watch"):
+            self.open_external(line)
+
+    # --- find and replace ----------------------------------------------------------------
+    def find(self):
+        """Every line holding the find text, as rows that go to the line."""
+        needle = dpg.get_value("find_text")
+        dpg.delete_item("edit_errors", children_only=True)
+        if not needle:
+            return
+        lines = dpg.get_value("code").split("\n")
+        hits = [(i + 1, l) for i, l in enumerate(lines) if needle.lower() in l.lower()]
+        dpg.set_value("edit_status", f"{len(hits)} line(s) match")
+        for ln, l in hits[:40]:
+            dpg.add_selectable(label=f"{ln}: {l.strip()[:100]}", parent="edit_errors", user_data=ln,
+                               callback=lambda s, a, u: self.goto_line(u))
+
+    def replace_all(self):
+        needle = dpg.get_value("find_text"); repl = dpg.get_value("replace_text")
+        if not needle:
+            return
+        text = dpg.get_value("code")
+        n = text.count(needle)
+        if n:
+            dpg.set_value("code", text.replace(needle, repl))
+            self.edit_dirty = True
+        dpg.set_value("edit_status", f"replaced {n} occurrence(s)")
+        self.find()
+
+    def api_pick(self, snippet, label):
+        dpg.set_clipboard_text(snippet)
+        dpg.set_value("edit_status", f"copied: {label} - Ctrl+V to paste at the cursor")
 
     def refresh_import_buttons(self):
         """The import buttons say what pressing them does to the current file."""
@@ -558,9 +670,15 @@ class App:
             dpg.set_value("edit_status", f"{len(errs)} problem(s)")
             for path, line, msg in errs[:30]:
                 fn = os.path.basename(path)
-                dpg.add_text(f"{fn}:{line}  {msg}"[:140], parent="edit_errors",
-                             color=(235, 120, 110) if msg.startswith("error") else (200, 190, 120),
-                             wrap=0)
+                mine_file = fn == self.edit_file
+                row = dpg.add_selectable(label=f"{fn}:{line}  {msg}"[:140], parent="edit_errors",
+                                         user_data=int(line) if mine_file else None,
+                                         callback=lambda s, a, u: self.goto_line(u) if u else None)
+                with dpg.theme() as th:
+                    with dpg.theme_component(dpg.mvSelectable):
+                        dpg.add_theme_color(dpg.mvThemeCol_Text,
+                                            (235, 120, 110) if msg.startswith("error") else (200, 190, 120))
+                dpg.bind_item_theme(row, th)
             if not errs and rep.link_output:
                 dpg.add_text(rep.link_output[-600:], parent="edit_errors", color=(235, 120, 110), wrap=0)
             return
@@ -735,7 +853,7 @@ class App:
             for tag in ("net_win", "cube_win"):
                 dpg.configure_item(tag, width=side + 22, height=pane_h + 34)
             dpg.configure_item("edit_win", width=side + 22, height=pane_h + 34)
-            dpg.configure_item("code", width=side + 4, height=pane_h - 150)
+            dpg.configure_item("code", width=side + 4, height=pane_h - 240)
             # the graph pane takes the room the logical view would - and more,
             # when the window is wide: nodes want space, the 3-D view does not
             gw = max(side + 22, vw - SIDE_W - side - 60) if self.layout == "graph" else side + 22
@@ -852,6 +970,8 @@ class App:
         # Not while a value is being typed. The handler is global, so without
         # this, typing into a box would also be driving the layout.
         if any(dpg.does_item_exist(t) and dpg.is_item_active(t) for t in self._inputs):
+            return
+        if any(dpg.does_item_exist(t) and dpg.is_item_active(t) for t in ("find_text", "replace_text")):
             return
         if self.layout == "graph" and self.gp.typing():
             if app_data == dpg.mvKey_Return and dpg.does_item_exist("graph_search") and dpg.is_item_active("graph_search"):
@@ -998,11 +1118,26 @@ def build(app):
                     dpg.add_button(label="rename", callback=lambda: app.edit_rename())
                     dpg.add_button(label="import to list", tag="edit_import",
                                    callback=lambda: app.toggle_import(app.edit_file))
+                with dpg.group(horizontal=True):
+                    dpg.add_button(label="open in editor", callback=lambda: app.open_external())
+                    dpg.add_checkbox(label="watch: rebuild when saved outside", tag="edit_watch", default_value=False)
                     dpg.add_button(label="export", callback=lambda: dpg.set_value(
                         "edit_status", "exported to " + app.project.export()))
                 dpg.add_text("", tag="edit_status", color=(139, 147, 163))
                 dpg.add_input_text(tag="code", multiline=True, width=400, height=300,
                                    tab_input=True, callback=app.on_code_edit)
+                with dpg.group(horizontal=True):
+                    dpg.add_input_text(tag="find_text", hint="find", width=130, on_enter=True,
+                                       callback=lambda: app.find())
+                    dpg.add_button(label="find", callback=lambda: app.find())
+                    dpg.add_input_text(tag="replace_text", hint="replace with", width=130)
+                    dpg.add_button(label="replace all", callback=lambda: app.replace_all())
+                with dpg.collapsing_header(label="API reference - click copies, Ctrl+V pastes", default_open=False):
+                    for group, items in API:
+                        with dpg.tree_node(label=group):
+                            for label, snippet, doc in items:
+                                dpg.add_selectable(label=f"{label:34s} {doc}"[:110], user_data=(snippet, label),
+                                                   callback=lambda s, a, u: app.api_pick(*u))
                 dpg.add_group(tag="edit_errors")
             with dpg.child_window(tag="graph_win", width=420, height=470, show=False):
                 build_panel(app, app.gp)
@@ -1219,6 +1354,10 @@ def service_command(app):
                 dpg.set_value("new_name", c["rename"]); app.edit_rename()
             if "graph_rename" in c:
                 app.gp.rename(c["graph_rename"])
+            if "find" in c:
+                dpg.set_value("find_text", c["find"]); app.find()
+            if "replace" in c:
+                dpg.set_value("replace_text", c["replace"]); app.replace_all()
             if "graph_preview" in c:
                 if c["graph_preview"]:
                     nid, name = c["graph_preview"]; app.gp.preview_pin(int(nid), name)
@@ -1350,6 +1489,7 @@ def main():
             try:
                 app.poll_build()
                 app.gp.poll()
+                app.poll_watch()
                 app.step_sim()
                 app.draw()
             except Exception:

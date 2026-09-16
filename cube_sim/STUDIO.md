@@ -171,11 +171,18 @@ editor. Ticked when done; the order within a group is the order to do them.
 
 ### Code editor
 
-- [ ] **Open in external editor** with reload on file change — the cheap
-      route to highlighting, line numbers and bracket matching.
-- [ ] **Click an error to jump to its line.**
-- [ ] **Find / replace.**
-- [ ] **API side panel**: `SEGMENT.*` / `cfx_*` helpers, insert on click.
+- [x] **Open in external editor** — VS Code if `code` is on the path (at
+      the line, `-g`), else the system's .cpp association; `"editor"` in
+      project.json overrides (a command with `{file}` and `{line}`). The pane
+      reloads when the file is saved outside, and "watch" rebuilds too.
+- [x] **Click an error to jump to its line** — the external editor opens at
+      it, and the line's text shows in the status. The in-app box cannot move
+      its own cursor, which is the limit of DearPyGui's text input.
+- [x] **Find / replace** — find lists matching lines (click → line);
+      replace all.
+- [x] **API reference** under the code: `SEGMENT.*`, time, pixels, colour,
+      noise, state, audio, cube helpers, metadata; a click copies the snippet
+      (the box cannot take an insertion), Ctrl+V pastes it at the cursor.
 - [ ] A real editor widget in-app (drawlist-based) — a project in itself;
       only if the external hand-off proves insufficient.
 
