@@ -524,6 +524,17 @@ class CfxPalettes : public Usermod {
     // whole of it.
     void setSource(uint8_t s) { source = s; builtFor = 0xFF; }
     uint8_t getSource() const { return source; }
+
+    // One colour straight out of the source palette, for effects (and the
+    // Studio's Palette-source node) that want the chosen colours without the
+    // audio behaviour. Builds the source on first use if loop() has not.
+    uint32_t sourceColor(uint8_t pos, uint8_t bri) {
+      const uint32_t *cols = segColors();
+      if (builtFor != source || builtCols[0] != cols[0] || builtCols[1] != cols[1] || builtCols[2] != cols[2])
+        buildSource();
+      const CRGB c = pick(pos, bri);
+      return RGBW32(c.r, c.g, c.b, 0);
+    }
 };
 
 static CfxPalettes cfx_palettes_instance;
@@ -532,3 +543,4 @@ REGISTER_USERMOD(cfx_palettes_instance);
 // Free functions so a host can reach the setting without knowing the class.
 void    cfxSetPaletteSource(uint8_t s) { cfx_palettes_instance.setSource(s); }
 uint8_t cfxGetPaletteSource()          { return cfx_palettes_instance.getSource(); }
+uint32_t cfxPaletteSourceColor(uint8_t pos, uint8_t bri) { return cfx_palettes_instance.sourceColor(pos, bri); }

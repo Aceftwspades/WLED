@@ -44,6 +44,7 @@ API = [
         ("RGBW32(r, g, b, w)", "RGBW32(r, g, b, 0)", "pack a colour"),
         ("R(c) G(c) B(c)", "R(c)", "unpack a channel"),
         ("mq_scale(c, s)", "mq_scale(c, 128)", "scale a colour by 0..255 (cube_fx_common.h)"),
+        ("cfxPaletteSourceColor(pos, bri)", "cfxPaletteSourceColor(idx, 255)", "the palette-source setting's colour; declare weak, see a generated graph effect"),
         ("color_blend(a, b, f)", "color_blend(a, b, 128)", "mix two colours, f 0..255"),
         ("color_add(a, b)", "color_add(a, b)", "saturating add"),
         ("gamma32(c)", "gamma32(c)", "gamma-correct"),

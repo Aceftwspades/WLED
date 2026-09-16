@@ -179,6 +179,10 @@ LIBRARY = [
     _n("Palette", "colour", "pixel", [("index", F, 0.0), ("brightness", F, 1.0)], [("color", C)], [],
        "$out.color = mq_scale(SEGMENT.color_from_palette((uint8_t)(int)($in.index * 255.0f), false, true, 0), (uint8_t)(gc_sat($in.brightness) * 255.0f));",
        "the segment's palette at index 0..1 (wraps), scaled"),
+    _n("Palette source", "colour", "pixel", [("index", F, 0.0), ("brightness", F, 1.0)], [("color", C)], [],
+       "$out.color = gc_srcpal((uint8_t)(int)($in.index * 255.0f), (uint8_t)(gc_sat($in.brightness) * 255.0f));",
+       "the palette-source setting's colours (what the audio palettes draw from) at index 0..1; "
+       "the segment's palette where the palettes usermod is absent"),
     _n("HSV", "colour", "pixel", [("h", F, 0.0), ("s", F, 1.0), ("v", F, 1.0)], [("color", C)], [],
        "$out.color = gc_hsv($in.h, $in.s, $in.v);", "hue 0..1 round the wheel"),
     _n("Scale", "colour", "pixel", [("color", C, 0), ("by", F, 1.0)], [("color", C)], [],
@@ -246,6 +250,14 @@ LIBRARY = [
 # they cannot collide with anything in wled.h or cube_fx_common.h.
 HELPERS = r'''
 static inline float gc_sat(float x) { return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); }
+// The palette-source colour lives in the cube_fx palettes usermod. Weak, so a
+// build without that usermod still links and the node falls back to the
+// segment's own palette.
+uint32_t cfxPaletteSourceColor(uint8_t pos, uint8_t bri) __attribute__((weak));
+static inline uint32_t gc_srcpal(uint8_t pos, uint8_t bri) {
+  if (cfxPaletteSourceColor) return cfxPaletteSourceColor(pos, bri);
+  return mq_scale(SEGMENT.color_from_palette(pos, false, true, 0), bri);
+}
 static inline uint32_t gc_hsv(float h, float s, float v) {
   h -= floorf(h); const float hh = h * 6.0f; const int i = (int)hh; const float f = hh - i;
   const float p = v * (1.0f - s), q = v * (1.0f - s * f), t = v * (1.0f - s * (1.0f - f));

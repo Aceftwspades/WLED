@@ -189,8 +189,12 @@ editor. Ticked when done; the order within a group is the order to do them.
 ### Project and workflow
 
 - [ ] **Multiple projects**: new / open / recent, not just `projects/default`.
-- [ ] **Palette source node**, and palette-index nodes for the audio-reactive
-      palettes.
+- [x] **Palette source node**: the colours the palette-source setting names
+      (what the audio-reactive palettes draw from), at an index. One small
+      firmware addition, `cfxPaletteSourceColor()` in cube_fx_palettes.cpp,
+      declared weak by the generated code with the segment's palette as the
+      fallback, so the effect builds without that usermod. The audio-reactive
+      palettes themselves are ordinary palettes: pick one on the Palette node.
 - [ ] **Effect metadata in the UI**: default slider values, default palette,
       the flags string — hand-edited in the generated file today.
 - [ ] **Graph import / export** as one JSON carrying the sub-graphs it uses,
