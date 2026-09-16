@@ -121,6 +121,10 @@ class GraphPanel:
         self._font_file = _font_file()
         self._zoom_themes = {}   # zoom -> node-editor style theme
         self._node_themes = {}   # (r,g,b) -> a node theme with that title bar
+        self.focus_mode = False  # dim everything but the selection and its neighbours
+        self._focus_sel = None
+        self._link_normal = {}   # dpg link id -> the theme it wears when not dimmed
+        self._label_items = []   # the wire labels drawn last frame
         self._mark_themes = {}   # "error"/"warn" -> outline theme
         self.problems = {}       # node id -> message, from the last rebuild
         self.preview = None      # (node, output) routed to Output instead of the graph's own
@@ -233,7 +237,18 @@ class GraphPanel:
             tag = f"gnode_{nid}"
             if dpg.does_item_exist(tag):
                 n["pos"] = list(dpg.get_item_pos(tag))
-        G.save(self.graph, os.path.join(self.cur_dir or self.dir, self.file))
+        path = os.path.join(self.cur_dir or self.dir, self.file)
+        if os.path.exists(path):
+            from native import history
+            import json
+            try:
+                old = open(path, encoding="utf-8").read()
+            except OSError:
+                old = ""
+            if old != json.dumps(self.graph.to_json(), indent=1):
+                history.keep(self.app.project, "subgraphs" if self.cur_dir == self.sub_dir else "graphs",
+                             self.file[:-5], ".json", old)
+        G.save(self.graph, path)
         self.status(f"{self.file} saved")
         if self.cur_dir == self.sub_dir:
             self._subs.pop(self.file[:-5], None)     # its pins may have changed
@@ -750,6 +765,8 @@ class GraphPanel:
         self._poll_frames()
         self._poll_help()
         self._poll_props()
+        self._poll_focus()
+        self._poll_labels()
         if not self.auto or not self._dirty or not self.graph:
             return
         if time.time() - self._dirty < self.AUTO_DELAY:
@@ -763,7 +780,8 @@ class GraphPanel:
         self.touch()
         self._widgets.clear()
         dpg.delete_item("node_editor", children_only=True)
-        self.links.clear(); self._pins.clear(); self._ptype.clear()
+        self.links.clear(); self._pins.clear(); self._ptype.clear(); self._link_normal.clear()
+        self._focus_sel = None
         if not self.graph:
             return
         f = self._font()
@@ -876,6 +894,10 @@ class GraphPanel:
                 dpg.bind_item_theme(tag, th.pin[o["type"]])
                 self._pins[(nid, "out", o["name"])] = tag
                 self._ptype[tag] = o["type"]
+        self._bind_node_theme(nid, n)
+
+    def _bind_node_theme(self, nid, n):
+        """The node's own look: muted grey, its colour, a frame's wash."""
         col = n.get("color")
         if n.get("muted"):
             dpg.bind_item_theme(f"gnode_{nid}", self._node_theme((70, 74, 82)))
@@ -883,6 +905,194 @@ class GraphPanel:
             dpg.bind_item_theme(f"gnode_{nid}", self._node_theme(tuple(col)))
         elif n["type"] == "Frame":
             dpg.bind_item_theme(f"gnode_{nid}", self._node_theme(tuple(n["params"].get("colour", [90, 110, 160]))[:3], frame=True))
+        else:
+            dpg.bind_item_theme(f"gnode_{nid}", 0)
+
+    # --- focus mode -------------------------------------------------------------------
+    # Everything but the selection and what it is wired to goes dim, so a
+    # busy graph can be read one piece at a time. Themes are rebound when
+    # the selection changes; nothing is rebuilt.
+    def _dim_theme(self):
+        th = self._node_themes.get("dim")
+        if th is None:
+            with dpg.theme() as th:
+                with dpg.theme_component(dpg.mvNode):
+                    dpg.add_theme_color(dpg.mvNodeCol_NodeBackground, (24, 27, 34, 110), category=dpg.mvThemeCat_Nodes)
+                    dpg.add_theme_color(dpg.mvNodeCol_NodeBackgroundHovered, (26, 30, 38, 130), category=dpg.mvThemeCat_Nodes)
+                    dpg.add_theme_color(dpg.mvNodeCol_TitleBar, (30, 34, 42, 110), category=dpg.mvThemeCat_Nodes)
+                    dpg.add_theme_color(dpg.mvNodeCol_TitleBarHovered, (34, 39, 48, 130), category=dpg.mvThemeCat_Nodes)
+                    dpg.add_theme_color(dpg.mvNodeCol_NodeOutline, (36, 41, 50, 60), category=dpg.mvThemeCat_Nodes)
+                    dpg.add_theme_color(dpg.mvNodeCol_Pin, (60, 66, 78, 120), category=dpg.mvThemeCat_Nodes)
+                with dpg.theme_component(dpg.mvAll):
+                    dpg.add_theme_color(dpg.mvThemeCol_Text, (78, 84, 96), category=dpg.mvThemeCat_Core)
+                    dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (26, 29, 36, 80), category=dpg.mvThemeCat_Core)
+            self._node_themes["dim"] = th
+        return th
+
+    def _dim_wire(self):
+        return self._wire_theme((44, 49, 60))
+
+    def set_focus_mode(self, on):
+        self.focus_mode = bool(on)
+        self._focus_sel = None
+        if not self.focus_mode and self.graph:
+            self._apply_focus(None)
+        self.status("focus mode: the selection and its neighbours lit" if on else "focus mode off")
+
+    def _poll_focus(self):
+        if not self.focus_mode or not self.graph:
+            return
+        sel = set(self._selected())
+        if sel == self._focus_sel:
+            return
+        self._focus_sel = sel
+        keep = set(sel)
+        for a, out, b, inp in self.graph.links:
+            if a in sel:
+                keep.add(b)
+            if b in sel:
+                keep.add(a)
+        self._apply_focus(keep if sel else None)
+
+    def _apply_focus(self, keep):
+        """keep: the nodes left lit; None lights everything."""
+        th = self.themes()
+        for nid, n in self.graph.nodes.items():
+            if not dpg.does_item_exist(f"gnode_{nid}"):
+                continue
+            lit = keep is None or nid in keep
+            if lit:
+                self._bind_node_theme(nid, n)
+            else:
+                dpg.bind_item_theme(f"gnode_{nid}", self._dim_theme())
+            for (pn, kind, name), tag in self._pins.items():
+                if pn == nid and dpg.does_item_exist(tag):
+                    t = self._ptype.get(tag, "float")
+                    dpg.bind_item_theme(tag, th.pin[t] if lit else th.grey[t])
+        ends = {(l[2], l[3]): l[0] for l in self.graph.links}
+        for lid, (b, inp) in self.links.items():
+            if not dpg.does_item_exist(lid):
+                continue
+            a = ends.get((b, inp))
+            lit = keep is None or a in keep or b in keep
+            dpg.bind_item_theme(lid, self._link_normal.get(lid, 0) if lit else self._dim_wire())
+        if keep is not None:
+            self._mark_problems()
+
+    # --- wire labels ---------------------------------------------------------------------
+    # A label on a wire is text drawn over the editor at the wire's middle,
+    # between the two pins' positions as they are this frame. It lives in
+    # the link's meta, beside its colour.
+    def set_wire_label(self, b, inp, text):
+        self.snapshot(); self._sync_pos()
+        meta = dict(self.graph.link_meta.get((b, inp)) or {})
+        text = (text or "").strip()
+        if text:
+            meta["label"] = text
+        else:
+            meta.pop("label", None)
+        if meta:
+            self.graph.link_meta[(b, inp)] = meta
+        else:
+            self.graph.link_meta.pop((b, inp), None)
+        self.touch()
+
+    def _pin_point(self, nid, kind, name):
+        """Where a pin's circle is on screen: an attribute reports no
+        rectangle, but its text does, and the circle sits on the node's
+        edge at that height."""
+        tag = self._pins.get((nid, kind, name))
+        if not tag or not dpg.does_item_exist(tag) or not dpg.does_item_exist(f"gnode_{nid}"):
+            return None
+        kids = dpg.get_item_children(tag, 1) or []
+        if not kids:
+            return None
+        st = dpg.get_item_state(kids[0])
+        nd = dpg.get_item_state(f"gnode_{nid}")
+        if "rect_min" not in st or "rect_min" not in nd:
+            return None
+        y = (st["rect_min"][1] + st["rect_max"][1]) / 2
+        pad = self.px(8)
+        x = nd["rect_max"][0] + pad if kind == "out" else nd["rect_min"][0] - pad
+        return (x, y)
+
+    def _poll_labels(self):
+        if not dpg.does_item_exist("wire_labels"):
+            dpg.add_viewport_drawlist(front=True, tag="wire_labels")
+        for it in self._label_items:
+            if dpg.does_item_exist(it):
+                dpg.delete_item(it)
+        self._label_items = []
+        if not self.graph or self.app.layout != "graph" or not self.app.ui:
+            return
+        if dpg.is_item_shown("graph_menu") or dpg.is_item_shown("graph_ctx"):
+            return
+        labelled = [(k, m["label"]) for k, m in self.graph.link_meta.items() if m.get("label")]
+        if not labelled:
+            return
+        pane = self.app._screen_rect("graph_win")
+        if not pane:
+            return
+        eh = dpg.get_item_rect_size("node_editor")[1]
+        x0, y0, x1, y1 = pane[0] + 9, pane[3] - 9 - eh, pane[2] - 9, pane[3] - 9
+        ends = {(l[2], l[3]): (l[0], l[1]) for l in self.graph.links}
+        for (b, inp), text in labelled:
+            src = ends.get((b, inp))
+            if not src:
+                continue
+            pa, pb = self._pin_point(src[0], "out", src[1]), self._pin_point(b, "in", inp)
+            if not pa or not pb:
+                continue
+            (ax, ay), (bx, by) = pa, pb
+            mx, my = (ax + bx) / 2, (ay + by) / 2
+            w = len(text) * 7 + 10
+            if mx - w / 2 < x0 or mx + w / 2 > x1 or my - 9 < y0 or my + 9 > y1:
+                continue
+            self._label_items.append(dpg.draw_rectangle((mx - w / 2, my - 9), (mx + w / 2, my + 9), parent="wire_labels",
+                                                        color=(60, 66, 80, 255), fill=(20, 23, 29, 235), rounding=4))
+            self._label_items.append(dpg.draw_text((mx - w / 2 + 5, my - 7), text, parent="wire_labels",
+                                                   color=(200, 206, 216, 255), size=13))
+
+    # --- presets --------------------------------------------------------------------------
+    # A node as it is set up now, saved by name, to drop in again. Global
+    # (studio.json): a tool, not a project file. One whose type this project
+    # does not have (a sub-graph elsewhere) is left out of the menus.
+    def presets(self):
+        return {k: v for k, v in (self.app.prefs.get("presets") or {}).items()
+                if v.get("type") in self.lib}
+
+    def save_preset(self, nid, name):
+        n = self.graph.nodes.get(nid)
+        name = (name or "").strip()
+        if not n or not name:
+            self.status("a name is needed for the preset"); return
+        p = {"type": n["type"], "params": dict(n.get("params") or {})}
+        for k in ("color", "collapsed", "hide_pins", "expose"):
+            if n.get(k):
+                p[k] = n[k]
+        self.app.prefs.setdefault("presets", {})[name] = p
+        from native.project import save_prefs
+        save_prefs(self.app.prefs)
+        self.fill_add_menu()
+        self.status(f"preset {name} saved")
+
+    def delete_preset(self, name):
+        (self.app.prefs.get("presets") or {}).pop(name, None)
+        from native.project import save_prefs
+        save_prefs(self.app.prefs)
+        self.fill_add_menu()
+
+    def add_preset(self, name, pos):
+        p = self.presets().get(name)
+        if not p or not self.graph:
+            return None
+        self.snapshot()
+        nid = self.graph.add(p["type"], pos, params=dict(p.get("params") or {}))
+        for k in ("color", "collapsed", "hide_pins", "expose"):
+            if p.get(k):
+                self.graph.nodes[nid][k] = p[k]
+        self._make_node(nid, self.graph.nodes[nid])
+        return nid
 
     def _node_theme(self, col, frame=False):
         """A node theme whose title bar is `col`; a frame's body is a wash of
@@ -1249,6 +1459,7 @@ class GraphPanel:
         col = meta.get("color")
         dpg.bind_item_theme(lid, self._wire_theme(tuple(col)) if col else self.themes().link[self._ptype.get(ta, "float")])
         self.links[lid] = (b, inp)
+        self._link_normal[lid] = self._wire_theme(tuple(col)) if col else self.themes().link[self._ptype.get(ta, "float")]
         self._show_input(b, inp, True)
 
     def _wire_theme(self, col):
@@ -1407,10 +1618,12 @@ class GraphPanel:
             return
         dpg.delete_item("graph_hits", children_only=True)
         names = only if only is not None else [n.split(" / ", 1)[1] for n in self.type_names()]
+        if only is None:
+            names = ["preset:" + p for p in sorted(self.presets())] + names
         hits = []
         for n in names:
             d = self.lib.get(n, {})
-            lbl = d.get("label", n)
+            lbl = d.get("label", n) if not n.startswith("preset:") else n[7:] + "  (preset)"
             if not text or text in lbl.lower() or text in n.lower() or text in d.get("doc", "").lower():
                 hits.append((0 if text and lbl.lower().startswith(text) else 1, lbl, n))
         if text:
@@ -1465,6 +1678,14 @@ class GraphPanel:
                     for t in between[:8]:
                         row(f"  {t}", lambda t=t: self._insert_before(nid, name, t))
             row("reset to default", lambda: self._reset_input(nid, name, i))
+            if linked:
+                from native import chrome
+                lbl = (self.graph.link_meta.get((nid, name)) or {}).get("label", "")
+                row("relabel this wire..." if lbl else "label this wire...",
+                    lambda: chrome.ask(self.app, "Wire label", "a few words on what this wire carries", lbl,
+                                       lambda v: self.set_wire_label(nid, name, v)))
+                if lbl:
+                    row("remove the label", lambda: self.set_wire_label(nid, name, ""))
             # expose this input as a control: a slider or checkbox node, wired in
             ctrls = ["Speed", "Intensity", "Custom 1", "Custom 2", "Custom 3"] if i["type"] != "bool" \
                     else ["Check 1", "Check 2", "Check 3"]
@@ -1506,6 +1727,10 @@ class GraphPanel:
                 row("copy selection", self.copy)
                 row("cut selection", self.cut)
             row("duplicate", lambda: self._dup(nid))
+            if not n["type"].startswith(G.SUB) and n["type"] not in ("Frame", "Note", "Knot"):
+                from native import chrome
+                row("save as a preset...", lambda: chrome.ask(self.app, "Node preset", "a name for this node as it is set up",
+                                                              "", lambda v: self.save_preset(nid, v)))
             if d["inputs"] or d["params"]:
                 row("expand" if n.get("collapsed") else "collapse", lambda: self._collapse(nid))
                 row("show all pins" if n.get("hide_pins") else "hide unwired pins", lambda: self._toggle(nid, "hide_pins"))
@@ -1801,6 +2026,15 @@ class GraphPanel:
         dpg.add_child_window(tag="graph_hits", parent="graph_menu", show=False, width=230, height=60,
                              border=False)
         with dpg.child_window(tag="graph_cats", parent="graph_menu", width=230, height=430, border=False):
+            pre = self.presets()
+            if pre:
+                with dpg.collapsing_header(label="presets", default_open=True):
+                    for name in sorted(pre):
+                        with dpg.group(horizontal=True):
+                            dpg.add_selectable(label=name, user_data="preset:" + name, width=180,
+                                               callback=lambda s, a, u: self.add_node_at_menu(u))
+                            dpg.add_button(label="x", small=True, user_data=name,
+                                           callback=lambda s, a, u: self.delete_preset(u))
             for c, names in cats.items():
                 with dpg.collapsing_header(label=c, default_open=(c in ("generate", "colour", "subgraphs"))):
                     for n in names:
@@ -1817,11 +2051,19 @@ class GraphPanel:
     def add_node_at_menu(self, type_):
         self.touch()
         dpg.configure_item("graph_menu", show=False)
-        if not self.graph or type_ not in self.lib:
+        if not self.graph:
             return
-        self.snapshot()
-        nid = self.graph.add(type_, self._menu_pos)
-        self._make_node(nid, self.graph.nodes[nid])
+        if type_.startswith("preset:"):
+            nid = self.add_preset(type_[7:], self._menu_pos)
+            if nid is None:
+                return
+            type_ = self.graph.nodes[nid]["type"]
+        elif type_ not in self.lib:
+            return
+        else:
+            self.snapshot()
+            nid = self.graph.add(type_, self._menu_pos)
+            self._make_node(nid, self.graph.nodes[nid])
         if type_ == "Frame":
             self._sync_pos(); self.rebuild()      # behind the nodes it now covers
         if self._pending and self._pending[0] == "into":

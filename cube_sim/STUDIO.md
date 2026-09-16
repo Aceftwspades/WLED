@@ -489,12 +489,19 @@ them within each group; ticked when done.
       compiler rewrites the node's template for it (`exposed_def`).
 - [x] **Where used**: a node's right-click menu and the Node menu list every
       graph and sub-graph with that type, with counts; a click opens it.
-- [ ] **Node presets**: save a configured node (Noise with these octaves)
-      to drop in again.
-- [ ] **Version history** per graph: a copy per save, restorable, so live
-      editing is safe.
-- [ ] **Focus mode**: dim the wires and nodes outside the selection.
-- [ ] **Wire labels**.
+- [x] **Node presets**: a node's right-click menu saves it as it is set
+      up, by name (`studio.json`, so they follow you across projects); the
+      add menu lists them under "presets" and the search finds them.
+- [x] **Version history** (`native/history.py`): every save of a graph, a
+      sub-graph or a code effect first keeps what the file held, the newest
+      40 per file under `<project>/history/`; File > History lists them
+      with a restore, which keeps the current one first.
+- [x] **Focus mode** (View, `/`): everything but the selection and what it
+      is wired to goes dim - themes rebound on a selection change, nothing
+      rebuilt.
+- [x] **Wire labels**: an input pin's right-click menu labels its wire; the
+      text is drawn at the wire's middle, kept in the link's meta beside
+      its colour.
 
 ### Preview and testing
 

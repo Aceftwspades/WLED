@@ -68,6 +68,8 @@ ACTIONS = [
     ("zoom_reset",    "Zoom 100%",                                           "Ctrl+0", "graph"),
     ("frame_all",     "Frame the whole graph",                               "Home",   "graph"),
     ("stop_preview",  "Stop the pin preview",                                "Escape", "graph"),
+    ("focus_mode",    "Focus mode: dim all but the selection",               "/",      "graph"),
+    ("history",       "History of the current graph or code",                "Ctrl+Shift+Y", "global"),
 ]
 
 # Not rebindable; shown under the table.

@@ -1517,6 +1517,8 @@ class App:
             "zoom_reset":   lambda: gp.set_zoom(1.0),
             "frame_all":    gp.home,
             "stop_preview": gp.stop_preview,
+            "focus_mode":   lambda: gp.set_focus_mode(not gp.focus_mode),
+            "history":      lambda: chrome.show_history(self),
         }
         fn = table.get(action)
         if fn:
@@ -1535,7 +1537,7 @@ class App:
         x, y = st.get("rect_min") or dpg.get_item_pos(tag)
         return (x, y, x + w, y + h)
 
-    FLOATING = ("frames_win", "keys_win", "flash_win", "where_win", "name_dialog", "device_dialog", "editor_dialog", "about_win",
+    FLOATING = ("frames_win", "keys_win", "flash_win", "where_win", "history_win", "name_dialog", "device_dialog", "editor_dialog", "about_win",
                 "open_menu", "graph_menu", "graph_ctx", "project_dialog", "graph_import_dialog", "xyz_dialog")
 
     def poll_glow(self):
@@ -1945,6 +1947,8 @@ def service_command(app):
                 app.keys.set(*c["bind"]); chrome.refresh_keys(app)
             if "state" in c:                            # test hook: print an item's state
                 print("state", c["state"], dpg.get_item_state(c["state"]), "pos", dpg.get_item_pos(c["state"]))
+                for k in (dpg.get_item_children(c["state"], 1) or [])[:2]:
+                    print("  child", dpg.get_item_type(k), dpg.get_item_state(k))
             if "chrome" in c:                           # test hook: a chrome action by name
                 {"new": lambda: app.new_effect(), "rename": app.rename_current, "open": lambda: chrome.show_open(app),
                  "device": lambda: chrome.show_device(app), "editor": lambda: chrome.show_editor(app),

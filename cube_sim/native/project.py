@@ -182,7 +182,16 @@ class Project:
         return open(self.effect_path(fname), encoding="utf-8").read()
 
     def write_effect(self, fname, text):
-        with open(self.effect_path(fname), "w", encoding="utf-8", newline="\n") as f:
+        path = self.effect_path(fname)
+        if os.path.exists(path):
+            from native import history
+            try:
+                old = open(path, encoding="utf-8").read()
+            except OSError:
+                old = ""
+            if old != text:
+                history.keep(self, "effects", os.path.splitext(fname)[0], ".cpp", old)
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
 
     # --- the effects list -----------------------------------------------------------

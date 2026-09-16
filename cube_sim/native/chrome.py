@@ -54,6 +54,7 @@ def build_menus(app):
             _mi(app, "Rename...", "rename", callback=lambda: app.rename_current())
             dpg.add_separator()
             _mi(app, "Add to the effects list", "import", tag="menu_import", callback=lambda: app.toggle_import_current())
+            _mi(app, "History...", "history", callback=lambda: show_history(app))
             dpg.add_menu_item(label="Open graph as code", callback=lambda: app.open_graph_code())
             dpg.add_separator()
             with dpg.menu(label="Project"):
@@ -104,6 +105,8 @@ def build_menus(app):
                 callback=lambda: app.toggle_ui())
             dpg.add_menu_item(label="Side panel", check=True, default_value=True, tag="menu_side",
                               callback=lambda: app.toggle_side())
+            _mi(app, "Focus mode (dim all but the selection)", "focus_mode", check=True, tag="menu_focus",
+                callback=lambda s, a: app.gp.set_focus_mode(bool(a)))
             _mi(app, "Fullscreen", "fullscreen", callback=lambda: dpg.toggle_viewport_fullscreen())
             dpg.add_separator()
             _mi(app, "Zoom in", "zoom_in", callback=lambda: app.gp.zoom_step(1))
@@ -262,6 +265,10 @@ def build_dialogs(app):
         pass
     build_frames_dialog(app)
     build_flash_dialog(app)
+    with dpg.window(tag="history_win", label="History", show=False, width=520, height=420, no_collapse=True):
+        dpg.add_text("", tag="history_what", color=DIM, wrap=500)
+        with dpg.child_window(tag="history_rows", height=-1, border=False):
+            pass
 
 
 def ask(app, title, prompt, default, cb):
@@ -726,6 +733,63 @@ def poll_flash(app):
         app.gp.status(job.result)
 
 
+# --- history ----------------------------------------------------------------------------
+def show_history(app):
+    """The versions kept of the current graph (graph pane) or code effect
+    (code pane), newest first; restore keeps the current one first."""
+    from native import history
+    import time as _t
+    if app.layout == "edit" and app.edit_file:
+        kind, stem, ext, what = "effects", os.path.splitext(app.edit_file)[0], ".cpp", app.edit_file
+    elif app.gp.graph and app.gp.file:
+        kind = "subgraphs" if app.gp.cur_dir == app.gp.sub_dir else "graphs"
+        stem, ext, what = app.gp.file[:-5], ".json", app.gp.file
+    else:
+        app.gp.status("open a graph or a code effect first"); return
+    vs = history.versions(app.project, kind, stem)
+    dpg.set_value("history_what", f"{what}: {len(vs)} earlier version(s), a copy kept at every save (the newest {history.KEEP}). "
+                                  "Restoring keeps the current one here first.")
+    dpg.delete_item("history_rows", children_only=True)
+    for p, t, size in vs:
+        with dpg.group(horizontal=True, parent="history_rows"):
+            dpg.add_button(label="restore", small=True, user_data=(kind, stem, ext, p),
+                           callback=lambda s, a, u: _restore(app, *u))
+            dpg.add_text(_t.strftime("%Y-%m-%d %H:%M:%S", _t.localtime(t)))
+            dpg.add_text(f"{size / 1024:.1f} KB", color=DIM)
+            if kind != "effects":
+                try:
+                    import json
+                    n = len(json.load(open(p, encoding="utf-8")).get("nodes", []))
+                    dpg.add_text(f"{n} nodes", color=DIM)
+                except Exception:
+                    pass
+    if not vs:
+        dpg.add_text("no earlier versions yet", parent="history_rows", color=DIM)
+    _centre("history_win", 520, 420)
+    dpg.show_item("history_win")
+
+
+def _restore(app, kind, stem, ext, path):
+    from native import history
+    text = open(path, encoding="utf-8").read()
+    if kind == "effects":
+        fname = stem + ext
+        app.project.write_effect(fname, text)          # keeps the current one
+        app.edit_open(fname)
+        app.edit_build()
+    else:
+        sub = kind == "subgraphs"
+        d = app.gp.sub_dir if sub else app.gp.dir
+        target = os.path.join(d, stem + ext)
+        if os.path.exists(target):
+            history.keep(app.project, kind, stem, ext, open(target, encoding="utf-8").read())
+        open(target, "w", encoding="utf-8", newline="\n").write(text)
+        app.gp.open(stem + ext, sub=sub)
+        app.gp.touch()
+    dpg.hide_item("history_win")
+    app.gp.status(f"restored {os.path.basename(path)}")
+
+
 # --- state -> chrome ------------------------------------------------------------------
 def refresh_files(app):
     """The Open submenus and the Add submenu follow the project."""
@@ -763,7 +827,8 @@ def refresh_files(app):
 
 
 def _signature(app):
-    return (app.layout, app.ui, app.side, app.playing, app.gp.auto, app.gp.zoom, bool(app.gp.stack), app.building)
+    return (app.layout, app.ui, app.side, app.playing, app.gp.auto, app.gp.zoom, bool(app.gp.stack), app.building,
+            app.gp.focus_mode)
 
 
 def refresh(app):
@@ -777,6 +842,7 @@ def refresh(app):
         dpg.configure_item(f"tb_view_{key}", tint_color=ACCENT if on else TEXT)
     dpg.set_value("menu_present", not app.ui)
     dpg.set_value("menu_side", app.side)
+    dpg.set_value("menu_focus", app.gp.focus_mode)
     dpg.set_value("menu_live", app.gp.auto)
     dpg.configure_item("tb_live", tint_color=AMBER if app.gp.auto else TEXT)
     dpg.configure_item("tb_build", tint_color=AMBER if app.building else TEXT)
