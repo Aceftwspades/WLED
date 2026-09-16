@@ -284,8 +284,8 @@ editor. Ticked when done; the order within a group is the order to do them.
 - [x] **API reference** under the code: `SEGMENT.*`, time, pixels, colour,
       noise, state, audio, cube helpers, metadata; a click copies the snippet
       (the box cannot take an insertion), Ctrl+V pastes it at the cursor.
-- [ ] A real editor widget in-app (drawlist-based) — a project in itself;
-      only if the external hand-off proves insufficient.
+- [x] A real editor widget in-app (drawlist-based): see the roadmap's
+      "in-app code editor".
 
 ### Project and workflow
 
@@ -588,8 +588,18 @@ them within each group; ticked when done.
       One node at a time, as the preview is; every node at once would need
       a field tap per node, which the compile-to-C++ model cannot give
       cheaply.
-- [ ] **An in-app code editor widget** - only if the external hand-off
-      proves insufficient.
+- [x] **An in-app code editor** (`native/codeedit.py`): lines drawn on a
+      drawlist in Consolas with a gutter, C++ colouring (comments across
+      lines, strings, numbers, keywords, preprocessor, MACROS), a cursor,
+      selection by drag or Shift+arrows, click to place the cursor, wheel
+      to scroll, Home/End/PageUp/PageDown, Enter keeping the indent,
+      Ctrl+A/C/X, Ctrl+D duplicates the line, Ctrl+/ toggles a comment;
+      paste and typed characters arrive through a one-line box kept
+      focused behind the view (the one way Dear PyGui hands over
+      characters). Error rows and find rows go to the line in it, marked;
+      build errors tint their lines. The text still lives in the hidden
+      "code" value, so undo, find, replace, metadata and history are as
+      they were. The external editor remains for anyone who prefers it.
 - [ ] **The scripted runtime** (phase 4): an interpreter usermod so an
       effect reaches a device without a firmware build.
 - [ ] **True PCM into audioreactive**: the ninth `u_data` slot for the FFT

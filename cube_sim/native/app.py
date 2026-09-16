@@ -43,6 +43,7 @@ from native.graph_ui import GraphPanel, build_panel
 from native import chrome, glow
 from native.gpucube import CubeQuads
 from native.dropfiles import DropFiles, classify
+from native.codeedit import CodeEditor
 from native.keys import Keymap, combo as key_combo
 from native import render, gif
 from native.apiref import API
@@ -228,6 +229,7 @@ class App:
         self.loop_ms = 0.0           # the whole app's, frame to frame
         self._loop_t = 0.0
         self.gpu_cube = bool(self.prefs.get("gpu_cube", True))   # the cube as textured quads, not a numpy warp
+        self.code_ed = None          # CodeEditor, made in build()
         self.cube_quads = None       # CubeQuads while the GPU view is up
         self.ab = None               # a second engine, for comparing two effects side by side
         self.ab_name = None
@@ -823,12 +825,16 @@ class App:
             self.edit_build()
 
     def goto_line(self, line):
-        """An error row was clicked: the external editor at that line, and
-        the line's text in the status either way."""
+        """An error or find row was clicked: the editor goes to that line;
+        the external editor too when the file is being watched there."""
         text = dpg.get_value("code").split("\n")
         if 1 <= line <= len(text):
             dpg.set_value("edit_status", f"line {line}: {text[line - 1].strip()[:90]}")
-        if self.editor_command() or dpg.get_value("edit_watch"):
+        if self.code_ed is not None:
+            self.code_ed.goto(line)
+            self.code_ed.focus = True
+            dpg.focus_item("code_key")
+        if dpg.get_value("edit_watch"):
             self.open_external(line)
 
     # --- find and replace ----------------------------------------------------------------
@@ -1035,6 +1041,10 @@ class App:
                     if e[2].startswith("error") or os.path.basename(e[0]) in mine]
             errs.sort(key=lambda e: 0 if e[2].startswith("error") else 1)
             dpg.set_value("edit_status", f"{len(errs)} problem(s)")
+            if self.code_ed is not None:
+                self.code_ed.err_lines = {int(line) - 1 for path, line, msg in errs
+                                          if os.path.basename(path) == self.edit_file and msg.startswith("error")}
+                self.code_ed._dirty = True
             for path, line, msg in errs[:30]:
                 fn = os.path.basename(path)
                 mine_file = fn == self.edit_file
@@ -1426,7 +1436,9 @@ class App:
             dpg.configure_item("net_win", width=side_l + 22, height=pane_h + 34)
             dpg.configure_item("cube_win", width=side + 22, height=pane_h + 34)
             dpg.configure_item("edit_win", width=left_w + 22, height=pane_h + 34)
-            dpg.configure_item("code", width=left_w + 4, height=pane_h - 130)
+            app_ed = getattr(self, "code_ed", None)
+            if app_ed:
+                app_ed.resize(left_w + 4, pane_h - 130)
             dpg.configure_item("graph_win", width=left_w + 22, height=pane_h + 34)
             dpg.configure_item("side_win", width=self.side_w - 10, height=pane_h + 34)
             for tag in ("split_a", "split_b"):
@@ -1605,6 +1617,9 @@ class App:
         self.pitch = max(-1.45, min(1.45, self._pitch0 + dy * k))
 
     def on_wheel(self, sender, app_data):
+        if self.layout == "edit" and self.code_ed is not None and dpg.does_item_exist("code_ed") and dpg.is_item_hovered("code_ed"):
+            self.code_ed.wheel(app_data)
+            return
         if self.layout == "graph" and dpg.does_item_exist("node_editor") and dpg.is_item_hovered("node_editor") \
                 and not dpg.is_item_hovered("graph_menu") and not dpg.is_item_hovered("graph_ctx"):
             self.gp.zoom_step(app_data, dpg.get_mouse_pos(local=False))
@@ -1620,6 +1635,13 @@ class App:
         # pair together.
         # Not while a value is being typed. The handler is global, so without
         # this, typing into a box would also be driving the layout.
+        if self.layout == "edit" and self.code_ed is not None and self.code_ed.focus:
+            ctrl_ = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
+            shift_ = dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift)
+            if self.code_ed.key(app_data, ctrl_, shift_):
+                return
+            if not ctrl_ and app_data not in (dpg.mvKey_F1, dpg.mvKey_F2, dpg.mvKey_F5, dpg.mvKey_F11, dpg.mvKey_F12):
+                return                                   # plain keys are typing
         if any(dpg.does_item_exist(t) and dpg.is_item_active(t) for t in self._inputs):
             return
         if any(dpg.does_item_exist(t) and dpg.is_item_active(t)
@@ -2150,8 +2172,10 @@ def build(app):
                                   default_value=app.edit_file or "",
                                   callback=lambda s, v: (app.edit_open(v), app.ensure_built()))
                     dpg.add_text("", tag="edit_status", color=(139, 147, 163))
-                dpg.add_input_text(tag="code", multiline=True, width=400, height=300,
-                                   tab_input=True, callback=app.on_code_edit)
+                # the text lives in a hidden box everything reads and writes;
+                # the editor (codeedit.py) draws and edits it
+                dpg.add_input_text(tag="code", multiline=True, width=400, height=300, show=False)
+                app.code_ed = CodeEditor(app, "edit_win")
                 with dpg.group(horizontal=True):
                     dpg.add_input_text(tag="find_text", hint="find", width=130, on_enter=True,
                                        callback=lambda: app.find())
@@ -2410,6 +2434,14 @@ def service_command(app):
                         dpg.set_value(tag, o[k])
             if "gp_call" in c:                          # test hook: [method of the graph panel, args]
                 getattr(app.gp, c["gp_call"][0])(*c["gp_call"][1])
+            if "ed_key" in c:                           # test hook: [key name, ctrl, shift] into the editor
+                app.code_ed.focus = True
+                app.code_ed.key(getattr(dpg, "mvKey_" + c["ed_key"][0]), bool(c["ed_key"][1]), bool(c["ed_key"][2]))
+            if "ed_type" in c:                          # test hook: characters typed into the editor
+                app.code_ed.focus = True
+                app.code_ed._on_chars(None, c["ed_type"])
+            if "ed_goto" in c:
+                app.goto_line(int(c["ed_goto"]))
             if "drop" in c:                             # test hook: a path, as if dropped on the window
                 app.take_file(c["drop"])
             if "gpu" in c:                              # test hook: the GPU cube view on or off
@@ -2681,6 +2713,8 @@ def main():
                 app.poll_autosave()
                 app.poll_view_mode()
                 app.poll_drops()
+                if app.code_ed is not None and app.layout == "edit":
+                    app.code_ed.poll()
                 app.poll_glow()
                 _t.append(time.perf_counter())
                 app.step_sim()
