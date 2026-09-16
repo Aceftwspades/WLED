@@ -355,14 +355,12 @@ within each group is the order to do them.
 
 **Colour**
 
-- [ ] **Color Ramp** — a gradient with editable stops on the node, 0..1 to
-      colour, constant / linear / ease; the most-used Blender node we lack,
-      and the way to author palettes visually.
-- [ ] **Adjust** (hue shift, saturation, value, invert, gamma, contrast).
-- [ ] **Blend modes**: overlay, difference, soft light, hue, saturation,
-      colour, luminosity. **Blackbody** (kelvin to colour).
-- [ ] **Layers** — one node with N colour inputs and a mode per layer, so a
-      stack is not a chain of Blends.
+- [x] **Colour ramp** — stops drawn on the node (a strip, a row per stop,
+      add / remove), linear / constant / ease; baked into the C++ as a table.
+- [x] **Adjust** (hue shift, saturation, value, contrast, gamma, invert).
+- [x] **Blend modes**: overlay, difference, soft light, hue, saturation,
+      colour, luminosity. **Blackbody**.
+- [x] **Layers** — a base and four layers, a mode and an amount each.
 
 **Simulation and time**
 

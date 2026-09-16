@@ -507,9 +507,48 @@ LIBRARY = [
     _n("Scale", "colour", "pixel", [("color", C, 0), ("by", F, 1.0)], [("color", C)], [],
        "$out.color = mq_scale($in.color, (uint8_t)(gc_sat($in.by) * 255.0f));", "brightness"),
     _n("Blend", "colour", "pixel", [("under", C, 0), ("over", C, 0), ("amount", F, 1.0)], [("color", C)],
-       [_p("mode", "choice", "over", choices=["over", "add", "multiply", "screen", "max", "min"])],
-       "$out.color = gc_blend_$p.mode($in.under, $in.over, gc_sat($in.amount));",
+       [_p("mode", "choice", "over", choices=["over", "add", "multiply", "screen", "max", "min", "overlay", "difference",
+                                              "soft light", "hue", "saturation", "colour", "luminosity"])],
+       "{ const char *m_ = \"$p.mode\"; const float a_ = gc_sat($in.amount);\n"
+       "  if (!strcmp(m_, \"over\")) $out.color = gc_blend_over($in.under, $in.over, a_);\n"
+       "  else if (!strcmp(m_, \"add\")) $out.color = gc_blend_add($in.under, $in.over, a_);\n"
+       "  else if (!strcmp(m_, \"multiply\")) $out.color = gc_blend_multiply($in.under, $in.over, a_);\n"
+       "  else if (!strcmp(m_, \"screen\")) $out.color = gc_blend_screen($in.under, $in.over, a_);\n"
+       "  else if (!strcmp(m_, \"max\")) $out.color = gc_blend_max($in.under, $in.over, a_);\n"
+       "  else if (!strcmp(m_, \"min\")) $out.color = gc_blend_min($in.under, $in.over, a_);\n"
+       "  else { const int k_ = !strcmp(m_, \"overlay\") ? 1 : !strcmp(m_, \"difference\") ? 2 : !strcmp(m_, \"soft light\") ? 3\n"
+       "         : !strcmp(m_, \"hue\") ? 4 : !strcmp(m_, \"saturation\") ? 5 : !strcmp(m_, \"colour\") ? 6 : 7;\n"
+       "         $out.color = gc_blend_mode(k_, $in.under, $in.over, a_); } }",
        "layer `over` onto `under` - the layering node"),
+    _n("Layers", "colour", "pixel",
+       [("base", C, 0), ("layer 1", C, 0), ("amount 1", F, 1.0), ("layer 2", C, 0), ("amount 2", F, 1.0),
+        ("layer 3", C, 0), ("amount 3", F, 1.0), ("layer 4", C, 0), ("amount 4", F, 1.0)],
+       [("color", C)],
+       [_p("mode 1", "choice", "add", choices=["over", "add", "max", "screen", "multiply"]),
+        _p("mode 2", "choice", "add", choices=["over", "add", "max", "screen", "multiply"]),
+        _p("mode 3", "choice", "add", choices=["over", "add", "max", "screen", "multiply"]),
+        _p("mode 4", "choice", "add", choices=["over", "add", "max", "screen", "multiply"])],
+       "{ uint32_t c_ = $in.base; const char *m_[4] = {\"$p.mode 1\", \"$p.mode 2\", \"$p.mode 3\", \"$p.mode 4\"};\n"
+       "  const uint32_t l_[4] = {$in.layer 1, $in.layer 2, $in.layer 3, $in.layer 4}; const float a_[4] = {$in.amount 1, $in.amount 2, $in.amount 3, $in.amount 4};\n"
+       "  for (int i_ = 0; i_ < 4; i_++) { const float aa_ = gc_sat(a_[i_]); if (aa_ <= 0.0f || l_[i_] == 0) continue;\n"
+       "    if (!strcmp(m_[i_], \"over\")) c_ = gc_blend_over(c_, l_[i_], aa_); else if (!strcmp(m_[i_], \"add\")) c_ = gc_blend_add(c_, l_[i_], aa_);\n"
+       "    else if (!strcmp(m_[i_], \"max\")) c_ = gc_blend_max(c_, l_[i_], aa_); else if (!strcmp(m_[i_], \"screen\")) c_ = gc_blend_screen(c_, l_[i_], aa_);\n"
+       "    else c_ = gc_blend_multiply(c_, l_[i_], aa_); }\n"
+       "  $out.color = c_; }",
+       "a stack of up to four layers on a base, each with its own mode and amount - one node instead of a chain of Blends; an unwired layer is skipped"),
+    _n("Adjust", "colour", "pixel",
+       [("color", C, 0), ("hue", F, 0.0), ("saturation", F, 1.0), ("value", F, 1.0), ("contrast", F, 1.0), ("gamma", F, 1.0), ("invert", B, False)],
+       [("color", C)], [],
+       "$out.color = gc_adjust($in.color, $in.hue, $in.saturation, $in.value, $in.contrast, $in.gamma, $in.invert);",
+       "hue shift (turns), saturation and brightness multipliers, contrast, gamma and invert on a colour"),
+    _n("Blackbody", "colour", "pixel", [("kelvin", F, 3000.0)], [("color", C)], [],
+       "$out.color = gc_blackbody($in.kelvin);",
+       "the colour of something glowing at a temperature: 1500 K candle, 3000 K bulb, 6500 K daylight, 10000 K blue-white"),
+    dict(_n("Colour ramp", "colour", "pixel", [("t", F, 0.0)], [("color", C)],
+            [_p("stops", "ramp", [[0.0, 0, 0, 0], [0.5, 255, 80, 0], [1.0, 255, 255, 255]]),
+             _p("mode", "choice", "linear", choices=["linear", "constant", "ease"])],
+            "", "a gradient you draw: colour stops along 0..1, read at t - your own palette, a fire ramp, a two-tone"),
+         codegen="ramp"),
     _n("Mask", "colour", "pixel", [("color", C, 0), ("mask", F, 1.0)], [("color", C)], [],
        "$out.color = mq_scale($in.color, (uint8_t)(gc_sat($in.mask) * 255.0f));", "multiply a colour by a 0..1 field"),
     _n("Previous at", "colour", "pixel", [("u", F, 0.0), ("v", F, 0.0)], [("color", C)], [],
@@ -863,6 +902,61 @@ static inline uint32_t gc_hsv(float h, float s, float v) {
                case 3: r=p;g=q;b=v; break; case 4: r=t;g=p;b=v; break; default: r=v;g=p;b=q; break; }
   return RGBW32((uint8_t)(gc_sat(r)*255.0f), (uint8_t)(gc_sat(g)*255.0f), (uint8_t)(gc_sat(b)*255.0f), 0);
 }
+static inline void gc_rgb2hsv(uint32_t c, float &h, float &s, float &v) {
+  const float r = ((c >> 16) & 255) * (1.0f / 255.0f), g = ((c >> 8) & 255) * (1.0f / 255.0f), b = (c & 255) * (1.0f / 255.0f);
+  const float mx = fmaxf(r, fmaxf(g, b)), mn = fminf(r, fminf(g, b)), d = mx - mn;
+  v = mx; s = mx > 1e-6f ? d / mx : 0.0f; h = 0.0f;
+  if (d > 1e-6f) {
+    if (mx == r) h = (g - b) / d; else if (mx == g) h = 2.0f + (b - r) / d; else h = 4.0f + (r - g) / d;
+    h *= (1.0f / 6.0f); if (h < 0.0f) h += 1.0f;
+  }
+}
+static inline float gc_luma(uint32_t c) { return (((c >> 16) & 255) * 0.3f + ((c >> 8) & 255) * 0.59f + (c & 255) * 0.11f) * (1.0f / 255.0f); }
+// Hue shift (turns), saturation and value multipliers, contrast about mid grey, gamma, invert.
+static inline uint32_t gc_adjust(uint32_t c, float hue, float sat, float val, float contrast, float gamma, bool invert) {
+  float h, s_, v; gc_rgb2hsv(c, h, s_, v);
+  h = gc_fract(h + hue); s_ = gc_sat(s_ * sat); v = gc_sat(v * val);
+  uint32_t o = gc_hsv(h, s_, v);
+  float r = ((o >> 16) & 255) * (1.0f / 255.0f), g = ((o >> 8) & 255) * (1.0f / 255.0f), b = (o & 255) * (1.0f / 255.0f);
+  if (contrast != 1.0f) { r = gc_sat((r - 0.5f) * contrast + 0.5f); g = gc_sat((g - 0.5f) * contrast + 0.5f); b = gc_sat((b - 0.5f) * contrast + 0.5f); }
+  if (gamma > 0.0f && gamma != 1.0f) { r = powf(r, gamma); g = powf(g, gamma); b = powf(b, gamma); }
+  if (invert) { r = 1.0f - r; g = 1.0f - g; b = 1.0f - b; }
+  return RGBW32((uint8_t)(r * 255.0f), (uint8_t)(g * 255.0f), (uint8_t)(b * 255.0f), 0);
+}
+// The photographic blend modes, per channel in 0..1, then mixed in by `a`.
+static inline float gc_bm(int mode, float u, float o) {
+  switch (mode) {
+    case 0: return o;                                                              // over
+    case 1: return u < 0.5f ? 2.0f * u * o : 1.0f - 2.0f * (1.0f - u) * (1.0f - o);  // overlay
+    case 2: return fabsf(u - o);                                                   // difference
+    case 3: return o < 0.5f ? u - (1.0f - 2.0f * o) * u * (1.0f - u) : u + (2.0f * o - 1.0f) * (sqrtf(u) - u);  // soft light
+    default: return o;
+  }
+}
+static inline uint32_t gc_blend_mode(int mode, uint32_t u, uint32_t o, float a) {
+  uint32_t r_;
+  if (mode >= 4) {            // hue, saturation, colour, luminosity: swap HSV parts
+    float hu, su, vu, ho, so, vo; gc_rgb2hsv(u, hu, su, vu); gc_rgb2hsv(o, ho, so, vo);
+    if (mode == 4)      r_ = gc_hsv(ho, su, vu);
+    else if (mode == 5) r_ = gc_hsv(hu, so, vu);
+    else if (mode == 6) r_ = gc_hsv(ho, so, vu);
+    else                r_ = gc_hsv(hu, su, vo);
+  } else {
+    const float ur = ((u >> 16) & 255) * (1.0f / 255.0f), ug = ((u >> 8) & 255) * (1.0f / 255.0f), ub = (u & 255) * (1.0f / 255.0f);
+    const float orr = ((o >> 16) & 255) * (1.0f / 255.0f), og = ((o >> 8) & 255) * (1.0f / 255.0f), ob = (o & 255) * (1.0f / 255.0f);
+    r_ = RGBW32((uint8_t)(gc_sat(gc_bm(mode, ur, orr)) * 255.0f), (uint8_t)(gc_sat(gc_bm(mode, ug, og)) * 255.0f), (uint8_t)(gc_sat(gc_bm(mode, ub, ob)) * 255.0f), 0);
+  }
+  return color_blend(u, r_, (uint8_t)(gc_sat(a) * 255.0f));
+}
+// A glowing body's colour by temperature, 1000..12000 K (a fit, not physics).
+static inline uint32_t gc_blackbody(float k) {
+  const float t = fminf(fmaxf(k, 1000.0f), 12000.0f) * 0.01f;
+  float r, g, b;
+  r = t <= 66.0f ? 1.0f : gc_sat(1.2929f * powf(t - 60.0f, -0.1332f));
+  g = t <= 66.0f ? gc_sat(0.3901f * logf(t) - 0.6318f) : gc_sat(1.1299f * powf(t - 60.0f, -0.0755f));
+  b = t >= 66.0f ? 1.0f : (t <= 19.0f ? 0.0f : gc_sat(0.5432f * logf(t - 10.0f) - 1.1963f));
+  return RGBW32((uint8_t)(r * 255.0f), (uint8_t)(g * 255.0f), (uint8_t)(b * 255.0f), 0);
+}
 static inline uint32_t gc_blend_over(uint32_t u, uint32_t o, float a)     { return color_blend(u, o, (uint8_t)(a * 255.0f)); }
 static inline uint32_t gc_blend_add(uint32_t u, uint32_t o, float a)      { return color_add(u, mq_scale(o, (uint8_t)(a * 255.0f)), true); }
 static inline uint32_t gc_blend_max(uint32_t u, uint32_t o, float a) {
@@ -960,4 +1054,22 @@ def codegen_image(n, project_dir=None):
             f"  $out.on = s_ != 255; $out.slot = (float)(s_ == 255 ? 0 : s_); $out.color = (s_ == 255) ? 0u : pl_[s_]; }}")
 
 
-CODEGEN = {"image": codegen_image}
+def codegen_ramp(n, project_dir=None):
+    p = n["params"]
+    stops = p.get("stops") or [[0.0, 0, 0, 0], [1.0, 255, 255, 255]]
+    stops = sorted([[float(st[0]), int(st[1]), int(st[2]), int(st[3])] for st in stops], key=lambda st: st[0])
+    mode = str(p.get("mode", "linear"))
+    k = len(stops)
+    pos = ",".join(f"{st[0]}f" for st in stops)
+    cols = ",".join(f"0x{st[1]:02X}{st[2]:02X}{st[3]:02X}u" for st in stops)
+    ease = "1" if mode == "ease" else "0"
+    const = "1" if mode == "constant" else "0"
+    return (f"{{ static const float rp_[{k}] = {{{pos}}}; static const uint32_t rc_[{k}] = {{{cols}}};\n"
+            f"  const float t_ = gc_sat($in.t); int i_ = 0; while (i_ < {k} - 1 && rp_[i_ + 1] <= t_) i_++;\n"
+            f"  if (i_ >= {k} - 1 || t_ <= rp_[0]) $out.color = rc_[t_ <= rp_[0] ? 0 : {k} - 1];\n"
+            f"  else {{ float f_ = (rp_[i_ + 1] > rp_[i_]) ? (t_ - rp_[i_]) / (rp_[i_ + 1] - rp_[i_]) : 0.0f;\n"
+            f"    if ({const}) f_ = 0.0f; else if ({ease}) f_ = f_ * f_ * (3.0f - 2.0f * f_);\n"
+            f"    $out.color = color_blend(rc_[i_], rc_[i_ + 1], (uint8_t)(f_ * 255.0f)); }} }}")
+
+
+CODEGEN = {"image": codegen_image, "ramp": codegen_ramp}

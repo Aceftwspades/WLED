@@ -1091,6 +1091,32 @@ A vector wire taken apart into its three numbers.
 
 ## colour
 
+### Adjust
+
+Tweaks a colour the way a photo app does: shift the hue round the wheel, boost or drain the saturation, brighten, add contrast, apply gamma, or invert.
+
+**Inputs**
+- `color` *(color)*: the colour to adjust
+- `hue` *(float)*: shift round the wheel, in turns (0.5 = opposite colour)
+- `saturation` *(float)*: 1 leaves it, 0 makes grey, 2 doubles it
+- `value` *(float)*: brightness multiplier
+- `contrast` *(float)*: 1 leaves it, above 1 pushes toward black and white
+- `gamma` *(float)*: 1 leaves it, below 1 lifts the mids
+- `invert` *(bool)*: swap for the opposite colour
+
+**Outputs**
+- `color` *(color)*: the adjusted colour
+
+### Blackbody
+
+The colour of something hot: a candle, a bulb, daylight, a blue-white star. Feed a heat value remapped to 1000..10000 for a fire that goes red, orange, yellow, white.
+
+**Inputs**
+- `kelvin` *(float)*: the temperature: 1500 candle, 3000 bulb, 6500 daylight, 10000 blue-white
+
+**Outputs**
+- `color` *(color)*: that glow
+
 ### Blend
 
 Puts one colour on top of another - the layering node. 'over' covers 'under' by amount; 'add' adds light; 'max' keeps the brighter; 'multiply' darkens; 'screen' lightens. Chain Blends to stack layers.
@@ -1104,7 +1130,7 @@ Puts one colour on top of another - the layering node. 'over' covers 'under' by 
 - `color` *(color)*: the result
 
 **Settings**
-- `mode` *(choice)*: over (cover), add (light adds up), max (brighter wins), min, multiply (darken), screen (lighten)
+- `mode` *(choice)*: over (cover), add (light adds up), max (brighter wins), min, multiply (darken), screen (lighten), overlay, difference, soft light, and hue / saturation / colour / luminosity (take that part of 'over')
 
 ### Colour pick
 
@@ -1125,6 +1151,20 @@ One of eight colours you set, chosen by number: 0 gives the first, 1 the second.
 - `c5` *(color)*: colour 5
 - `c6` *(color)*: colour 6
 - `c7` *(color)*: colour 7
+
+### Colour ramp
+
+A gradient you draw on the node: colour stops along 0..1, read at t. The strip shows it. Add and remove stops, set each one's position and colour; linear blends between them, constant makes hard bands, ease blends softly. Your own palette without leaving the graph.
+
+**Inputs**
+- `t` *(float)*: where to read, 0..1 - a coordinate, a heat, a phase
+
+**Outputs**
+- `color` *(color)*: the gradient's colour there
+
+**Settings**
+- `stops` *(ramp)*: the stops: position and colour, any number from two
+- `mode` *(choice)*: linear, constant (bands) or ease
 
 ### Combine
 
@@ -1197,6 +1237,30 @@ A colour from hue, saturation and brightness. h goes round the rainbow (0 red, 0
 
 **Outputs**
 - `color` *(color)*: the colour
+
+### Layers
+
+A stack of up to four layers on a base colour, each with its own blend mode and amount - the whole picture's layering in one node instead of a chain of Blends. A layer with nothing wired is skipped.
+
+**Inputs**
+- `base` *(color)*: the bottom layer
+- `layer 1` *(color)*: the first layer on top
+- `amount 1` *(float)*: how much of layer 1 shows, 0..1
+- `layer 2` *(color)*: the next layer
+- `amount 2` *(float)*: how much of it, 0..1
+- `layer 3` *(color)*: the next
+- `amount 3` *(float)*: how much, 0..1
+- `layer 4` *(color)*: the top layer
+- `amount 4` *(float)*: how much, 0..1
+
+**Outputs**
+- `color` *(color)*: the stack
+
+**Settings**
+- `mode 1` *(choice)*: how layer 1 combines: over, add, max, screen, multiply
+- `mode 2` *(choice)*: for layer 2
+- `mode 3` *(choice)*: for layer 3
+- `mode 4` *(choice)*: for layer 4
 
 ### Mask
 

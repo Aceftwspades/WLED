@@ -966,6 +966,9 @@ class GraphPanel:
             rgb = list(v)[:3] if isinstance(v, (list, tuple)) else [255, 255, 255]
             w = dpg.add_color_edit([int(c) for c in rgb] + [255], label=p["name"], width=self.px(110), no_alpha=True,
                                user_data=ud, callback=cb)
+        elif p["type"] == "ramp":
+            self._ramp_widget(nid, n, p, v)
+            return
         elif p["type"] == "text":
             w = dpg.add_input_text(label=p["name"], width=self.px(100), default_value=str(v), user_data=ud, callback=cb)
         elif p["type"] == "file":
@@ -1048,6 +1051,61 @@ class GraphPanel:
         g.remove(nid)
         self.rebuild()
         self.status(f"image -> Bitmap ({w} x {h}, {len(palette)} colours) + Colour pick")
+
+    # --- a colour ramp on the node: the gradient drawn, then a row per stop -----------
+    def _ramp_widget(self, nid, n, p, stops):
+        stops = [list(st) for st in (stops or p["default"])]
+        W, H = self.px(220), self.px(14)
+        with dpg.drawlist(width=W, height=H):
+            srt = sorted(stops, key=lambda st: st[0])
+            for x in range(0, W, 2):
+                t = x / max(1, W - 1)
+                r, g, b = self._ramp_colour(srt, t, str(n["params"].get("mode", "linear")))
+                dpg.draw_rectangle((x, 0), (x + 2, H), color=(r, g, b, 255), fill=(r, g, b, 255))
+        for k, st in enumerate(stops):
+            with dpg.group(horizontal=True):
+                w1 = dpg.add_input_float(width=self.px(56), default_value=float(st[0]), step=0, format="%.2f",
+                                         user_data=(nid, p["name"], k, "pos"), callback=self._on_ramp)
+                w2 = dpg.add_color_edit([int(st[1]), int(st[2]), int(st[3]), 255], width=self.px(60), no_alpha=True, no_inputs=True,
+                                        user_data=(nid, p["name"], k, "col"), callback=self._on_ramp)
+                self._widgets.update((w1, w2))
+                if len(stops) > 2:
+                    dpg.add_button(label="-", small=True, user_data=(nid, p["name"], k, "del"), callback=self._on_ramp)
+        dpg.add_button(label="+ stop", small=True, user_data=(nid, p["name"], -1, "add"), callback=self._on_ramp)
+
+    @staticmethod
+    def _ramp_colour(srt, t, mode):
+        if t <= srt[0][0]:
+            return srt[0][1:4]
+        if t >= srt[-1][0]:
+            return srt[-1][1:4]
+        for i in range(len(srt) - 1):
+            a, b = srt[i], srt[i + 1]
+            if a[0] <= t <= b[0]:
+                f = (t - a[0]) / (b[0] - a[0]) if b[0] > a[0] else 0.0
+                if mode == "constant":
+                    f = 0.0
+                elif mode == "ease":
+                    f = f * f * (3 - 2 * f)
+                return [int(a[j] + (b[j] - a[j]) * f) for j in (1, 2, 3)]
+        return srt[-1][1:4]
+
+    def _on_ramp(self, sender, val, ud):
+        nid, name, k, what = ud
+        n = self.graph.nodes[nid]
+        stops = [list(st) for st in n["params"].get(name) or []]
+        self.touch(); self.snapshot(("ramp", nid, name, k, what))
+        if what == "pos":
+            stops[k][0] = max(0.0, min(1.0, float(val)))
+        elif what == "col":
+            stops[k][1:4] = [int(round(c * 255)) if c <= 1.0 else int(c) for c in val[:3]]
+        elif what == "del":
+            stops.pop(k)
+        elif what == "add":
+            stops.append([1.0, 255, 255, 255])
+        n["params"][name] = stops
+        if what in ("del", "add") or True:
+            self._sync_pos(); self.rebuild()      # the strip redraws with the stops
 
     def _on_param(self, sender, val):
         self.touch()

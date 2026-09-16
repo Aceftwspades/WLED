@@ -454,7 +454,38 @@ DOCS = {
                "light; 'max' keeps the brighter; 'multiply' darkens; 'screen' lightens. Chain Blends to stack layers.",
         "in": {"under": "the layer below", "over": "the layer on top", "amount": "how much of 'over' shows, 0..1"},
         "out": {"color": "the result"},
-        "params": {"mode": "over (cover), add (light adds up), max (brighter wins), min, multiply (darken), screen (lighten)"}},
+        "params": {"mode": "over (cover), add (light adds up), max (brighter wins), min, multiply (darken), screen (lighten), "
+                           "overlay, difference, soft light, and hue / saturation / colour / luminosity (take that part of 'over')"}},
+    "Layers": {
+        "doc": "A stack of up to four layers on a base colour, each with its own blend mode and amount - the "
+               "whole picture's layering in one node instead of a chain of Blends. A layer with nothing wired is "
+               "skipped.",
+        "in": {"base": "the bottom layer", "layer 1": "the first layer on top", "amount 1": "how much of layer 1 shows, 0..1",
+               "layer 2": "the next layer", "amount 2": "how much of it, 0..1", "layer 3": "the next", "amount 3": "how much, 0..1",
+               "layer 4": "the top layer", "amount 4": "how much, 0..1"},
+        "out": {"color": "the stack"},
+        "params": {"mode 1": "how layer 1 combines: over, add, max, screen, multiply", "mode 2": "for layer 2",
+                   "mode 3": "for layer 3", "mode 4": "for layer 4"}},
+    "Adjust": {
+        "doc": "Tweaks a colour the way a photo app does: shift the hue round the wheel, boost or drain the "
+               "saturation, brighten, add contrast, apply gamma, or invert.",
+        "in": {"color": "the colour to adjust", "hue": "shift round the wheel, in turns (0.5 = opposite colour)",
+               "saturation": "1 leaves it, 0 makes grey, 2 doubles it", "value": "brightness multiplier",
+               "contrast": "1 leaves it, above 1 pushes toward black and white", "gamma": "1 leaves it, below 1 lifts the mids",
+               "invert": "swap for the opposite colour"},
+        "out": {"color": "the adjusted colour"}},
+    "Blackbody": {
+        "doc": "The colour of something hot: a candle, a bulb, daylight, a blue-white star. Feed a heat value "
+               "remapped to 1000..10000 for a fire that goes red, orange, yellow, white.",
+        "in": {"kelvin": "the temperature: 1500 candle, 3000 bulb, 6500 daylight, 10000 blue-white"},
+        "out": {"color": "that glow"}},
+    "Colour ramp": {
+        "doc": "A gradient you draw on the node: colour stops along 0..1, read at t. The strip shows it. Add and "
+               "remove stops, set each one's position and colour; linear blends between them, constant makes hard "
+               "bands, ease blends softly. Your own palette without leaving the graph.",
+        "in": {"t": "where to read, 0..1 - a coordinate, a heat, a phase"},
+        "out": {"color": "the gradient's colour there"},
+        "params": {"stops": "the stops: position and colour, any number from two", "mode": "linear, constant (bands) or ease"}},
     "Mask": {"doc": "Shows a colour only where the mask is bright: colour times a 0..1 pattern. Noise as the mask makes "
                     "clouds of that colour.",
              "in": {"color": "the colour", "mask": "0 hides it .. 1 shows it"}, "out": {"color": "the masked colour"}},

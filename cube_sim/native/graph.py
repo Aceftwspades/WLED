@@ -479,6 +479,8 @@ class Graph:
                         code = code.replace(f"$p.{p['name']}_{k}", str(int(c)))
                 elif p["type"] in ("text", "file"):
                     code = code.replace(f"$p.{p['name']}", str(v).replace('"', "'"))
+                elif p["type"] == "ramp":
+                    pass                                      # the codegen reads it whole
                 elif p["type"] == "choice":
                     code = code.replace(f"$p.{p['name']}", str(v))
                 else:
