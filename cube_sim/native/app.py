@@ -41,6 +41,7 @@ from native.project import (default_project, Project, list_projects, project_pat
                             load_prefs, save_prefs)
 from native.graph_ui import GraphPanel, build_panel
 from native import chrome, glow
+from native.gpucube import CubeQuads
 from native.keys import Keymap, combo as key_combo
 from native import render, gif
 from native.apiref import API
@@ -56,6 +57,7 @@ SIDE_W = 340            # control column
 
 
 SECTION = (90, 169, 230)          # section titles in the side panel
+_LUT = (np.arange(256, dtype=np.float32) / 255.0)   # uint8 -> float texture channel, by lookup
 
 
 def apply_theme(prefs=None):
@@ -222,6 +224,10 @@ class App:
         self.history_frames = []     # the last seconds of net frames, for scrubbing while paused
         self.scrub = None            # an index into history_frames while paused, or None
         self.frame_ms = 0.0          # the engine's cost per frame on this machine, smoothed
+        self.loop_ms = 0.0           # the whole app's, frame to frame
+        self._loop_t = 0.0
+        self.gpu_cube = bool(self.prefs.get("gpu_cube", True))   # the cube as textured quads, not a numpy warp
+        self.cube_quads = None       # CubeQuads while the GPU view is up
         self.ab = None               # a second engine, for comparing two effects side by side
         self.ab_name = None
         self._ab_n = 0
@@ -287,7 +293,7 @@ class App:
         if buf is None or buf.shape[:2] != (h, w):
             buf = np.ones((h, w, 4), np.float32)
             self._bufs[key] = buf
-        np.multiply(img, np.float32(1.0 / 255.0), out=buf[..., :3], casting="unsafe")
+        np.take(_LUT, img, out=buf[..., :3])
         return buf.reshape(-1)
 
     def net_image(self, eng=None):
@@ -488,6 +494,12 @@ class App:
                              json.dumps(g.graph.to_json(), indent=1))
         except Exception:
             pass
+
+    def set_gpu_cube(self, on):
+        self.gpu_cube = bool(on)
+        self.prefs["gpu_cube"] = self.gpu_cube
+        save_prefs(self.prefs)
+        self.request_layout()
 
     def set_device_factor(self, v):
         try:
@@ -1475,13 +1487,35 @@ class App:
         dpg.add_image("net_tex", tag="net_img", parent="net_win", width=w, height=h)
         self._bufs.pop("net", None)
 
+    def gpu_cube_active(self):
+        """The GPU view draws the cube itself: five flat faces, one segment.
+        Everything else - flat mode, point clouds, two effects side by side -
+        keeps the software renderer."""
+        g = self.eng.geom
+        return bool(self.gpu_cube and g is not None and g.kind == "cube" and not self.eng.fx.get("o3") and not self.ab)
+
     def remake_cube_texture(self):
         p = self.cube_px
         w, h = (2 * p + 8, p) if self.ab else (p, p)
         if dpg.does_item_exist("cube_img"):
             dpg.delete_item("cube_img")
+        self.cube_quads = None
         if dpg.does_item_exist("cube_tex"):
             dpg.delete_item("cube_tex")
+        if self.gpu_cube_active():
+            # the net, a few times its size so bilinear sampling keeps the
+            # LEDs square, is the one texture the quads draw from
+            n = 3 * self.eng.B * self.CUBE_SRC_SCALE
+            if dpg.does_item_exist("cube_src_tex"):
+                dpg.delete_item("cube_src_tex")
+            with dpg.texture_registry():
+                dpg.add_raw_texture(n, n, np.zeros(n * n * 4, np.float32), format=dpg.mvFormat_Float_rgba, tag="cube_src_tex")
+            self._bufs.pop("cube_src", None)
+            self.cube_quads = CubeQuads("cube_win", "cube_img", "cube_src_tex")
+            self.cube_quads.resize(self.view_side)
+            if dpg.does_item_exist("cube_cap"):
+                dpg.set_value("cube_cap", "3-D - drag to rotate, wheel to zoom")
+            return
         with dpg.texture_registry():
             dpg.add_raw_texture(w, h, np.zeros(w * h * 4, np.float32),
                                 format=dpg.mvFormat_Float_rgba, tag="cube_tex")
@@ -1704,6 +1738,14 @@ class App:
     FLOATING = ("frames_win", "keys_win", "flash_win", "where_win", "history_win", "compare_menu", "sweep_win", "wav_dialog", "appearance_win", "name_dialog", "device_dialog", "editor_dialog", "about_win",
                 "open_menu", "graph_menu", "graph_ctx", "project_dialog", "graph_import_dialog", "xyz_dialog")
 
+    def poll_view_mode(self):
+        """The 3-D view is remade when what it should draw changes: flat
+        mode toggled, A/B started or stopped, the GPU view switched."""
+        want = self.gpu_cube_active()
+        if want != getattr(self, "_gpu_was", None):
+            self._gpu_was = want
+            self.request_layout()
+
     def poll_glow(self):
         """The gradient frames: the pane in focus, and the selected nodes
         (clipped to the editor). None while presenting, or while a menu is
@@ -1777,6 +1819,7 @@ class App:
     def start_ab(self, name):
         if name not in self.eng.names:
             return
+        self._gpu_was = None
         try:
             if self.ab is None:
                 self.ab = Engine(self._b_library())
@@ -1961,6 +2004,7 @@ class App:
                                                   color=(255, 96, 96, 255), fill=(255, 96, 96, 200)))
 
     SCRUB_FRAMES = 300           # ~10 s at the simulated frame rate
+    CUBE_SRC_SCALE = 4           # the net's upscale for the GPU cube's texture
 
     def draw(self):
         net = self.net_image()
@@ -1975,7 +2019,14 @@ class App:
         if self.layout in ("both", "net"):
             big = net.repeat(self.net_scale, 0).repeat(self.net_scale, 1)
             dpg.set_value("net_tex", self._rgba("net", big))
-        if self.layout in ("both", "cube", "edit", "graph"):
+        if self.layout in ("both", "cube", "edit", "graph") and self.cube_quads is not None:
+            k = self.CUBE_SRC_SCALE
+            src = net if net.shape[0] == self.eng.rows else self.net_image()
+            dpg.set_value("cube_src_tex", self._rgba("cube_src", src.repeat(k, 0).repeat(k, 1)))
+            self.cube_quads.camera(self.yaw, self.pitch, self.dist)
+            if self.shot_req or self.rec is not None:
+                img = self.view_image(net, self.cube_px)      # a picture is wanted: the software path makes one
+        elif self.layout in ("both", "cube", "edit", "graph"):
             img = self.view_image(net, self.cube_px)
             if self.ab:
                 # side by side, a gap between: the texture is two renders wide
@@ -1994,8 +2045,8 @@ class App:
         raw = self.eng.rgb()
         s = stats(raw, self.eng.lit_mask(flat=bool(self.eng.fx.get("o3"))))
         factor = float(self.prefs.get("device_factor", 60.0))
-        est = f"   this PC {self.frame_ms:.2f} ms/frame  ->  device ~{1000.0 / max(0.001, self.frame_ms * factor):.0f} fps (x{factor:.0f}, Settings)" \
-              if self.frame_ms > 0 else ""
+        est = (f"   effect {self.frame_ms:.2f} ms  ->  device ~{1000.0 / max(0.001, self.frame_ms * factor):.0f} fps (x{factor:.0f})"
+               f"   app {self.loop_ms:.1f} ms/frame") if self.frame_ms > 0 else ""
         dpg.set_value("stat_txt",
                       f"mean {s['mean']:5.1f}   sigma {s['sigma']:5.1f}   "
                       f"dark {s['dark']:4.1f}%   sat {s['sat']:3d}" + est)
@@ -2016,7 +2067,7 @@ class App:
 
 def build(app):
     dpg.create_context()
-    dpg.create_viewport(title="WLED Effect Studio", width=1280, height=800)
+    dpg.create_viewport(title="WLED Effect Studio", width=1280, height=800, vsync=False)
 
     with dpg.handler_registry():
         dpg.add_mouse_drag_handler(button=dpg.mvMouseButton_Left, callback=app.on_drag)
@@ -2275,6 +2326,7 @@ def service_command(app):
                     if dpg.does_item_exist(t):
                         print("measure", t, "pos", dpg.get_item_pos(t), "size", dpg.get_item_rect_size(t),
                               "conf", dpg.get_item_configuration(t).get("height"))
+                print("measure prof polls/sim/draw/render ms", [round(x, 1) for x in getattr(app, "_prof_avg", [])])
                 print("measure layout", app.layout, "ui", app.ui, "playing", app.playing, "scrub_row", dpg.does_item_exist("scrub_row") and dpg.is_item_shown("scrub_row"), len(app.history_frames))
                 print("measure viewport", dpg.get_viewport_client_width(), dpg.get_viewport_client_height(),
                       "footer rect", dpg.get_item_rect_min("footer"), dpg.get_item_rect_max("footer"))
@@ -2302,6 +2354,8 @@ def service_command(app):
                         dpg.set_value(tag, o[k])
             if "gp_call" in c:                          # test hook: [method of the graph panel, args]
                 getattr(app.gp, c["gp_call"][0])(*c["gp_call"][1])
+            if "gpu" in c:                              # test hook: the GPU cube view on or off
+                app.set_gpu_cube(bool(c["gpu"]))
             if "appearance" in c:                       # test hook: {"light": bool, "accent": [r,g,b]}
                 app.set_appearance(c["appearance"].get("light"), c["appearance"].get("accent"))
             if "ledmap_file" in c:
@@ -2559,15 +2613,21 @@ def main():
                 app._need_layout = False
                 app.relayout()
             try:
+                _t = [time.perf_counter()]
                 app.poll_build()
                 app.gp.poll()
                 app.poll_watch()
                 chrome.poll(app)
                 chrome.poll_flash(app)
                 app.poll_autosave()
+                app.poll_view_mode()
                 app.poll_glow()
+                _t.append(time.perf_counter())
                 app.step_sim()
+                _t.append(time.perf_counter())
                 app.draw()
+                _t.append(time.perf_counter())
+                app._prof = [(b - a) * 1000.0 for a, b in zip(_t, _t[1:])]
             except Exception:
                 # One bad frame should not take the window down with it. The
                 # traceback goes to the console AND to a file, because the
@@ -2581,7 +2641,16 @@ def main():
                 except Exception:
                     pass
                 app.playing = False
+            _r0 = time.perf_counter()
             dpg.render_dearpygui_frame()
+            _now = time.perf_counter()
+            if getattr(app, "_prof", None) is not None:
+                app._prof.append((_now - _r0) * 1000.0)
+                pf = getattr(app, "_prof_avg", None)
+                app._prof_avg = app._prof if pf is None else [x * 0.95 + y * 0.05 for x, y in zip(pf, app._prof)]
+            if app._loop_t:
+                app.loop_ms = app.loop_ms * 0.95 + (_now - app._loop_t) * 1000.0 * 0.05
+            app._loop_t = _now
             service_capture()
             service_command(app)
     finally:

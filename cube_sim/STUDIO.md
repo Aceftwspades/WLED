@@ -579,6 +579,34 @@ them within each group; ticked when done.
 - [ ] **True PCM into audioreactive**: the ninth `u_data` slot for the FFT
       batch.
 
+## Where the frame time goes
+
+Measured (16 px cube, Maelstrom, 620 px view) before the GPU view: the
+effect engine 0.13 ms a frame; the numpy cube render 28 ms; converting its
+image to a float texture 6 ms; the net's whole-number upscale and texture 6
+ms; a point cloud 14 ms. The engine is nothing - it has to run on an ESP32 -
+so a GPU would buy the effects nothing; the display path was the cost, and
+it was the display path that moved to the GPU:
+
+- **The cube is textured quads** (`native/gpucube.py`): five faces, each
+  8 x 8 `draw_image_quad`s sampling one net texture (the net at 4x, since
+  the sampling is bilinear and the LEDs should stay square). The CPU
+  projects 405 corners when the camera moves and uploads the net each
+  frame; the warp is gone. Sub-quads are grown a third of a pixel so no
+  crack opens between them. Settings > "Draw the cube on the GPU" turns it
+  off; flat mode, point clouds and A/B keep the software renderer.
+- **Texture conversion by lookup** (a 256-entry table) instead of a
+  multiply over every channel.
+- **vsync off**: Dear PyGui's vsync present blocked for a whole extra
+  refresh (a windowed DX11 swap under the compositor), so every frame was
+  two of them - 33 ms. Without it the compositor still paces at the refresh
+  and nothing spins.
+
+After: the cube layout 16 ms a frame (the 60 Hz ceiling), the graph layout
+16, both views 24 (the net's 12x upscale and its 5 MB texture are what is
+left; it stays crisp on purpose). The footer shows `effect` (the engine)
+and `app` (the whole loop) in ms; the `measure` test hook prints the split.
+
 ## Running it
 
 ```bash

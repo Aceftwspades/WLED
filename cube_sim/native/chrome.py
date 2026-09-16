@@ -150,6 +150,8 @@ def build_menus(app):
             dpg.add_menu_item(label="Appearance...", callback=lambda: show_appearance(app))
             dpg.add_menu_item(label="Device address...", callback=lambda: show_device(app))
             dpg.add_menu_item(label="External editor command...", callback=lambda: show_editor(app))
+            dpg.add_menu_item(label="Draw the cube on the GPU", check=True, default_value=app.gpu_cube, tag="menu_gpu",
+                              callback=lambda s, a: app.set_gpu_cube(bool(a)))
             dpg.add_menu_item(label="Device speed factor...", callback=lambda: ask(
                 app, "Device speed", "how many times slower than this PC the device is (the fps estimate in the footer)",
                 str(app.prefs.get("device_factor", 60)), lambda v: app.set_device_factor(v)))
