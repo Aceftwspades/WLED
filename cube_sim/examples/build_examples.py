@@ -39,6 +39,7 @@ class GB:
 
     def save(self, fname):
         os.makedirs(OUT, exist_ok=True)
+        G.migrate(self.g)          # builders written against the float pins get the vector ones
         G.save(self.g, os.path.join(OUT, fname))
         return self.g
 
@@ -1267,7 +1268,7 @@ ALL = [slab_cut, cell_weave, truchet, ring_rain, box_fire, maelstrom, kaleidosco
 STATIC_EXTRA = {"Smiley"}
 
 
-STATIC = {"Cube Axes", "Smiley"}          # still by design
+STATIC = {"Cube Axes", "Smiley", "Question Block"}   # still by design (the block holds its item at the end of the run)
 
 
 def check():

@@ -128,14 +128,14 @@ DOCS = {
                "down; without one it is straight down, tilted by the two inputs. Feed the direction into Dot 3 with "
                "Position to get 'height', or step along it to make things fall.",
         "in": {"tilt_x": "lean, -1..1, used when there is no sensor", "tilt_y": "lean the other way, -1..1"},
-        "out": {"gx": "down's x part", "gy": "down's y part", "gz": "down's z part (-1 is straight down)",
-                "sensor": "true when a real sensor is supplying it"}},
+        "out": {"g": "down, as one vector wire", "gx": "down's x part", "gy": "down's y part",
+                "gz": "down's z part (-1 is straight down)", "sensor": "true when a real sensor is supplying it"}},
     "Emitters": {
         "doc": "Drops a thing on the surface each time the trigger fires - up to eight alive at once - and remembers "
                "where and how old each is. Plug the beat into trigger and the Shells node reads them: rings spreading "
                "from wherever each kick landed.",
-        "in": {"trigger": "true drops a new one (the beat)", "x": "where to drop it, if not random", "y": "where to drop it",
-               "z": "where to drop it (1 is the lid)", "tag": "a number kept with it - a hue, say (Loudest bin)",
+        "in": {"trigger": "true drops a new one (the beat)", "pos": "where to drop it, if not random (a vector; z = 1 is the lid)",
+               "tag": "a number kept with it - a hue, say (Loudest bin)",
                "life": "how many seconds each one lives"},
         "out": {"slots": "the list - wire this to Shells", "count": "how many are alive"},
         "params": {"random": "drop each one at a random point on the surface instead of x, y, z"}},
@@ -170,16 +170,19 @@ DOCS = {
         "doc": "On a cube, the direction from the middle of the cube out through this pixel (a unit vector, length 1). "
                "Because it never sees the folds, anything drawn from it - Noise, Dot 3, Mirror fold - flows over "
                "every edge seamlessly. On a flat panel it is a gentle dome.",
-        "out": {"nx": "the direction's x part", "ny": "its y part", "nz": "its z part (1 straight up)"}},
+        "out": {"dir": "the direction as one vector wire - plug it into Noise, Dot 3, Mirror fold, Torus knot",
+                "nx": "the direction's x part", "ny": "its y part", "nz": "its z part (1 straight up)"}},
     "Position": {
         "doc": "This pixel's place in the cube's box, each of x, y, z from -1 to 1, z up, so the lid is z = 1. Use it "
                "where a straight line matters (slabs, planes, gravity height); use Direction for angles.",
-        "out": {"x": "-1 (west) .. 1 (east)", "y": "-1 (south) .. 1 (north)", "z": "-1 (bottom) .. 1 (the lid)"}},
+        "out": {"pos": "the position as one vector wire", "x": "-1 (west) .. 1 (east)", "y": "-1 (south) .. 1 (north)",
+                "z": "-1 (bottom) .. 1 (the lid)"}},
     "Cube face": {
         "doc": "Which face this pixel is on, and where on that face - a and b run 0..1 across each face, so the same "
                "picture repeats on every face (tiles, sprites). nx, ny, nz is the face's outward normal.",
         "out": {"face": "0 east, 1 west, 2 north, 3 south, 4 lid, 5 bottom", "a": "across the face, 0..1",
-                "b": "down the face, 0..1", "nx": "the face's outward direction, x", "ny": "y", "nz": "z"}},
+                "b": "down the face, 0..1", "normal": "the face's outward direction as one vector wire",
+                "nx": "the face's outward direction, x", "ny": "y", "nz": "z"}},
     "Cube ring": {
         "doc": "The cube as a well: 'around' goes once round the walls (0..1), 'depth' goes from the middle of the "
                "lid (0), over the rim (0.5), down to the bottom edge (1). Rain falls along depth; a spiral is "
@@ -195,7 +198,7 @@ DOCS = {
         "doc": "Any point in the box - even one slightly off the surface - to the pixel that shows it. Take Position, "
                "add a small step in some direction, and this tells you which pixel is that way: the neighbour a "
                "grain of sand falls into.",
-        "in": {"x": "the point's x", "y": "its y", "z": "its z"},
+        "in": {"pos": "the point, as a vector (Position plus a step)"},
         "out": {"u": "that pixel, across", "v": "that pixel, down"}},
     "Pixel": {
         "doc": "This pixel's whole-number column, row and index. For when you want to count pixels rather than "
@@ -237,7 +240,7 @@ DOCS = {
         "doc": "Spheres growing out of every Emitter: at each pixel, how much of a shell is passing through. Wire "
                "Emitters' slots here and Position into x, y, z, and each beat becomes a ring that crosses every "
                "edge of the cube as one ring.",
-        "in": {"slots": "from Emitters", "x": "this pixel's position (Position)", "y": "Position's y", "z": "Position's z",
+        "in": {"slots": "from Emitters", "pos": "this pixel's position (Position's pos)",
                "speed": "how fast the shells grow, in cube-widths per second", "width": "how thick a shell is"},
         "out": {"value": "how much shell is here, 0..1", "tag": "the tag of the strongest shell (its colour)",
                 "age": "how old that shell is, in seconds"}},
@@ -280,11 +283,10 @@ DOCS = {
         "doc": "A looping, twisted tube floating inside the cube, seen from the middle. Feed it Direction and it tells "
                "you whether this pixel looks at the tube, how far along the tube that spot is (for stripes), how "
                "close to its edge (for shading), and which way its surface faces (for lighting).",
-        "in": {"nx": "the pixel's direction (Direction)", "ny": "Direction's ny", "nz": "Direction's nz",
-               "tube": "how fat the tube is"},
+        "in": {"dir": "the pixel's direction (Direction's dir)", "tube": "how fat the tube is"},
         "out": {"on": "1 where the tube is seen, else 0", "along": "how far along the tube, 0..1 - stripes",
-                "edge": "0 at the tube's middle, 1 at its edge", "Nx": "which way the tube's surface faces, x",
-                "Ny": "y", "Nz": "z"},
+                "edge": "0 at the tube's middle, 1 at its edge", "normal": "which way the tube's surface faces, as a vector",
+                "Nx": "which way the tube's surface faces, x", "Ny": "y", "Nz": "z"},
         "params": {"p": "how many times the knot winds round", "q": "how many times it winds through",
                    "R": "the knot's overall size", "r": "the loop's size"}},
     "Sparkle": {
@@ -331,17 +333,41 @@ DOCS = {
                     "narrower.", "in": {"x": "in turns", "sharp": "1 = wide and soft, 10 = thin lines"}, "out": {"result": "0..1"}},
     "Dot 3": {"doc": "How far a point lies along a direction (the dot product). Position against Gravity gives height; "
                      "Position against a slab's direction gives which slab; Direction against a light gives brightness.",
-              "in": {"ax": "the point's x", "ay": "y", "az": "z", "bx": "the direction's x", "by": "y", "bz": "z"},
+              "in": {"a": "the point (a vector)", "b": "the direction (a vector)"},
               "out": {"result": "the distance along the direction"}},
+    "Vector": {"doc": "Three numbers joined into one vector wire, for the nodes that take a vector (Dot 3, Length, "
+                      "Vector math). The opposite of Vector split.",
+               "in": {"x": "the x part", "y": "the y part", "z": "the z part"}, "out": {"v": "the vector"}},
+    "Vector split": {"doc": "A vector wire taken apart into its three numbers.",
+                     "in": {"v": "the vector"}, "out": {"x": "its x part", "y": "its y part", "z": "its z part"}},
+    "Vector math": {
+        "doc": "Arithmetic on vectors, chosen by the dropdown. add / subtract / multiply / min / max work part by part; "
+               "scale multiplies by the number; normalize makes the length 1; cross gives the direction at right "
+               "angles to both; dot, distance and length give a number (on the value pin); reflect bounces a off b; "
+               "project drops a onto b.",
+        "in": {"a": "the first vector", "b": "the second vector (where the op needs one)", "scale": "the number, for scale"},
+        "out": {"v": "the vector result", "value": "the number result (dot, distance, length; else the result's length)"},
+        "params": {"op": "which operation"}},
+    "Vector rotate": {
+        "doc": "Turns a vector about any axis - a whole cube tumbling in one node when fed Direction and a clock.",
+        "in": {"v": "the vector to turn", "axis": "the axis to turn about (a direction)", "turns": "how far: 1 = a full circle"},
+        "out": {"v": "the turned vector"}},
+    "Math": {
+        "doc": "One node for every sum: pick the operation from the dropdown. Covers what Add, Multiply and the rest do, "
+               "plus sqrt, sign, round, ceil, snap (round to a step of b), ping-pong (bounce between 0 and b), wrap, "
+               "less / greater / equal (1 or 0), sin / cos / tan in turns, log and exp.",
+        "in": {"a": "the first number", "b": "the second number, where the op needs one"},
+        "out": {"result": "the answer"},
+        "params": {"op": "which operation"}},
     "Rotate": {"doc": "Turns a pair of coordinates round the origin. Feed a clock into turns and a pattern spins; three "
                       "of these on x, y, z tumble the whole cube.",
                "in": {"x": "the point's x", "y": "the point's y", "turns": "how far to turn: 1 = a full circle"}, "out": {"x": "the turned x", "y": "the turned y"}},
     "Length": {"doc": "Distance from the origin: the size of a 2-D or 3-D vector. Length of (cx, cy) is the radius.",
-               "in": {"x": "the vector's x", "y": "its y", "z": "its z (leave 0 for 2-D)"}, "out": {"result": "sqrt(x^2 + y^2 + z^2)"}},
+               "in": {"v": "the vector (make one with Vector for 2-D: x, y, 0)"}, "out": {"result": "its length"}},
     "Direction to": {"doc": "A direction in 3-D from two angles: turn round (a), then tilt up (b). Feed clocks in and "
                             "the direction sweeps about - a slab's normal, a light.",
                      "in": {"turns_a": "round, in turns", "turns_b": "up, in turns (0.25 = straight up)"},
-                     "out": {"x": "the direction's x", "y": "y", "z": "z"}},
+                     "out": {"dir": "the direction as one vector wire", "x": "the direction's x", "y": "y", "z": "z"}},
     "Log": {"doc": "The natural logarithm. log of a radius makes rings that are evenly spaced when zooming.",
             "in": {"x": "must be positive"}, "out": {"result": "ln(x)"}},
     "Exp": {"doc": "e to the power x. A zoom that shrinks by the same proportion every second is Exp of a clock.",
@@ -350,8 +376,8 @@ DOCS = {
         "doc": "A kaleidoscope for the whole cube. Give it a direction and it reflects that direction into one wedge, "
                "so whatever you draw from the result is mirrored over the whole solid - 6 to 120 copies depending on "
                "the symmetry. Draw after the fold, not before.",
-        "in": {"x": "a direction's x (Direction, perhaps Rotated)", "y": "its y", "z": "its z"},
-        "out": {"x": "the folded direction's x", "y": "its y", "z": "its z"},
+        "in": {"v": "a direction (Direction's dir, perhaps through Vector rotate)"},
+        "out": {"v": "the folded direction"},
         "params": {"symmetry": "which mirror set: dihedral n (a pie of n slices), tetrahedral, octahedral (matches the cube), icosahedral (most copies)"}},
     "Sine": {"doc": "A sine wave: -1..1, one full wave per turn of x. (Wave gives 0..1 with more shapes.)",
              "in": {"x": "in turns"}, "out": {"result": "-1 .. 1"}},

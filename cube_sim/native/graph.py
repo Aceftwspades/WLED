@@ -40,7 +40,8 @@ import re
 from native.nodedefs import library, HELPERS, CODEGEN
 
 PIXEL_NAMES = re.compile(r"\b(px|py|u|v|cx|cy|r|ang|nx|ny|nz|X3|Y3|Z3|W|H|N|gc_out)\b")
-TYPES = {"float": "float", "color": "uint32_t", "bool": "bool"}
+TYPES = {"float": "float", "color": "uint32_t", "bool": "bool", "vector": "GcVec"}
+ZERO = {"float": "0", "color": "0", "bool": "false", "vector": "GcVec{0.0f, 0.0f, 0.0f}"}
 
 
 class GraphError(ValueError):
@@ -67,17 +68,46 @@ def _lit(t, v):
         return f"{int(v)}u"
     if t == "int":
         return str(int(v))
+    if t == "vector":
+        if isinstance(v, (list, tuple)):
+            x, y, z = (float(c) for c in (list(v) + [0, 0, 0])[:3])
+        else:
+            x = y = z = float(v)
+        return f"GcVec{{{x}f, {y}f, {z}f}}"
     return str(v)
 
 
 def _coerce(expr, have, want):
+    """One type into another on a wire. float and bool both ways; a float
+    into a vector fills all three; a vector into a float is its x; colour
+    and vector convert as r, g, b in 0..1."""
     if have == want:
         return expr
     if have == "bool" and want == "float":
         return f"({expr} ? 1.0f : 0.0f)"
     if have == "float" and want == "bool":
         return f"({expr} > 0.5f)"
+    if have == "float" and want == "vector":
+        return f"gc_v3({expr}, {expr}, {expr})"
+    if have == "bool" and want == "vector":
+        return f"gc_v3({expr} ? 1.0f : 0.0f, {expr} ? 1.0f : 0.0f, {expr} ? 1.0f : 0.0f)"
+    if have == "vector" and want == "float":
+        return f"({expr}).x"
+    if have == "vector" and want == "bool":
+        return f"(({expr}).x > 0.5f)"
+    if have == "color" and want == "vector":
+        return f"gc_col2v({expr})"
+    if have == "vector" and want == "color":
+        return f"gc_v2col({expr})"
     raise GraphError(f"cannot connect {have} to {want}")
+
+
+def compatible(a, b):
+    """Can a pin of type a feed a pin of type b? Everything but colour into
+    float/bool - and that one only through Split."""
+    if a == b:
+        return True
+    return not ({a, b} == {"color", "float"} or {a, b} == {"color", "bool"})
 
 
 SUB = "sub:"          # node type prefix for a sub-graph used as a node
@@ -91,9 +121,10 @@ def boundary_def(base, n):
     d = dict(base)
     if base["name"] == "Graph input":
         d["outputs"] = [{"name": "value", "type": t}]
-        if t == "float":  d["code"] = "$out.value = $p.default;"
-        elif t == "bool": d["code"] = "$out.value = $p.default > 0.5f;"
-        else:             d["code"] = "$out.value = mq_scale(0xFFFFFFu, (uint8_t)(gc_sat($p.default) * 255.0f));"
+        if t == "float":    d["code"] = "$out.value = $p.default;"
+        elif t == "bool":   d["code"] = "$out.value = $p.default > 0.5f;"
+        elif t == "vector": d["code"] = "$out.value = gc_v3($p.default, $p.default, $p.default);"
+        else:               d["code"] = "$out.value = mq_scale(0xFFFFFFu, (uint8_t)(gc_sat($p.default) * 255.0f));"
     else:
         d["inputs"] = [{"name": "value", "type": t, "default": 0}]
     return d
@@ -464,7 +495,7 @@ class Graph:
                 m = re.search(r"\$(in|out|p|st)\.\w+", code)
                 raise GraphError(f"node {n['type']}: template refers to unknown {m.group(0)}")
             code = code.replace("$$", "$")
-            decl = "" if late else "".join(f"{TYPES[o['type']]} {var(nid, o['name'])} = 0; " for o in d["outputs"])
+            decl = "" if late else "".join(f"{TYPES[o['type']]} {var(nid, o['name'])} = {ZERO[o['type']]}; " for o in d["outputs"])
             tag = f"{n['type']} #{nid}" + (" (for next frame)" if late else "")
             return f"      // {tag}\n      {decl}\n      " + code.replace("\n", "\n      ") + "\n"
 
@@ -575,8 +606,79 @@ static CfxBankReg {ident}_reg(&mode_{ident}, _data_FX_MODE_{upper});
 '''
 
 
+# Pins that became one vector pin: (node type, old float pin) -> (vector pin, component).
+# A saved graph that wired the three floats gets a Vector node put in for them.
+MIGRATE = {}
+for _t, _v, _pins in (("Dot 3", "a", ("ax", "ay", "az")), ("Dot 3", "b", ("bx", "by", "bz")),
+                      ("Length", "v", ("x", "y", "z")), ("Mirror fold", "v", ("x", "y", "z")),
+                      ("Torus knot", "dir", ("nx", "ny", "nz")), ("Shells", "pos", ("x", "y", "z")),
+                      ("Emitters", "pos", ("x", "y", "z")), ("Position to uv", "pos", ("x", "y", "z"))):
+    for _c, _p in zip("xyz", _pins):
+        MIGRATE[(_t, _p)] = (_v, _c)
+MIGRATE_OUT = {("Mirror fold", "x"): ("v", "x"), ("Mirror fold", "y"): ("v", "y"), ("Mirror fold", "z"): ("v", "z")}
+
+
+def migrate(g):
+    """Rewire a graph saved before the vector type: three float wires into
+    what is now one vector pin go through a Vector node; a float read from
+    what is now a vector output goes through a Vector split."""
+    if "Vector" not in g.lib:
+        return g
+    joins, splits = {}, {}
+    new_links = []
+    for a, o, b, i in list(g.links):
+        bt = g.nodes.get(b, {}).get("type"); at = g.nodes.get(a, {}).get("type")
+        if (bt, i) in MIGRATE:
+            vpin, comp = MIGRATE[(bt, i)]
+            key = (b, vpin)
+            if key not in joins:
+                pos = g.nodes[b]["pos"]
+                joins[key] = g.add("Vector", (pos[0] - 190, pos[1] + 40 * len(joins)))
+                g.nodes[b]["inputs"].pop(vpin, None)
+                new_links.append((joins[key], "v", b, vpin))
+            # typed values on the old pins become the Vector node's inputs
+            vals = g.nodes[b].get("inputs", {})
+            if (at, o) in MIGRATE_OUT:
+                svpin, scomp = MIGRATE_OUT[(at, o)]
+                skey = (a, svpin)
+                if skey not in splits:
+                    pos = g.nodes[a]["pos"]
+                    splits[skey] = g.add("Vector split", (pos[0] + 190, pos[1]))
+                    new_links.append((a, svpin, splits[skey], "v"))
+                new_links.append((splits[skey], scomp, joins[key], comp))
+            else:
+                new_links.append((a, o, joins[key], comp))
+        elif (at, o) in MIGRATE_OUT:
+            svpin, scomp = MIGRATE_OUT[(at, o)]
+            skey = (a, svpin)
+            if skey not in splits:
+                pos = g.nodes[a]["pos"]
+                splits[skey] = g.add("Vector split", (pos[0] + 190, pos[1]))
+                new_links.append((a, svpin, splits[skey], "v"))
+            new_links.append((splits[skey], scomp, b, i))
+        else:
+            new_links.append((a, o, b, i))
+    # unwired old float pins with typed values: fold them into the Vector node's inputs
+    for nid, n in list(g.nodes.items()):
+        t = n["type"]
+        for pin, val in list(n.get("inputs", {}).items()):
+            if (t, pin) in MIGRATE:
+                vpin, comp = MIGRATE[(t, pin)]
+                key = (nid, vpin)
+                if key not in joins:
+                    cur = n["inputs"].get(vpin)
+                    v = list(cur) if isinstance(cur, (list, tuple)) else [0.0, 0.0, 0.0]
+                    v["xyz".index(comp)] = float(val)
+                    n["inputs"][vpin] = v
+                else:
+                    g.nodes[joins[key]]["inputs"][comp] = float(val)
+                n["inputs"].pop(pin, None)
+    g.links = new_links
+    return g
+
+
 def load(path, lib=None, resolver=None):
-    return Graph(json.load(open(path, encoding="utf-8")), lib=lib, resolver=resolver)
+    return migrate(Graph(json.load(open(path, encoding="utf-8")), lib=lib, resolver=resolver))
 
 
 def save(graph, path):

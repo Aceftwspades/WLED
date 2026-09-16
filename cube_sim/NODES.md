@@ -165,9 +165,7 @@ Drops a thing on the surface each time the trigger fires - up to eight alive at 
 
 **Inputs**
 - `trigger` *(bool)*: true drops a new one (the beat)
-- `x` *(float)*: where to drop it, if not random
-- `y` *(float)*: where to drop it
-- `z` *(float)*: where to drop it (1 is the lid)
+- `pos` *(vector)*: where to drop it, if not random (a vector; z = 1 is the lid)
 - `tag` *(float)*: a number kept with it - a hue, say (Loudest bin)
 - `life` *(float)*: how many seconds each one lives
 
@@ -219,6 +217,7 @@ Which way is down, as a direction in the cube's own frame. With a motion sensor 
 - `tilt_y` *(float)*: lean the other way, -1..1
 
 **Outputs**
+- `g` *(vector)*: down, as one vector wire
 - `gx` *(float)*: down's x part
 - `gy` *(float)*: down's y part
 - `gz` *(float)*: down's z part (-1 is straight down)
@@ -351,6 +350,7 @@ Which face this pixel is on, and where on that face - a and b run 0..1 across ea
 - `face` *(float)*: 0 east, 1 west, 2 north, 3 south, 4 lid, 5 bottom
 - `a` *(float)*: across the face, 0..1
 - `b` *(float)*: down the face, 0..1
+- `normal` *(vector)*: the face's outward direction as one vector wire
 - `nx` *(float)*: the face's outward direction, x
 - `ny` *(float)*: y
 - `nz` *(float)*: z
@@ -368,6 +368,7 @@ The cube as a well: 'around' goes once round the walls (0..1), 'depth' goes from
 On a cube, the direction from the middle of the cube out through this pixel (a unit vector, length 1). Because it never sees the folds, anything drawn from it - Noise, Dot 3, Mirror fold - flows over every edge seamlessly. On a flat panel it is a gentle dome.
 
 **Outputs**
+- `dir` *(vector)*: the direction as one vector wire - plug it into Noise, Dot 3, Mirror fold, Torus knot
 - `nx` *(float)*: the direction's x part
 - `ny` *(float)*: its y part
 - `nz` *(float)*: its z part (1 straight up)
@@ -386,6 +387,7 @@ This pixel's whole-number column, row and index. For when you want to count pixe
 This pixel's place in the cube's box, each of x, y, z from -1 to 1, z up, so the lid is z = 1. Use it where a straight line matters (slabs, planes, gravity height); use Direction for angles.
 
 **Outputs**
+- `pos` *(vector)*: the position as one vector wire
 - `x` *(float)*: -1 (west) .. 1 (east)
 - `y` *(float)*: -1 (south) .. 1 (north)
 - `z` *(float)*: -1 (bottom) .. 1 (the lid)
@@ -395,9 +397,7 @@ This pixel's place in the cube's box, each of x, y, z from -1 to 1, z up, so the
 Any point in the box - even one slightly off the surface - to the pixel that shows it. Take Position, add a small step in some direction, and this tells you which pixel is that way: the neighbour a grain of sand falls into.
 
 **Inputs**
-- `x` *(float)*: the point's x
-- `y` *(float)*: its y
-- `z` *(float)*: its z
+- `pos` *(vector)*: the point, as a vector (Position plus a step)
 
 **Outputs**
 - `u` *(float)*: that pixel, across
@@ -550,9 +550,7 @@ Spheres growing out of every Emitter: at each pixel, how much of a shell is pass
 
 **Inputs**
 - `slots` *(float)*: from Emitters
-- `x` *(float)*: this pixel's position (Position)
-- `y` *(float)*: Position's y
-- `z` *(float)*: Position's z
+- `pos` *(vector)*: this pixel's position (Position's pos)
 - `speed` *(float)*: how fast the shells grow, in cube-widths per second
 - `width` *(float)*: how thick a shell is
 
@@ -590,15 +588,14 @@ Hard-edged bands along a coordinate. count is how many, duty how wide the bright
 A looping, twisted tube floating inside the cube, seen from the middle. Feed it Direction and it tells you whether this pixel looks at the tube, how far along the tube that spot is (for stripes), how close to its edge (for shading), and which way its surface faces (for lighting).
 
 **Inputs**
-- `nx` *(float)*: the pixel's direction (Direction)
-- `ny` *(float)*: Direction's ny
-- `nz` *(float)*: Direction's nz
+- `dir` *(vector)*: the pixel's direction (Direction's dir)
 - `tube` *(float)*: how fat the tube is
 
 **Outputs**
 - `on` *(float)*: 1 where the tube is seen, else 0
 - `along` *(float)*: how far along the tube, 0..1 - stripes
 - `edge` *(float)*: 0 at the tube's middle, 1 at its edge
+- `normal` *(vector)*: which way the tube's surface faces, as a vector
 - `Nx` *(float)*: which way the tube's surface faces, x
 - `Ny` *(float)*: y
 - `Nz` *(float)*: z
@@ -691,6 +688,7 @@ A direction in 3-D from two angles: turn round (a), then tilt up (b). Feed clock
 - `turns_b` *(float)*: up, in turns (0.25 = straight up)
 
 **Outputs**
+- `dir` *(vector)*: the direction as one vector wire
 - `x` *(float)*: the direction's x
 - `y` *(float)*: y
 - `z` *(float)*: z
@@ -711,12 +709,8 @@ a / b (0 when b is 0).
 How far a point lies along a direction (the dot product). Position against Gravity gives height; Position against a slab's direction gives which slab; Direction against a light gives brightness.
 
 **Inputs**
-- `ax` *(float)*: the point's x
-- `ay` *(float)*: y
-- `az` *(float)*: z
-- `bx` *(float)*: the direction's x
-- `by` *(float)*: y
-- `bz` *(float)*: z
+- `a` *(vector)*: the point (a vector)
+- `b` *(vector)*: the direction (a vector)
 
 **Outputs**
 - `result` *(float)*: the distance along the direction
@@ -756,12 +750,10 @@ The part after the decimal point: 2.7 becomes 0.7. Turns a growing number into a
 Distance from the origin: the size of a 2-D or 3-D vector. Length of (cx, cy) is the radius.
 
 **Inputs**
-- `x` *(float)*: the vector's x
-- `y` *(float)*: its y
-- `z` *(float)*: its z (leave 0 for 2-D)
+- `v` *(vector)*: the vector (make one with Vector for 2-D: x, y, 0)
 
 **Outputs**
-- `result` *(float)*: sqrt(x^2 + y^2 + z^2)
+- `result` *(float)*: its length
 
 ### Log
 
@@ -772,6 +764,20 @@ The natural logarithm. log of a radius makes rings that are evenly spaced when z
 
 **Outputs**
 - `result` *(float)*: ln(x)
+
+### Math
+
+One node for every sum: pick the operation from the dropdown. Covers what Add, Multiply and the rest do, plus sqrt, sign, round, ceil, snap (round to a step of b), ping-pong (bounce between 0 and b), wrap, less / greater / equal (1 or 0), sin / cos / tan in turns, log and exp.
+
+**Inputs**
+- `a` *(float)*: the first number
+- `b` *(float)*: the second number, where the op needs one
+
+**Outputs**
+- `result` *(float)*: the answer
+
+**Settings**
+- `op` *(choice)*: which operation
 
 ### Max
 
@@ -800,14 +806,10 @@ The smaller of the two. Cuts one pattern by another.
 A kaleidoscope for the whole cube. Give it a direction and it reflects that direction into one wedge, so whatever you draw from the result is mirrored over the whole solid - 6 to 120 copies depending on the symmetry. Draw after the fold, not before.
 
 **Inputs**
-- `x` *(float)*: a direction's x (Direction, perhaps Rotated)
-- `y` *(float)*: its y
-- `z` *(float)*: its z
+- `v` *(vector)*: a direction (Direction's dir, perhaps through Vector rotate)
 
 **Outputs**
-- `x` *(float)*: the folded direction's x
-- `y` *(float)*: its y
-- `z` *(float)*: its z
+- `v` *(vector)*: the folded direction
 
 **Settings**
 - `symmetry` *(choice)*: which mirror set: dihedral n (a pie of n slices), tetrahedral, octahedral (matches the cube), icosahedral (most copies)
@@ -954,6 +956,58 @@ A hard switch: on when x reaches 'at'. Gives both a true/false and a 1/0 number.
 **Outputs**
 - `on` *(bool)*: x >= at
 - `value` *(float)*: 1 when on, else 0
+
+### Vector
+
+Three numbers joined into one vector wire, for the nodes that take a vector (Dot 3, Length, Vector math). The opposite of Vector split.
+
+**Inputs**
+- `x` *(float)*: the x part
+- `y` *(float)*: the y part
+- `z` *(float)*: the z part
+
+**Outputs**
+- `v` *(vector)*: the vector
+
+### Vector math
+
+Arithmetic on vectors, chosen by the dropdown. add / subtract / multiply / min / max work part by part; scale multiplies by the number; normalize makes the length 1; cross gives the direction at right angles to both; dot, distance and length give a number (on the value pin); reflect bounces a off b; project drops a onto b.
+
+**Inputs**
+- `a` *(vector)*: the first vector
+- `b` *(vector)*: the second vector (where the op needs one)
+- `scale` *(float)*: the number, for scale
+
+**Outputs**
+- `v` *(vector)*: the vector result
+- `value` *(float)*: the number result (dot, distance, length; else the result's length)
+
+**Settings**
+- `op` *(choice)*: which operation
+
+### Vector rotate
+
+Turns a vector about any axis - a whole cube tumbling in one node when fed Direction and a clock.
+
+**Inputs**
+- `v` *(vector)*: the vector to turn
+- `axis` *(vector)*: the axis to turn about (a direction)
+- `turns` *(float)*: how far: 1 = a full circle
+
+**Outputs**
+- `v` *(vector)*: the turned vector
+
+### Vector split
+
+A vector wire taken apart into its three numbers.
+
+**Inputs**
+- `v` *(vector)*: the vector
+
+**Outputs**
+- `x` *(float)*: its x part
+- `y` *(float)*: its y part
+- `z` *(float)*: its z part
 
 ## colour
 

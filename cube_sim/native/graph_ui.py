@@ -17,7 +17,7 @@ from native import graph as G
 from native.nodedefs import library
 
 DIM = (139, 147, 163)
-PIN_COL = {"float": (110, 190, 250), "color": (250, 170, 90), "bool": (170, 230, 120)}
+PIN_COL = {"vector": (190, 120, 235),"float": (110, 190, 250), "color": (250, 170, 90), "bool": (170, 230, 120)}
 GREY = (70, 74, 84)
 NODE_W = 150            # inner width every node is laid out to
 WIRE_COLOURS = [("type colour", None), ("white", (235, 235, 235)), ("red", (235, 80, 70)),
@@ -55,10 +55,7 @@ def _font_file():
     return None
 
 
-def compatible(a, b):
-    """Can a pin of type a feed a pin of type b? float and bool coerce both
-    ways; colour is colour."""
-    return a == b or {a, b} == {"float", "bool"}
+from native.graph import compatible          # the one rule for what may feed what
 
 
 class PinThemes:
@@ -915,6 +912,10 @@ class GraphPanel:
         elif i["type"] == "bool":
             w = dpg.add_checkbox(label=i["name"], tag=tag, default_value=bool(v), user_data=ud,
                              callback=self._on_input, show=show)
+        elif i["type"] == "vector":
+            vv = [float(c) for c in (list(v) + [0, 0, 0])[:3]] if isinstance(v, (list, tuple)) else [float(v)] * 3
+            w = dpg.add_input_floatx(label=i["name"], tag=tag, width=self.px(120), size=3, default_value=vv + [0.0],
+                                     format="%.2f", user_data=ud, callback=self._on_input, show=show)
         else:
             rgb = list(v)[:3] if isinstance(v, (list, tuple)) else [0, 0, 0]
             w = dpg.add_color_edit([int(c) for c in rgb] + [255], label=i["name"], tag=tag, width=self.px(90),
@@ -925,7 +926,11 @@ class GraphPanel:
         self.touch()
         nid, name = dpg.get_item_user_data(sender)
         self.snapshot(("in", nid, name))
-        if isinstance(val, (list, tuple)) and len(val) >= 3 and all(isinstance(x, float) for x in val):
+        d = self.graph.node_def(self.graph.nodes[nid])
+        ptype = next((i["type"] for i in d["inputs"] if i["name"] == name), "float")
+        if ptype == "vector":
+            val = [float(x) for x in list(val)[:3]]
+        elif isinstance(val, (list, tuple)) and len(val) >= 3 and all(isinstance(x, float) for x in val):
             val = [int(round(x * 255)) if x <= 1.0 else int(x) for x in val[:3]]
         self.graph.nodes[nid].setdefault("inputs", {})[name] = val
 

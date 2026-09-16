@@ -39,7 +39,7 @@ User nodes live in <project>/nodes/*.json with the same shape and are merged
 in at start; a user node with a library node's name replaces it.
 """
 
-F, C, B = "float", "color", "bool"
+F, C, B, V = "float", "color", "bool", "vector"
 
 
 def _n(name, cat, scope, inputs, outputs, params, code, doc=""):
@@ -152,25 +152,25 @@ LIBRARY = [
        "  int b_ = $p.from; for (int i_ = $p.from; i_ <= $p.to && i_ < 16; i_++) if (fft_[i_] > fft_[b_]) b_ = i_;\n"
        "  $out.bin = (float)b_ * (1.0f / 15.0f); $out.level = (float)fft_[b_] * (1.0f / 255.0f); }",
        "which FFT bin is loudest (0..1 across the 16) and how loud - a hue for whatever the beat drops"),
-    _n("Gravity", "signals", "frame", [("tilt_x", F, 0.0), ("tilt_y", F, 0.0)], [("gx", F), ("gy", F), ("gz", F), ("sensor", B)], [],
+    _n("Gravity", "signals", "frame", [("tilt_x", F, 0.0), ("tilt_y", F, 0.0)], [("g", V), ("gx", F), ("gy", F), ("gz", F), ("sensor", B)], [],
        "{ float gx_ = $in.tilt_x, gy_ = $in.tilt_y, gz_ = -1.0f; $out.sensor = false;\n"
        "#ifdef GC_HAS_IMU\n"
        "  { const CfxImuState &imu_ = cfx_imu(); if (imu_.valid) { gx_ = imu_.gx * (1.0f / 127.0f); gy_ = imu_.gy * (1.0f / 127.0f); gz_ = imu_.gz * (1.0f / 127.0f); $out.sensor = true; } }\n"
        "#endif\n"
        "  const float L_ = sqrtf(gx_ * gx_ + gy_ * gy_ + gz_ * gz_); const float iL_ = L_ > 1e-6f ? 1.0f / L_ : 1.0f;\n"
-       "  $out.gx = gx_ * iL_; $out.gy = gy_ * iL_; $out.gz = gz_ * iL_; }",
+       "  $out.gx = gx_ * iL_; $out.gy = gy_ * iL_; $out.gz = gz_ * iL_; $out.g = gc_v3($out.gx, $out.gy, $out.gz); }",
        "where things fall, as a unit vector in the cube's frame: the IMU when one is fitted, else straight down tilted by the inputs"),
     # Emitters: up to eight things dropped on a trigger, each with a position,
     # a tag and an age; Shells reads them per pixel. `slots` carries where the
     # list lives so the two nodes can be wired.
-    dict(_n("Emitters", "signals", "frame", [("trigger", B, False), ("x", F, 0.0), ("y", F, 0.0), ("z", F, 1.0),
+    dict(_n("Emitters", "signals", "frame", [("trigger", B, False), ("pos", V, [0.0, 0.0, 1.0]),
                                              ("tag", F, 0.0), ("life", F, 4.0)],
             [("slots", F), ("count", F)], [_p("random", "bool", True)],
             "{ float *E_ = $st; if ($first) for (int k_ = 0; k_ < 8; k_++) E_[k_ * 6 + 4] = -1.0f;\n"
             "  int n_ = 0;\n"
             "  for (int k_ = 0; k_ < 8; k_++) { float *e_ = E_ + k_ * 6; if (e_[4] >= 0.0f) { e_[4] += (float)dt * 0.001f; if (e_[4] > e_[5]) e_[4] = -1.0f; else n_++; } }\n"
             "  if ($in.trigger) for (int k_ = 0; k_ < 8; k_++) { float *e_ = E_ + k_ * 6; if (e_[4] >= 0.0f) continue;\n"
-            "    float px_ = $in.x, py_ = $in.y, pz_ = $in.z;\n"
+            "    float px_ = $in.pos.x, py_ = $in.pos.y, pz_ = $in.pos.z;\n"
             "    if ($p.random) { px_ = gc_rnd() * 2.0f - 1.0f; py_ = gc_rnd() * 2.0f - 1.0f; pz_ = gc_rnd() * 2.0f - 1.0f;\n"
             "      const float m_ = fmaxf(fabsf(px_), fmaxf(fabsf(py_), fabsf(pz_))); if (m_ > 1e-6f) { px_ /= m_; py_ /= m_; pz_ /= m_; } if (pz_ < -0.99f) pz_ = 1.0f; }\n"
             "    e_[0] = px_; e_[1] = py_; e_[2] = pz_; e_[3] = $in.tag; e_[4] = 0.0f; e_[5] = $in.life; n_++; break; }\n"
@@ -207,13 +207,13 @@ LIBRARY = [
        [("u", F), ("v", F), ("cx", F), ("cy", F), ("r", F), ("angle", F)], [],
        "$out.u = u; $out.v = v; $out.cx = cx; $out.cy = cy; $out.r = r; $out.angle = ang;",
        "where this pixel is: 0..1, centred -1..1, polar"),
-    _n("Direction", "coords", "pixel", [], [("nx", F), ("ny", F), ("nz", F)], [],
-       "$out.nx = nx; $out.ny = ny; $out.nz = nz;",
+    _n("Direction", "coords", "pixel", [], [("dir", V), ("nx", F), ("ny", F), ("nz", F)], [],
+       "$out.dir = gc_v3(nx, ny, nz); $out.nx = nx; $out.ny = ny; $out.nz = nz;",
        "the pixel's outward direction on the cube (a dome elsewhere) - seamless across faces"),
-    _n("Position", "coords", "pixel", [], [("x", F), ("y", F), ("z", F)], [],
-       "$out.x = X3; $out.y = Y3; $out.z = Z3;",
+    _n("Position", "coords", "pixel", [], [("pos", V), ("x", F), ("y", F), ("z", F)], [],
+       "$out.pos = gc_v3(X3, Y3, Z3); $out.x = X3; $out.y = Y3; $out.z = Z3;",
        "the pixel's position in the cube's -1..1 box (z up, 1 on the lid); x, y on a matrix"),
-    _n("Cube face", "coords", "pixel", [], [("face", F), ("a", F), ("b", F), ("nx", F), ("ny", F), ("nz", F)], [],
+    _n("Cube face", "coords", "pixel", [], [("face", F), ("a", F), ("b", F), ("normal", V), ("nx", F), ("ny", F), ("nz", F)], [],
        "{ const float ax_ = fabsf(X3), ay_ = fabsf(Y3), az_ = fabsf(Z3);\n"
        "  float m_, pa_, pb_; $out.nx = 0.0f; $out.ny = 0.0f; $out.nz = 0.0f;\n"
        "  if (cube && az_ >= ax_ && az_ >= ay_) { $out.face = Z3 >= 0 ? 4.0f : 5.0f; m_ = az_; pa_ = X3; pb_ = Y3; $out.nz = Z3 >= 0 ? 1.0f : -1.0f; }\n"
@@ -221,7 +221,7 @@ LIBRARY = [
        "  else if (cube)                         { $out.face = X3 >= 0 ? 0.0f : 1.0f; m_ = ax_; pa_ = Y3; pb_ = Z3; $out.nx = X3 >= 0 ? 1.0f : -1.0f; }\n"
        "  else                                   { $out.face = 4.0f; m_ = 1.0f; pa_ = X3; pb_ = Y3; $out.nz = 1.0f; }\n"
        "  if (m_ < 1e-3f) m_ = 1e-3f;\n"
-       "  $out.a = pa_ / m_ * 0.5f + 0.5f; $out.b = pb_ / m_ * 0.5f + 0.5f; }",
+       "  $out.a = pa_ / m_ * 0.5f + 0.5f; $out.b = pb_ / m_ * 0.5f + 0.5f; $out.normal = gc_v3($out.nx, $out.ny, $out.nz); }",
        "which face (0..5: +x -x +y -y top bottom), where on it (a, b 0..1 - tiles per face), and the face's outward normal"),
     _n("Cube ring", "coords", "pixel", [], [("around", F), ("depth", F)], [],
        "{ if (cube) {\n"
@@ -232,8 +232,8 @@ LIBRARY = [
     _n("Ring to uv", "coords", "pixel", [("around", F, 0.0), ("depth", F, 0.5)], [("u", F), ("v", F)], [],
        "gc_ring_uv($in.around, $in.depth, W, H, B, cube, $out.u, $out.v);",
        "Cube ring backwards: a point on the ring as the u, v Previous at reads - step depth to read up the walls"),
-    _n("Position to uv", "coords", "pixel", [("x", F, 0.0), ("y", F, 0.0), ("z", F, 1.0)], [("u", F), ("v", F)], [],
-       "gc_pos_uv($in.x, $in.y, $in.z, W, H, B, cube, $out.u, $out.v);",
+    _n("Position to uv", "coords", "pixel", [("pos", V, [0.0, 0.0, 1.0])], [("u", F), ("v", F)], [],
+       "gc_pos_uv($in.pos.x, $in.pos.y, $in.pos.z, W, H, B, cube, $out.u, $out.v);",
        "any point of the box back to the pixel that shows it (pushed onto the surface) - read a neighbour one step along any 3-D direction"),
     _n("Pixel", "coords", "pixel", [], [("x", F), ("y", F), ("i", F)], [],
        "$out.x = (float)px; $out.y = (float)py; $out.i = (float)(py * W + px);", "integer pixel and index"),
@@ -261,11 +261,11 @@ LIBRARY = [
        [_p("iterations", "int", 40, 4, 200), _p("julia", "bool", False)],
        "$out.value = $p.julia ? gc_mandel($in.jx, $in.jy, $in.x, $in.y, $p.iterations) : gc_mandel($in.x, $in.y, 0.0f, 0.0f, $p.iterations);",
        "escape time at the point x, y as 0..1 (1 = inside); Julia mode uses jx, jy as the constant and x, y as the start"),
-    _n("Shells", "generate", "pixel", [("slots", F, 0.0), ("x", F, 0.0), ("y", F, 0.0), ("z", F, 0.0), ("speed", F, 1.0), ("width", F, 0.2)],
+    _n("Shells", "generate", "pixel", [("slots", F, 0.0), ("pos", V, [0.0, 0.0, 0.0]), ("speed", F, 1.0), ("width", F, 0.2)],
        [("value", F), ("tag", F), ("age", F)], [],
        "{ const float *E_ = gc_st + (int)$in.slots; float sum_ = 0.0f, best_ = 0.0f, tag_ = 0.0f, age_ = 0.0f;\n"
        "  for (int k_ = 0; k_ < 8; k_++) { const float *e_ = E_ + k_ * 6; if (e_[4] < 0.0f) continue;\n"
-       "    const float dx_ = $in.x - e_[0], dy_ = $in.y - e_[1], dz_ = $in.z - e_[2];\n"
+       "    const float dx_ = $in.pos.x - e_[0], dy_ = $in.pos.y - e_[1], dz_ = $in.pos.z - e_[2];\n"
        "    const float d_ = sqrtf(dx_ * dx_ + dy_ * dy_ + dz_ * dz_); const float rad_ = e_[4] * $in.speed;\n"
        "    float off_ = fabsf(d_ - rad_); if (off_ >= $in.width) continue;\n"
        "    const float life_ = 1.0f - e_[4] / (e_[5] > 0.0f ? e_[5] : 1.0f); const float v_ = (1.0f - off_ / $in.width) * life_;\n"
@@ -322,11 +322,11 @@ LIBRARY = [
     _n("Hash", "generate", "pixel", [("x", F, 0.0), ("y", F, 0.0), ("seed", F, 0.0)], [("value", F)], [],
        "$out.value = gc_hash($in.x, $in.y, $in.seed);",
        "a random 0..1 that is the same every frame for the same x, y, seed - one per cell or column"),
-    _n("Torus knot", "generate", "pixel", [("nx", F, 0.0), ("ny", F, 0.0), ("nz", F, 1.0), ("tube", F, 0.25)],
-       [("on", F), ("along", F), ("edge", F), ("Nx", F), ("Ny", F), ("Nz", F)],
+    _n("Torus knot", "generate", "pixel", [("dir", V, [0.0, 0.0, 1.0]), ("tube", F, 0.25)],
+       [("on", F), ("along", F), ("edge", F), ("normal", V), ("Nx", F), ("Ny", F), ("Nz", F)],
        [_p("p", "int", 2, 1, 7), _p("q", "int", 3, 1, 9), _p("R", "float", 0.62), _p("r", "float", 0.3)],
-       "{ float al_, ed_, Nx_, Ny_, Nz_; const bool hit_ = gc_knot($in.nx, $in.ny, $in.nz, $p.p, $p.q, $p.R, $p.r, $in.tube, al_, ed_, Nx_, Ny_, Nz_);\n"
-       "  $out.on = hit_ ? 1.0f : 0.0f; $out.along = al_; $out.edge = ed_; $out.Nx = Nx_; $out.Ny = Ny_; $out.Nz = Nz_; }",
+       "{ float al_, ed_, Nx_, Ny_, Nz_; const bool hit_ = gc_knot($in.dir.x, $in.dir.y, $in.dir.z, $p.p, $p.q, $p.R, $p.r, $in.tube, al_, ed_, Nx_, Ny_, Nz_);\n"
+       "  $out.on = hit_ ? 1.0f : 0.0f; $out.along = al_; $out.edge = ed_; $out.Nx = Nx_; $out.Ny = Ny_; $out.Nz = Nz_; $out.normal = gc_v3(Nx_, Ny_, Nz_); }",
        "a (p, q) torus knot seen from the cube's centre along a direction: hit or not, where along the knot (0..1), how near the tube's edge (0 centre, 1 rim), and the tube's normal there for lighting"),
     _n("Sparkle", "generate", "pixel", [("density", F, 0.1), ("seed", F, 0.0)], [("value", F)], [],
        "{ uint32_t h_ = (uint32_t)(px * 73856093u) ^ (uint32_t)(py * 19349663u) ^ (uint32_t)($in.seed * 83492791.0f); h_ ^= h_ >> 13; h_ *= 0x5bd1e995u; h_ ^= h_ >> 15; $out.value = ((h_ & 0xFFFFu) * (1.0f / 65535.0f) < $in.density) ? 1.0f : 0.0f; }",
@@ -361,32 +361,86 @@ LIBRARY = [
     _n("Band", "maths", "pixel", [("x", F, 0.0), ("sharp", F, 1.0)], [("result", F)], [],
        "{ const float c_ = 0.5f + 0.5f * cosf($in.x * 6.2831853f); $out.result = powf(c_, fmaxf(0.01f, $in.sharp)); }",
        "a soft band around every whole number of x, narrower as sharp rises - slabs, stripes"),
-    _n("Dot 3", "maths", "pixel", [("ax", F, 0.0), ("ay", F, 0.0), ("az", F, 0.0), ("bx", F, 1.0), ("by", F, 0.0), ("bz", F, 0.0)],
+    _n("Dot 3", "maths", "pixel", [("a", V, [0.0, 0.0, 0.0]), ("b", V, [1.0, 0.0, 0.0])],
        [("result", F)], [],
-       "$out.result = $in.ax * $in.bx + $in.ay * $in.by + $in.az * $in.bz;",
+       "$out.result = gc_vdot($in.a, $in.b);",
        "dot product - a position against a direction gives the distance along it (slabs, sweeps)"),
+    _n("Vector", "maths", "pixel", [("x", F, 0.0), ("y", F, 0.0), ("z", F, 0.0)], [("v", V)], [],
+       "$out.v = gc_v3($in.x, $in.y, $in.z);", "three numbers as one vector wire"),
+    _n("Vector split", "maths", "pixel", [("v", V, [0.0, 0.0, 0.0])], [("x", F), ("y", F), ("z", F)], [],
+       "$out.x = $in.v.x; $out.y = $in.v.y; $out.z = $in.v.z;", "a vector wire back into its three numbers"),
+    _n("Vector math", "maths", "pixel", [("a", V, [0.0, 0.0, 0.0]), ("b", V, [0.0, 0.0, 0.0]), ("scale", F, 1.0)],
+       [("v", V), ("value", F)],
+       [_p("op", "choice", "add", choices=["add", "subtract", "multiply", "scale", "normalize", "cross", "dot", "distance",
+                                            "length", "reflect", "project", "min", "max", "abs", "fract", "floor"])],
+       "{ const GcVec a_ = $in.a, b_ = $in.b; GcVec r_ = a_; float f_ = 0.0f; const char *op_ = \"$p.op\";\n"
+       "  if (!strcmp(op_, \"add\")) r_ = gc_vadd(a_, b_); else if (!strcmp(op_, \"subtract\")) r_ = gc_vsub(a_, b_);\n"
+       "  else if (!strcmp(op_, \"multiply\")) r_ = gc_vmul(a_, b_); else if (!strcmp(op_, \"scale\")) r_ = gc_vscale(a_, $in.scale);\n"
+       "  else if (!strcmp(op_, \"normalize\")) r_ = gc_vnorm(a_); else if (!strcmp(op_, \"cross\")) r_ = gc_vcross(a_, b_);\n"
+       "  else if (!strcmp(op_, \"dot\")) f_ = gc_vdot(a_, b_); else if (!strcmp(op_, \"distance\")) f_ = gc_vlen(gc_vsub(a_, b_));\n"
+       "  else if (!strcmp(op_, \"length\")) f_ = gc_vlen(a_);\n"
+       "  else if (!strcmp(op_, \"reflect\")) { const GcVec n_ = gc_vnorm(b_); r_ = gc_vsub(a_, gc_vscale(n_, 2.0f * gc_vdot(a_, n_))); }\n"
+       "  else if (!strcmp(op_, \"project\")) { const GcVec n_ = gc_vnorm(b_); r_ = gc_vscale(n_, gc_vdot(a_, n_)); }\n"
+       "  else if (!strcmp(op_, \"min\")) r_ = gc_v3(fminf(a_.x, b_.x), fminf(a_.y, b_.y), fminf(a_.z, b_.z));\n"
+       "  else if (!strcmp(op_, \"max\")) r_ = gc_v3(fmaxf(a_.x, b_.x), fmaxf(a_.y, b_.y), fmaxf(a_.z, b_.z));\n"
+       "  else if (!strcmp(op_, \"abs\")) r_ = gc_v3(fabsf(a_.x), fabsf(a_.y), fabsf(a_.z));\n"
+       "  else if (!strcmp(op_, \"fract\")) r_ = gc_v3(gc_fract(a_.x), gc_fract(a_.y), gc_fract(a_.z));\n"
+       "  else if (!strcmp(op_, \"floor\")) r_ = gc_v3(floorf(a_.x), floorf(a_.y), floorf(a_.z));\n"
+       "  $out.v = r_; $out.value = (!strcmp(op_, \"dot\") || !strcmp(op_, \"distance\") || !strcmp(op_, \"length\")) ? f_ : gc_vlen(r_); }",
+       "vector arithmetic with a mode: add, subtract, multiply, scale, normalize, cross, dot, distance, length, reflect, project, min, max, abs, fract, floor"),
+    _n("Vector rotate", "maths", "pixel", [("v", V, [1.0, 0.0, 0.0]), ("axis", V, [0.0, 0.0, 1.0]), ("turns", F, 0.0)], [("v", V)], [],
+       "$out.v = gc_vrot($in.v, $in.axis, $in.turns * 6.2831853f);",
+       "turn a vector about any axis by `turns` (1 = a full circle)"),
+    _n("Math", "maths", "pixel", [("a", F, 0.0), ("b", F, 1.0)], [("result", F)],
+       [_p("op", "choice", "add", choices=["add", "subtract", "multiply", "divide", "power", "sqrt", "abs", "sign", "round",
+                                            "ceil", "floor", "fract", "modulo", "wrap", "snap", "pingpong", "min", "max",
+                                            "smooth min", "smooth max", "less", "greater", "equal", "sin", "cos", "tan",
+                                            "asin", "acos", "atan2", "log", "exp"])],
+       "{ const float a_ = $in.a, b_ = $in.b; float r_ = a_; const char *op_ = \"$p.op\";\n"
+       "  if (!strcmp(op_, \"add\")) r_ = a_ + b_; else if (!strcmp(op_, \"subtract\")) r_ = a_ - b_;\n"
+       "  else if (!strcmp(op_, \"multiply\")) r_ = a_ * b_; else if (!strcmp(op_, \"divide\")) r_ = b_ != 0.0f ? a_ / b_ : 0.0f;\n"
+       "  else if (!strcmp(op_, \"power\")) r_ = powf(a_ < 0.0f ? 0.0f : a_, b_); else if (!strcmp(op_, \"sqrt\")) r_ = sqrtf(a_ < 0.0f ? 0.0f : a_);\n"
+       "  else if (!strcmp(op_, \"abs\")) r_ = fabsf(a_); else if (!strcmp(op_, \"sign\")) r_ = a_ > 0.0f ? 1.0f : (a_ < 0.0f ? -1.0f : 0.0f);\n"
+       "  else if (!strcmp(op_, \"round\")) r_ = floorf(a_ + 0.5f); else if (!strcmp(op_, \"ceil\")) r_ = ceilf(a_);\n"
+       "  else if (!strcmp(op_, \"floor\")) r_ = floorf(a_); else if (!strcmp(op_, \"fract\")) r_ = gc_fract(a_);\n"
+       "  else if (!strcmp(op_, \"modulo\")) r_ = b_ != 0.0f ? a_ - floorf(a_ / b_) * b_ : 0.0f;\n"
+       "  else if (!strcmp(op_, \"wrap\")) r_ = b_ != 0.0f ? a_ - floorf(a_ / b_) * b_ : 0.0f;\n"
+       "  else if (!strcmp(op_, \"snap\")) r_ = b_ != 0.0f ? floorf(a_ / b_ + 0.5f) * b_ : a_;\n"
+       "  else if (!strcmp(op_, \"pingpong\")) { const float p_ = b_ != 0.0f ? b_ : 1.0f; const float m_ = fabsf(a_) - floorf(fabsf(a_) / (2.0f * p_)) * 2.0f * p_; r_ = m_ > p_ ? 2.0f * p_ - m_ : m_; }\n"
+       "  else if (!strcmp(op_, \"min\")) r_ = fminf(a_, b_); else if (!strcmp(op_, \"max\")) r_ = fmaxf(a_, b_);\n"
+       "  else if (!strcmp(op_, \"smooth min\")) { const float k_ = 0.2f; const float h_ = gc_sat(0.5f + 0.5f * (b_ - a_) / k_); r_ = b_ + (a_ - b_) * h_ - k_ * h_ * (1.0f - h_); }\n"
+       "  else if (!strcmp(op_, \"smooth max\")) { const float k_ = 0.2f; const float h_ = gc_sat(0.5f + 0.5f * (a_ - b_) / k_); r_ = b_ + (a_ - b_) * h_ + k_ * h_ * (1.0f - h_); }\n"
+       "  else if (!strcmp(op_, \"less\")) r_ = a_ < b_ ? 1.0f : 0.0f; else if (!strcmp(op_, \"greater\")) r_ = a_ > b_ ? 1.0f : 0.0f;\n"
+       "  else if (!strcmp(op_, \"equal\")) r_ = fabsf(a_ - b_) < 0.001f ? 1.0f : 0.0f;\n"
+       "  else if (!strcmp(op_, \"sin\")) r_ = sinf(a_ * 6.2831853f); else if (!strcmp(op_, \"cos\")) r_ = cosf(a_ * 6.2831853f);\n"
+       "  else if (!strcmp(op_, \"tan\")) r_ = tanf(a_ * 6.2831853f); else if (!strcmp(op_, \"asin\")) r_ = asinf(gc_sat(a_ * 0.5f + 0.5f) * 2.0f - 1.0f) * (1.0f / 6.2831853f);\n"
+       "  else if (!strcmp(op_, \"acos\")) r_ = acosf(gc_sat(a_ * 0.5f + 0.5f) * 2.0f - 1.0f) * (1.0f / 6.2831853f);\n"
+       "  else if (!strcmp(op_, \"atan2\")) r_ = cfx_atan2f(a_, b_) * (1.0f / 6.2831853f);\n"
+       "  else if (!strcmp(op_, \"log\")) r_ = logf(a_ > 1e-6f ? a_ : 1e-6f); else if (!strcmp(op_, \"exp\")) r_ = expf(a_ < 60.0f ? a_ : 60.0f);\n"
+       "  $out.result = r_; }",
+       "one node, every arithmetic op, chosen by a dropdown - what Add, Multiply and the rest do, plus sqrt, sign, round, snap, ping-pong, wrap, compare, the trig set (in turns), log and exp"),
     _n("Rotate", "maths", "pixel", [("x", F, 0.0), ("y", F, 0.0), ("turns", F, 0.0)], [("x", F), ("y", F)], [],
        "{ const float a_ = $in.turns * 6.2831853f; const float c_ = cosf(a_), s_ = sinf(a_);\n"
        "  $out.x = $in.x * c_ - $in.y * s_; $out.y = $in.x * s_ + $in.y * c_; }",
        "turn a pair of coordinates by `turns` (1 = a full turn) - a tumble is three of these"),
-    _n("Length", "maths", "pixel", [("x", F, 0.0), ("y", F, 0.0), ("z", F, 0.0)], [("result", F)], [],
-       "$out.result = sqrtf($in.x * $in.x + $in.y * $in.y + $in.z * $in.z);", "distance from the origin"),
-    _n("Direction to", "maths", "pixel", [("turns_a", F, 0.0), ("turns_b", F, 0.0)], [("x", F), ("y", F), ("z", F)], [],
+    _n("Length", "maths", "pixel", [("v", V, [0.0, 0.0, 0.0])], [("result", F)], [],
+       "$out.result = gc_vlen($in.v);", "distance from the origin"),
+    _n("Direction to", "maths", "pixel", [("turns_a", F, 0.0), ("turns_b", F, 0.0)], [("dir", V), ("x", F), ("y", F), ("z", F)], [],
        "{ const float a_ = $in.turns_a * 6.2831853f, b_ = $in.turns_b * 6.2831853f;\n"
-       "  $out.x = cosf(a_) * cosf(b_); $out.y = sinf(a_) * cosf(b_); $out.z = sinf(b_); }",
+       "  $out.x = cosf(a_) * cosf(b_); $out.y = sinf(a_) * cosf(b_); $out.z = sinf(b_); $out.dir = gc_v3($out.x, $out.y, $out.z); }",
        "a unit direction from two angles (turns) - the normal of a tumbling slab"),
     _n("Log", "maths", "pixel", [("x", F, 1.0)], [("result", F)], [],
        "$out.result = logf($in.x > 1e-6f ? $in.x : 1e-6f);", "natural log; a log spiral is density * log(radius) + arms * angle"),
     _n("Exp", "maths", "pixel", [("x", F, 0.0)], [("result", F)], [],
        "$out.result = expf($in.x < 60.0f ? $in.x : 60.0f);", "e to the x - a zoom that is the same proportion per second"),
-    _n("Mirror fold", "maths", "pixel", [("x", F, 0.0), ("y", F, 0.0), ("z", F, 1.0)], [("x", F), ("y", F), ("z", F)],
+    _n("Mirror fold", "maths", "pixel", [("v", V, [0.0, 0.0, 1.0])], [("v", V)],
        [_p("symmetry", "choice", "octahedral",
            choices=["dihedral 3", "dihedral 4", "dihedral 5", "dihedral 6", "dihedral 7", "dihedral 8", "dihedral 9", "dihedral 10",
                     "tetrahedral", "octahedral", "icosahedral"])],
-       "{ float fx_ = $in.x, fy_ = $in.y, fz_ = $in.z;\n"
+       "{ float fx_ = $in.v.x, fy_ = $in.v.y, fz_ = $in.v.z;\n"
        "  static const char *syms_[] = {\"dihedral 3\", \"dihedral 4\", \"dihedral 5\", \"dihedral 6\", \"dihedral 7\", \"dihedral 8\", \"dihedral 9\", \"dihedral 10\", \"tetrahedral\", \"octahedral\", \"icosahedral\"};\n"
        "  int sym_ = 9; for (int k_ = 0; k_ < 11; k_++) if (!strcmp(syms_[k_], \"$p.symmetry\")) sym_ = k_;\n"
-       "  gc_fold(sym_, fx_, fy_, fz_); $out.x = fx_; $out.y = fy_; $out.z = fz_; }",
+       "  gc_fold(sym_, fx_, fy_, fz_); $out.v = gc_v3(fx_, fy_, fz_); }",
        "a kaleidoscope: reflects a direction into one fundamental domain of a finite mirror group, so whatever is drawn from the result is mirrored 6 to 120 times over the solid"),
     _n("Sine", "maths", "pixel", [("x", F, 0.0)], [("result", F)], [],
        "$out.result = cfx_sinf16($in.x * 6.28318531f);", "sin of x turns, -1..1"),
@@ -508,11 +562,11 @@ LIBRARY = [
     # whole sub-graph, so there is no call and no cost. Compiled on its own -
     # previewing the sub-graph - a Graph input yields its default.
     _n("Graph input", "graph", "frame", [], [("value", F)],
-       [_p("name", "text", "in"), _p("type", "choice", "float", choices=["float", "color", "bool"]),
+       [_p("name", "text", "in"), _p("type", "choice", "float", choices=["float", "color", "bool", "vector"]),
         _p("default", "float", 0.0)],
        "$out.value = $p.default;", "an input pin of the node this graph becomes"),
     _n("Graph output", "graph", "pixel", [("value", F, 0.0)], [],
-       [_p("name", "text", "out"), _p("type", "choice", "float", choices=["float", "color", "bool"])],
+       [_p("name", "text", "out"), _p("type", "choice", "float", choices=["float", "color", "bool", "vector"])],
        "(void)$in.value;", "an output pin of the node this graph becomes"),
 
     # ---- tidiness ----------------------------------------------------------------------
@@ -535,6 +589,24 @@ LIBRARY = [
 HELPERS = r'''
 static inline float gc_sat(float x) { return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); }
 static inline float gc_fract(float x) { return x - floorf(x); }
+// A vector: three floats on one wire.
+struct GcVec { float x, y, z; };
+static inline GcVec gc_v3(float x, float y, float z) { GcVec v; v.x = x; v.y = y; v.z = z; return v; }
+static inline GcVec gc_vadd(GcVec a, GcVec b) { return gc_v3(a.x + b.x, a.y + b.y, a.z + b.z); }
+static inline GcVec gc_vsub(GcVec a, GcVec b) { return gc_v3(a.x - b.x, a.y - b.y, a.z - b.z); }
+static inline GcVec gc_vmul(GcVec a, GcVec b) { return gc_v3(a.x * b.x, a.y * b.y, a.z * b.z); }
+static inline GcVec gc_vscale(GcVec a, float s) { return gc_v3(a.x * s, a.y * s, a.z * s); }
+static inline float gc_vdot(GcVec a, GcVec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+static inline float gc_vlen(GcVec a) { return sqrtf(gc_vdot(a, a)); }
+static inline GcVec gc_vnorm(GcVec a) { const float L = gc_vlen(a); return L > 1e-6f ? gc_vscale(a, 1.0f / L) : gc_v3(0.0f, 0.0f, 1.0f); }
+static inline GcVec gc_vcross(GcVec a, GcVec b) { return gc_v3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x); }
+static inline GcVec gc_col2v(uint32_t c) { return gc_v3(((c >> 16) & 255) * (1.0f / 255.0f), ((c >> 8) & 255) * (1.0f / 255.0f), (c & 255) * (1.0f / 255.0f)); }
+static inline uint32_t gc_v2col(GcVec v) { return RGBW32((uint8_t)(gc_sat(v.x) * 255.0f), (uint8_t)(gc_sat(v.y) * 255.0f), (uint8_t)(gc_sat(v.z) * 255.0f), 0); }
+// Rotate v about a unit axis by an angle (Rodrigues).
+static inline GcVec gc_vrot(GcVec v, GcVec axis, float rad) {
+  const GcVec k = gc_vnorm(axis); const float c = cosf(rad), s = sinf(rad);
+  return gc_vadd(gc_vadd(gc_vscale(v, c), gc_vscale(gc_vcross(k, v), s)), gc_vscale(k, gc_vdot(k, v) * (1.0f - c)));
+}
 static inline float gc_rnd() { return (float)hw_random16() * (1.0f / 65535.0f); }
 // A stable 0..1 from a position and a seed - the same every frame for the same
 // inputs, so cells, tiles and columns can each own a random number.
