@@ -66,6 +66,8 @@ class Engine:
     KEYS = ("sx", "ix", "c1", "c2", "c3", "o1", "o2", "o3")
 
     def __init__(self, dll=None):
+        self.seg = 0                 # the current segment
+        self._segstate = {}          # k -> its effect, sliders, palette, colours when not current
         self.idx = 0
         self.pal = 1
         self.fx = {}
@@ -124,6 +126,7 @@ class Engine:
         dll = dll or default_library()
         want = self.names[self.idx] if self.names else None
         fx, pal, cols = dict(self.fx), self.pal, self._colors
+        segs = self.segments() if self.seg_count() > 1 else None
         old = self.lib
         self.load(dll)
         if old is not None and old is not self.lib:
@@ -131,6 +134,8 @@ class Engine:
         if want in self.names:
             self.select(self.names.index(want), params=dict(fx, pal=pal))
         self.colors(*cols)
+        if segs:
+            self.load_segments(segs)
 
     # --- geometry ------------------------------------------------------------
     def resize(self, B):
@@ -154,6 +159,8 @@ class Engine:
         self._px = self.lib.simPixels()
         self._fft = self.lib.simFftPtr()
         self.sim_ms = 0
+        self.seg = 0
+        self._segstate.clear()
         self.select(self.idx)
 
     def set_map1d2d(self, mode):
@@ -174,9 +181,86 @@ class Engine:
         raise KeyError(f"no effect matching {needle!r}")
 
     # --- driving -------------------------------------------------------------
+    # --- segments -------------------------------------------------------------
+    # The strip can carry several: each a rectangle with its own effect,
+    # sliders, palette and opacity, composited in order. The single-segment
+    # calls (select, push, fx, pal) act on the CURRENT one; the others' state
+    # is kept here and swapped in by seg_select. Segment 0 is the whole
+    # strip until the host says otherwise.
+    def seg_count(self):
+        try:
+            return int(self.lib.simSegCount())
+        except AttributeError:
+            return 1
+
+    def seg_get(self, k):
+        """(x0, y0, x1, y1, opacity, effect index) of segment k."""
+        return tuple(int(self.lib.simSegGet(int(k), w)) for w in range(6))
+
+    def seg_config(self, k, x0, y0, x1, y1, opacity=255):
+        self.lib.simSegConfig(int(k), int(x0), int(y0), int(x1), int(y1), int(opacity))
+        self._segstate.setdefault(k, None)
+
+    def seg_truncate(self, n):
+        self.lib.simSegTruncate(int(n))
+        for k in list(self._segstate):
+            if k >= n:
+                self._segstate.pop(k)
+        if self.seg >= n:
+            self.seg_select(n - 1)
+
+    def seg_select(self, k):
+        """Make segment k the one the effect, sliders and colours refer to."""
+        k = int(k)
+        if k == self.seg:
+            return
+        self._segstate[self.seg] = {"idx": self.idx, "fx": dict(self.fx), "pal": self.pal, "colors": self._colors}
+        self.seg = k
+        self.lib.simSegSelect(k)
+        st = self._segstate.get(k)
+        if st:
+            self.idx, self.fx, self.pal = st["idx"], dict(st["fx"]), st["pal"]
+            self._colors = st["colors"]
+        else:
+            self.select(self.idx)                  # a new segment starts on the current effect
+            self._segstate[k] = {"idx": self.idx, "fx": dict(self.fx), "pal": self.pal, "colors": self._colors}
+
+    def segments(self):
+        """Every segment as the host sees it: bounds, opacity, the effect's
+        name, its params and palette - for saving with the project."""
+        out = []
+        cur = {"idx": self.idx, "fx": dict(self.fx), "pal": self.pal, "colors": self._colors}
+        for k in range(self.seg_count()):
+            x0, y0, x1, y1, op, fx = self.seg_get(k)
+            st = cur if k == self.seg else (self._segstate.get(k) or {"idx": fx, "fx": {}, "pal": self.pal, "colors": self._colors})
+            name = self.names[st["idx"]] if 0 <= st["idx"] < len(self.names) else ""
+            out.append({"bounds": [x0, y0, x1, y1], "opacity": op, "effect": name, "params": dict(st["fx"]), "pal": st["pal"]})
+        return out
+
+    def load_segments(self, segs):
+        """The reverse: the strip's segments from a saved list."""
+        self.lib.simSegTruncate(1)
+        self._segstate.clear()
+        self.seg = 0
+        self.lib.simSegSelect(0)
+        for k, sg in enumerate(segs[:8]):
+            b = sg.get("bounds") or [0, 0, self.cols, self.rows]
+            self.seg_config(k, b[0], b[1], b[2], b[3], sg.get("opacity", 255))
+        for k, sg in enumerate(segs[:8]):
+            self.seg_select(k) if k != self.seg else None
+            if sg.get("effect") in self.names:
+                self.select(self.names.index(sg["effect"]), params=dict(sg.get("params") or {}, pal=sg.get("pal", self.pal)))
+            self.lib.simSegEffect(k, self.idx)
+        if segs:
+            self.seg_select(0)
+
     def select(self, idx, params=None):
         """Pick an effect and reset it, exactly as WLED does on a mode change."""
         self.idx = idx
+        try:
+            self.lib.simSegEffect(self.seg, idx)
+        except AttributeError:
+            pass
         m = self.meta[idx]
         # Defaults come from the effect's own metadata, same as the web UI.
         self.fx = {k: m["defs"].get(k, 16 if k == "c3" else 128) for k in self.KEYS[:5]}
@@ -253,6 +337,17 @@ class Engine:
         """Segment colours. WLED's DEFAULT_COLOR is 0xFFA000."""
         self._colors = (int(c0) & 0xFFFFFF, int(c1) & 0xFFFFFF, int(c2) & 0xFFFFFF)
         self.lib.simColors(*self._colors)
+
+    def pcm(self, samples):
+        """The waveform slot (u_data[8]) for effects that draw the wave
+        itself: 256 int8 samples, as audioreactive's cube_fx block gives
+        the device. Ignored by an engine built without it."""
+        try:
+            f = self.lib.simPcmSet
+        except AttributeError:
+            return
+        a = np.ascontiguousarray(np.clip(samples, -127, 127).astype(np.int8))
+        f(a.ctypes.data_as(C.POINTER(C.c_int8)), int(a.size))
 
     def probe(self, i):
         """A live value the generated effect reported (see graph.py's probes);

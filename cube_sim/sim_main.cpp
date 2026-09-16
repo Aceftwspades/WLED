@@ -34,7 +34,32 @@ int Segment::_vw = 48;
 int Segment::_vh = 48;
 uint8_t Segment::map1D2D = 0;
 
-static Segment  gSeg;
+// --- segments ----------------------------------------------------------------
+// WLED layers several segments on one strip, each a rectangle of it with its
+// own effect, sliders, colours, palette and opacity. The shim's Segment has
+// static width and height (every effect reads them through SEGMENT), so a
+// segment's effect runs with those set to ITS size and its own pixel buffer,
+// and afterwards the buffers are composited into the strip in order - later
+// over earlier, faded by opacity, as the device draws them. Segment 0 is the
+// whole strip and the only one until the host adds more; every API that
+// says "the segment" means the current one (simSegSelect).
+#define SIM_MAX_SEGS 8
+struct SimSeg {
+  Segment seg;
+  int x0 = 0, y0 = 0, x1 = 0, y1 = 0;     // bounds in the strip, exclusive end
+  int fx = 0;
+  uint8_t opacity = 255;
+  uint8_t map1d2d = 0;
+  uint32_t *buf = nullptr;
+  size_t bufLen = 0;
+  bool used = false;
+};
+static SimSeg gSegs[SIM_MAX_SEGS];
+static int gSegCount = 1;
+static int gCurSeg = 0;
+static int gStripW = 48, gStripH = 48;
+static Segment &gSegRef() { return gSegs[gCurSeg].seg; }
+#define gSeg gSegRef()
 // Room for the largest geometry the studio offers: a 256 x 256 matrix, or a
 // cube with 85-pixel faces. simInit() refuses anything larger, and the Python
 // side reads the size back rather than assuming it got what it asked for.
@@ -45,13 +70,23 @@ static float   gVolume = 0.0f;
 static uint8_t gFft[16] = {0};
 static uint8_t gPeak = 0;
 static float   gMajorPeak = 0.0f, gMagnitude = 0.0f;
-static void   *gU[8];
-static um_data_t gUm = { gU, 8 };
+static void   *gU[9];
+static um_data_t gUm = { gU, 9 };
+// the PCM slot, as audioreactive's cube_fx block publishes it (u_data[8])
+struct SimPcm { volatile uint8_t which; int8_t buf[2][256]; };
+static SimPcm gPcm = { 0, {{0}, {0}} };
 
 um_data_t *simAudio() {
   gU[0] = &gVolume;  gU[1] = &gVolume; gU[2] = gFft;
   gU[3] = &gPeak;    gU[4] = &gMajorPeak; gU[5] = &gMagnitude;
+  gU[8] = &gPcm;
   return &gUm;
+}
+
+SIM_API void simPcmSet(const int8_t *samples, int n) {
+  const uint8_t w = gPcm.which ^ 1;
+  for (int i = 0; i < 256; i++) gPcm.buf[w][i] = (i < n) ? samples[i] : 0;
+  gPcm.which = w;
 }
 
 // --- palettes ----------------------------------------------------------------
@@ -204,36 +239,125 @@ SIM_API const char *simEffectMeta(int i) {
 // SEGLEN is w, and effects that need a matrix fall back exactly as they do on
 // a device with no 2-D configured. The buffer is bounded by the static
 // gPixels; a request past it is clamped rather than overrun.
+static void simSegBuffer(SimSeg &S) {
+  const size_t need = (size_t)(S.x1 - S.x0) * (size_t)(S.y1 - S.y0);
+  if (S.bufLen < need) { free(S.buf); S.buf = (uint32_t *)calloc(need ? need : 1, sizeof(uint32_t)); S.bufLen = need; }
+  S.seg.pixels = S.buf;
+}
+
+static void simSegReset(SimSeg &S) {
+  if (S.seg.data) { free(S.seg.data); S.seg.data = nullptr; }
+  S.seg._dataLen = 0; S.seg.call = 0; S.seg.step = 0; S.seg.aux0 = 0; S.seg.aux1 = 0;
+}
+
 SIM_API void simInit(int w, int h) {
   if (w < 1) w = 1;
   if (h < 1) h = 1;
   if ((size_t)w * h > sizeof(gPixels) / sizeof(gPixels[0])) { w = 256; h = 256; }
+  gStripW = w; gStripH = h;
   Segment::_vw = w; Segment::_vh = h;
-  gSeg.pixels = gPixels;
-  gSeg.data = nullptr; gSeg._dataLen = 0;
-  gSeg.call = 0; gSeg.step = 0; gSeg.aux0 = 0; gSeg.aux1 = 0;
-  _segPtr = &gSeg;
-  strip._currentSegment = &gSeg;
+  // one segment, the whole strip; the others are dropped
+  for (int k = 0; k < SIM_MAX_SEGS; k++) { simSegReset(gSegs[k]); gSegs[k].used = false; }
+  gSegCount = 1; gCurSeg = 0;
+  SimSeg &S = gSegs[0];
+  S.x0 = 0; S.y0 = 0; S.x1 = w; S.y1 = h; S.used = true; S.opacity = 255;
+  simSegBuffer(S);
+  _segPtr = &S.seg;
+  strip._currentSegment = &S.seg;
   strip.isMatrix = (h > 1);
   strip.now = 0;
   memset(gPixels, 0, sizeof(uint32_t) * (size_t)w * h);
 }
 
+// --- the segment API ----------------------------------------------------------
+SIM_API int simSegCount() { return gSegCount; }
+
+// Segment k takes these bounds (exclusive ends, clamped to the strip) and
+// opacity; a k past the count adds segments up to it. Its effect restarts,
+// as it does on the device when a segment is resized.
+SIM_API void simSegConfig(int k, int x0, int y0, int x1, int y1, int opacity) {
+  if (k < 0 || k >= SIM_MAX_SEGS) return;
+  if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
+  if (x1 > gStripW) x1 = gStripW; if (y1 > gStripH) y1 = gStripH;
+  if (x1 <= x0) x1 = x0 + 1; if (y1 <= y0) y1 = y0 + 1;
+  if (x1 > gStripW) { x0 = gStripW - 1; x1 = gStripW; }
+  if (y1 > gStripH) { y0 = gStripH - 1; y1 = gStripH; }
+  SimSeg &S = gSegs[k];
+  const bool resized = !S.used || S.x0 != x0 || S.y0 != y0 || S.x1 != x1 || S.y1 != y1;
+  S.x0 = x0; S.y0 = y0; S.x1 = x1; S.y1 = y1;
+  S.opacity = (uint8_t)(opacity < 0 ? 0 : (opacity > 255 ? 255 : opacity));
+  S.used = true;
+  if (k >= gSegCount) gSegCount = k + 1;
+  simSegBuffer(S);
+  if (resized) { simSegReset(S); memset(S.buf, 0, S.bufLen * sizeof(uint32_t)); }
+}
+
+// Segments past k go; k itself stays (at least one always does).
+SIM_API void simSegTruncate(int k) {
+  if (k < 1) k = 1;
+  if (k > SIM_MAX_SEGS) k = SIM_MAX_SEGS;
+  for (int i = k; i < SIM_MAX_SEGS; i++) { simSegReset(gSegs[i]); gSegs[i].used = false; }
+  gSegCount = k;
+  if (gCurSeg >= k) gCurSeg = k - 1;
+}
+
+// The segment the single-segment calls (simSelect, simParams, simColors,
+// simSetMap1D2D, simFrame's idx) mean from now on.
+SIM_API void simSegSelect(int k) {
+  if (k < 0 || k >= gSegCount) return;
+  gCurSeg = k;
+  _segPtr = &gSegs[k].seg;
+  strip._currentSegment = &gSegs[k].seg;
+}
+
+SIM_API void simSegEffect(int k, int idx) {
+  if (k < 0 || k >= gSegCount) return;
+  if (gSegs[k].fx != idx) simSegReset(gSegs[k]);
+  gSegs[k].fx = idx;
+}
+
+SIM_API int simSegGet(int k, int what) {           // 0 x0, 1 y0, 2 x1, 3 y1, 4 opacity, 5 fx
+  if (k < 0 || k >= gSegCount) return 0;
+  const SimSeg &S = gSegs[k];
+  switch (what) { case 0: return S.x0; case 1: return S.y0; case 2: return S.x1; case 3: return S.y1;
+                  case 4: return S.opacity; case 5: return S.fx; }
+  return 0;
+}
+
+// Each segment's frame into the strip, in order, later over earlier, faded
+// by its opacity. A segment at full opacity replaces; below it, its pixels
+// blend with what is under them - WLED's default segment blend.
+static void simComposite() {
+  for (int k = 0; k < gSegCount; k++) {
+    const SimSeg &S = gSegs[k];
+    if (!S.used || !S.buf) continue;
+    const int sw = S.x1 - S.x0;
+    for (int y = S.y0; y < S.y1; y++) {
+      for (int x = S.x0; x < S.x1; x++) {
+        const uint32_t c = S.buf[(y - S.y0) * sw + (x - S.x0)];
+        uint32_t &dst = gPixels[y * gStripW + x];
+        if (S.opacity == 255 || k == 0) dst = (k == 0 && S.opacity != 255) ? color_fade(c, S.opacity) : c;
+        else dst = color_add(color_fade(dst, 255 - S.opacity), color_fade(c, S.opacity), true);
+      }
+    }
+  }
+}
+
 // How a 1-D effect is expanded onto a 2-D segment: 0 strip, 1 bars, 2 arcs,
 // 3 corner - WLED's map1D2D, set per segment in its UI.
 SIM_API void simSetMap1D2D(int m) {
-  Segment::map1D2D = (uint8_t)(m < 0 ? 0 : (m > 4 ? 4 : m));
+  gSegs[gCurSeg].map1d2d = (uint8_t)(m < 0 ? 0 : (m > 4 ? 4 : m));
+  Segment::map1D2D = gSegs[gCurSeg].map1d2d;
 }
 
-SIM_API int simWidth()  { return Segment::_vw; }
-SIM_API int simHeight() { return Segment::_vh; }
+SIM_API int simWidth()  { return gStripW; }
+SIM_API int simHeight() { return gStripH; }
 
 // Selecting an effect must look like WLED selecting one: the scratch buffer is
 // released, so the incoming effect initialises from nothing rather than reading
 // the previous effect's leftovers as its own state.
 SIM_API void simSelect() {
-  if (gSeg.data) { free(gSeg.data); gSeg.data = nullptr; }
-  gSeg._dataLen = 0; gSeg.call = 0; gSeg.step = 0; gSeg.aux0 = 0; gSeg.aux1 = 0;
+  simSegReset(gSegs[gCurSeg]);
 }
 
 SIM_API void simParams(int sx, int ix, int c1, int c2, int c3,
@@ -281,8 +405,25 @@ SIM_API void simFrame(int idx, int dtMs) {
   // usermod rewrites its gradients in loop(), and the effect must draw from the
   // version belonging to this frame rather than the previous one.
   simUsermodFrame();
-  cfxBankRoster()[idx].fn();
-  gSeg.call++;
+  // idx is the current segment's effect (the single-segment call); the others
+  // run their own. Each runs as THE segment: its size, its buffer, its mapping.
+  gSegs[gCurSeg].fx = idx;
+  const int keep = gCurSeg;
+  for (int k = 0; k < gSegCount; k++) {
+    SimSeg &S = gSegs[k];
+    if (!S.used || S.fx < 0 || S.fx >= (int)cfxBankCount()) continue;
+    Segment::_vw = S.x1 - S.x0; Segment::_vh = S.y1 - S.y0;
+    Segment::map1D2D = S.map1d2d;
+    strip.isMatrix = (Segment::_vh > 1);
+    _segPtr = &S.seg; strip._currentSegment = &S.seg;
+    cfxBankRoster()[S.fx].fn();
+    S.seg.call++;
+  }
+  gCurSeg = keep;
+  _segPtr = &gSegs[keep].seg; strip._currentSegment = &gSegs[keep].seg;
+  Segment::_vw = gSegs[keep].x1 - gSegs[keep].x0; Segment::_vh = gSegs[keep].y1 - gSegs[keep].y0;
+  Segment::map1D2D = gSegs[keep].map1d2d;
+  simComposite();
 }
 
 // How many palettes exist right now, fixed plus whatever usermods registered.

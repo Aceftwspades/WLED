@@ -336,6 +336,8 @@ class App:
         src = self.live if self.live else self.syn
         try:
             hit = src.push(self.eng)
+            if hasattr(src, "pcm"):
+                self.eng.pcm(src.pcm())
         except Exception as e:                     # a device can vanish mid-run
             dpg.set_value("live_msg", f"live audio stopped: {e}")
             self.stop_live()
@@ -516,6 +518,8 @@ class App:
         self.eng.select(self.eng.names.index(val))
         self.rebuild_params()
         self.sync_palette_combo()
+        if self.eng.seg_count() > 1:
+            self.save_segments(); self.rebuild_seg_fields()
         self.project.selected = val
         self.project.save()
 
@@ -569,6 +573,7 @@ class App:
         self.project.save()
         self._ab_sync()
         self.rebuild_params()
+        self.rebuild_seg_fields()
         self.request_layout()
         try:
             dpg.set_value("geom_desc", geom.describe())
@@ -718,6 +723,7 @@ class App:
         self.apply_geometry(self.project.geometry)
         dpg.set_value("geom_kind", self.project.geometry.kind)
         self.rebuild_geom_fields()
+        self.restore_segments()
         dpg.configure_item("edit_file", items=self.project.effect_files()); dpg.set_value("edit_file", "")
         dpg.set_value("code", "")
         self.gp.refresh_lib()
@@ -1863,6 +1869,116 @@ class App:
                     holes.append((x - 1, y - 1, x + w + 1, y + h + 1))
         self.frames.update(rects, holes)
 
+    # --- segments ----------------------------------------------------------------
+    def seg_labels(self):
+        out = []
+        for k in range(self.eng.seg_count()):
+            x0, y0, x1, y1, op, fx = self.eng.seg_get(k)
+            name = self.eng.names[fx] if 0 <= fx < len(self.eng.names) else "?"
+            out.append(f"{k}: {x0},{y0} - {x1},{y1}  {name}")
+        return out
+
+    def rebuild_seg_fields(self):
+        if not dpg.does_item_exist("seg_fields"):
+            return
+        labels = self.seg_labels()
+        dpg.configure_item("seg_combo", items=labels)
+        dpg.set_value("seg_combo", labels[self.eng.seg] if self.eng.seg < len(labels) else "")
+        dpg.delete_item("seg_fields", children_only=True)
+        if self.eng.seg_count() < 2:
+            dpg.add_text("one segment, the whole strip - + adds another", parent="seg_fields", color=(139, 147, 163))
+            return
+        x0, y0, x1, y1, op, fx = self.eng.seg_get(self.eng.seg)
+        with dpg.group(horizontal=True, parent="seg_fields"):
+            for key, val in (("x0", x0), ("y0", y0), ("x1", x1), ("y1", y1)):
+                dpg.add_input_int(label=key, width=60, default_value=val, user_data=key, on_enter=True, step=0,
+                                  callback=self.on_seg_field)
+        dpg.add_slider_int(label="opacity", parent="seg_fields", width=200, min_value=0, max_value=255, default_value=op,
+                           callback=lambda s, v: self.on_seg_field(s, v, "opacity"))
+
+    def on_seg_field(self, sender, val, key=None):
+        key = key or dpg.get_item_user_data(sender)
+        k = self.eng.seg
+        x0, y0, x1, y1, op, fx = self.eng.seg_get(k)
+        cur = {"x0": x0, "y0": y0, "x1": x1, "y1": y1, "opacity": op}
+        cur[key] = int(val)
+        self.eng.seg_config(k, cur["x0"], cur["y0"], cur["x1"], cur["y1"], cur["opacity"])
+        self.save_segments()
+        self.rebuild_seg_fields()
+
+    def seg_pick(self, label):
+        try:
+            k = int(str(label).split(":")[0])
+        except ValueError:
+            return
+        self.eng.seg_select(k)
+        dpg.set_value("fx_combo", self.eng.names[self.eng.idx])
+        self.rebuild_params()
+        self.sync_palette_combo()
+        self.rebuild_seg_fields()
+
+    def seg_add(self):
+        n = self.eng.seg_count()
+        if n >= 8:
+            self.gp.status("eight segments is the most"); return
+        w, h = self.eng.cols, self.eng.rows
+        # the new one takes the right half of the strip (or the bottom, on a strip)
+        if w >= h:
+            self.eng.seg_config(n, w // 2, 0, w, h, 255)
+        else:
+            self.eng.seg_config(n, 0, h // 2, w, h, 255)
+        self.eng.seg_select(n)
+        self.save_segments()
+        dpg.set_value("fx_combo", self.eng.names[self.eng.idx])
+        self.rebuild_params(); self.sync_palette_combo(); self.rebuild_seg_fields()
+
+    def seg_remove(self):
+        n = self.eng.seg_count()
+        if n <= 1:
+            return
+        self.eng.seg_truncate(n - 1)
+        self.save_segments()
+        dpg.set_value("fx_combo", self.eng.names[self.eng.idx])
+        self.rebuild_params(); self.sync_palette_combo(); self.rebuild_seg_fields()
+
+    def save_segments(self):
+        self.project.options["segments"] = self.eng.segments() if self.eng.seg_count() > 1 else []
+        self.project.save()
+
+    def restore_segments(self):
+        segs = self.project.options.get("segments") or []
+        if len(segs) > 1:
+            try:
+                self.eng.load_segments(segs)
+            except Exception as e:
+                self.gp.status(f"segments not restored: {e}")
+        self.rebuild_seg_fields()
+
+    def _draw_segments(self):
+        """The segments' bounds over the net, the current one in the accent,
+        when there is more than one."""
+        if not dpg.does_item_exist("seg_overlay"):
+            dpg.add_viewport_drawlist(front=True, tag="seg_overlay")
+        for it in getattr(self, "_seg_items", []):
+            if dpg.does_item_exist(it):
+                dpg.delete_item(it)
+        self._seg_items = []
+        if self.eng.seg_count() < 2 or not (self.ui and self.layout in ("both", "net") and dpg.does_item_exist("net_img")):
+            return
+        st = dpg.get_item_state("net_img")
+        if "rect_min" not in st:
+            return
+        ox, oy = st["rect_min"]
+        sc = self.net_scale
+        ry = self.net_image().shape[0] / max(1, self.eng.rows) * sc
+        for k in range(self.eng.seg_count()):
+            x0, y0, x1, y1, op, fx = self.eng.seg_get(k)
+            col = (90, 169, 230, 255) if k == self.eng.seg else (255, 184, 70, 200)
+            self._seg_items.append(dpg.draw_rectangle((ox + x0 * sc, oy + y0 * ry), (ox + x1 * sc, oy + y1 * ry),
+                                                      parent="seg_overlay", color=col, thickness=2))
+            self._seg_items.append(dpg.draw_text((ox + x0 * sc + 4, oy + y0 * ry + 2), str(k), parent="seg_overlay",
+                                                 color=col, size=14))
+
     def push_settings(self):
         """The effect on the cube here, with its sliders, checkboxes, palette
         and colours, becomes the device's first segment."""
@@ -2112,6 +2228,7 @@ class App:
                 img = both
             dpg.set_value("cube_tex", self._rgba("cube", img))
         self._draw_wiring()
+        self._draw_segments()
         if self.layout == "graph" and self.gp.preview:
             self.gp.update_thumb(net)
         # Records whatever is being SHOWN, so Q, E and W frame the clip too.
@@ -2230,6 +2347,14 @@ def build(app):
                               default_value=app.palette_name_for(app.eng.pal_source),
                               callback=app.on_pal_source)
                 dpg.add_separator()
+                with dpg.group(horizontal=True):
+                    dpg.add_text("SEGMENTS", color=SECTION)
+                    dpg.add_button(label="+", small=True, callback=lambda: app.seg_add())
+                    dpg.add_button(label="-", small=True, callback=lambda: app.seg_remove())
+                    dpg.add_text("the effect and sliders above are this segment's", color=(139, 147, 163))
+                dpg.add_combo([], tag="seg_combo", width=200, callback=lambda s, v: app.seg_pick(v))
+                dpg.add_group(tag="seg_fields")
+                dpg.add_separator()
                 dpg.add_text("GEOMETRY", color=SECTION)
                 dpg.add_combo(list(KINDS), label="shape", tag="geom_kind", width=120,
                               default_value=app.project.geometry.kind, callback=app.on_geom_kind)
@@ -2332,6 +2457,7 @@ def build(app):
     app._themes['present'] = present_theme()
     app.rebuild_params()
     app.rebuild_geom_fields()
+    app.restore_segments()
     files = app.project.effect_files()
     if files:
         app.edit_open(files[0])
@@ -2434,6 +2560,13 @@ def service_command(app):
                         dpg.set_value(tag, o[k])
             if "gp_call" in c:                          # test hook: [method of the graph panel, args]
                 getattr(app.gp, c["gp_call"][0])(*c["gp_call"][1])
+            if "seg" in c:                              # test hook: "add" | "remove" | k | {"k":..,"x0":..}
+                v = c["seg"]
+                if v == "add": app.seg_add()
+                elif v == "remove": app.seg_remove()
+                elif isinstance(v, dict):
+                    app.eng.seg_config(v["k"], v["x0"], v["y0"], v["x1"], v["y1"], v.get("opacity", 255)); app.save_segments(); app.rebuild_seg_fields()
+                else: app.seg_pick(f"{int(v)}:")
             if "ed_key" in c:                           # test hook: [key name, ctrl, shift] into the editor
                 app.code_ed.focus = True
                 app.code_ed.key(getattr(dpg, "mvKey_" + c["ed_key"][0]), bool(c["ed_key"][1]), bool(c["ed_key"][2]))

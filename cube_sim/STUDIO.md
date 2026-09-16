@@ -540,14 +540,17 @@ them within each group; ticked when done.
       wiring on the net" draws the path through the pixels, first LED
       amber, last red. Dragging single pixels is not offered: a cube is
       wired by the panel, and the per-face settings cover that.
-- [ ] **Multiple segments**: the sim runs one; WLED layers several. Scoped:
-      the shim (`sim_main.cpp`) would host N `Segment`s with their own
-      bounds, effect, params and data, run them in turn and composite by
-      WLED's rules (later segments over earlier, with blending); the API
-      grows a segment index; the side panel a segment list. A day's work
-      in the engine and the panel, for the matrix users the cube's effects
-      do not serve - the cube is one 3B x 3B segment by design - so it
-      waits until someone needs it.
+- [x] **Multiple segments** (up to eight). The shim hosts a `Segment` per
+      segment with its own pixel buffer, effect, sliders, palette, colours,
+      state and 1-D mapping; each runs as THE segment (the shim's width and
+      height are its size for the duration), then the buffers are
+      composited into the strip in order, later over earlier, faded by
+      opacity. The single-segment API means the current one; `simSeg*`
+      add, bound, select and drop them. The side panel's SEGMENTS section
+      lists them (+ / -, bounds, opacity); the effect, sliders, palette and
+      colours above it are the current segment's; the net draws every
+      segment's bounds with the current one in the accent. Saved with the
+      project, restored on open, kept across a rebuild of the engine.
 
 ### Polish and workflow
 
@@ -602,8 +605,16 @@ them within each group; ticked when done.
       they were. The external editor remains for anyone who prefers it.
 - [ ] **The scripted runtime** (phase 4): an interpreter usermod so an
       effect reaches a device without a firmware build.
-- [ ] **True PCM into audioreactive**: the ninth `u_data` slot for the FFT
-      batch.
+- [x] **True PCM into audioreactive**: a ninth `u_data` slot. In
+      `audio_reactive.cpp` (one marked block) every FFT batch is folded 2:1
+      to 256 int8 samples, scaled by the batch peak with a floor, into the
+      half of a double buffer the readers are not on; `u_size` becomes 9.
+      `cfx_pcm()` in cube_fx_common.h hands the current half over, or
+      nullptr on a build without the block; Warp and Scope draw the real
+      waveform from it and fall back to the rebuilt one. The sim carries
+      the same slot: the synth makes a waveform from its bands the way the
+      firmware's rebuild does (so the two move alike), a WAV or a capture
+      gives its own samples. Compiled for the S3 (1.54 MB, no warnings).
 
 ## Where the frame time goes
 
