@@ -41,6 +41,7 @@ from native.project import (default_project, Project, list_projects, project_pat
                             load_prefs, save_prefs)
 from native.graph_ui import GraphPanel, build_panel
 from native import chrome
+from native.keys import Keymap, combo as key_combo
 from native import render, gif
 from native.apiref import API
 import shutil
@@ -159,6 +160,9 @@ class App:
         self.splits = {"both": 0.5, "edit": 0.55, "graph": 0.7}   # the left pane's share of the two-pane width
         self.splits.update({k: float(v) for k, v in self.prefs.get("splits", {}).items() if k in self.splits})
         self.side_w = int(self.prefs.get("side_w", SIDE_W))
+        self.side = True             # the side panel shown (Ctrl+Shift+H hides it)
+        self.keys = Keymap(self.prefs)
+        self._capture = None         # an action waiting for its key, in the shortcuts dialog
         self._split_drag = None      # ("a"|"b", mouse x at press, value at press) while a splitter is held
         self._watch_mtime = None     # the edit file's mtime when last read, for the watcher
         self._watch_at = 0.0
@@ -965,10 +969,7 @@ class App:
 
     def show_layout(self, which):
         """A pane by name, controls shown - the menu and toolbar route."""
-        if which in ("net", "cube", "both"):
-            self.layout = which
-        else:
-            self.layout = which
+        self.layout = which
         self.ui = True
         self.request_layout()
 
@@ -1103,7 +1104,8 @@ class App:
             tb_h = dpg.get_item_rect_size("toolbar")[1] if dpg.does_item_exist("toolbar") else 0
             top = (tb_y + tb_h + 6) if tb_h > 0 else 59
             pane_h = max(VIEW_MIN, vh - top - fh - 8 - 10 - 34)
-            avail  = vw - self.side_w - (22 * nview + 24) - (8 * nview)   # splitter handles
+            side_w = self.side_w if self.side else 0
+            avail  = vw - side_w - (22 * nview + 24) - (8 * nview)   # splitter handles
             if nview == 2:
                 left_w = int(max(VIEW_MIN, min(avail - VIEW_MIN, avail * split)))
                 right_w = max(VIEW_MIN, avail - left_w)
@@ -1125,14 +1127,14 @@ class App:
         dpg.configure_item("cube_win", show=show_cube)
         dpg.configure_item("edit_win", show=show_edit)
         dpg.configure_item("graph_win", show=show_graph)
-        dpg.configure_item("side_win", show=self.ui)
+        dpg.configure_item("side_win", show=self.ui and self.side)
         # The menu bar is the window's: a hidden mvMenuBar still draws its
         # strip, the window flag takes it away.
         dpg.configure_item("root", menubar=self.ui)
         if dpg.does_item_exist("toolbar"):
             dpg.configure_item("toolbar", show=self.ui)
         dpg.configure_item("split_a", show=self.ui and nview == 2)
-        dpg.configure_item("split_b", show=self.ui)
+        dpg.configure_item("split_b", show=self.ui and self.side)
 
         th = self._themes.get("present" if not self.ui else "normal")
         if th:
@@ -1327,84 +1329,116 @@ class App:
             elif app_data == dpg.mvKey_Escape:
                 self.gp._hide_menus()
             return
-        ctrl = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
-        if ctrl and app_data == dpg.mvKey_S:
-            self.save_current(); return
-        if ctrl and app_data == dpg.mvKey_N:
-            self.new_effect(); return
-        if ctrl and app_data == dpg.mvKey_F:
-            self.focus_find(); return
-        if app_data == dpg.mvKey_F5:
-            self.build_current(); return
-        if app_data == dpg.mvKey_F2:
-            self.rename_current(); return
-        if ctrl and self.layout == "graph":
-            if app_data == dpg.mvKey_Z:
-                self.gp.undo()
-            elif app_data == dpg.mvKey_Y:
-                self.gp.redo()
-            elif app_data == dpg.mvKey_C:
-                self.gp.copy()
-            elif app_data == dpg.mvKey_X:
-                self.gp.cut()
-            elif app_data == dpg.mvKey_V:
-                self.gp.paste()
-            elif app_data in (dpg.mvKey_Plus, dpg.mvKey_Add):
-                self.gp.zoom_step(1)
-            elif app_data in (dpg.mvKey_Minus, dpg.mvKey_Subtract):
-                self.gp.zoom_step(-1)
-            elif app_data in (dpg.mvKey_0, dpg.mvKey_NumPad0):
-                self.gp.set_zoom(1.0)
-            elif app_data == dpg.mvKey_H:
-                self.gp.toggle_selected("hide_pins")
-            elif app_data == dpg.mvKey_L:
-                self.gp.arrange()
+        # A key waited for by the shortcuts dialog takes it, whatever it is.
+        binding = key_combo(app_data)
+        if self._capture:
+            if app_data == dpg.mvKey_Escape:
+                self._capture = None
+                chrome.refresh_keys(self)
+            elif binding:
+                self.keys.set(self._capture, binding)
+                self._capture = None
+                chrome.refresh_keys(self)
             return
-        if self.layout == "graph" and not ctrl:
-            shift = dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift)
-            if app_data == dpg.mvKey_M:
-                self.gp.toggle_selected("muted"); return
-            if app_data == dpg.mvKey_F:
-                self.gp.connect_selected(); return
-            if app_data == dpg.mvKey_D and shift:
-                sel = self.gp._selected()
-                if sel:
-                    self.gp._dup(sel[0], True)
-                return
-        if ctrl:
+        if self.layout == "graph" and binding is None:
             return
         if self.layout == "graph":
+            # Nudging is not a binding: four keys, two steps, always these.
             shift = dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift)
             step = 1 if shift else 10
             arrows = {dpg.mvKey_Left: (-step, 0), dpg.mvKey_Right: (step, 0),
                       dpg.mvKey_Up: (0, -step), dpg.mvKey_Down: (0, step)}
             if app_data in arrows:
                 self.gp.nudge(*arrows[app_data]); return
-            if app_data == dpg.mvKey_Home:
-                self.gp.home(); return
-        if app_data == dpg.mvKey_F11:
-            dpg.toggle_viewport_fullscreen()
-        elif app_data == dpg.mvKey_Spacebar:
-            self.playing = not self.playing
-        elif app_data == dpg.mvKey_Q:
-            self.set_layout("net")
-        elif app_data == dpg.mvKey_E:
-            self.set_layout("cube")
-        elif app_data == dpg.mvKey_W:
-            self.set_layout("both")
-        elif app_data == dpg.mvKey_H:
-            self.ui = not self.ui
-            self.request_layout()
-        elif app_data == dpg.mvKey_C:
-            self.layout = "both" if self.layout == "edit" else "edit"
-            self.ui = True
-            self.request_layout()
-        elif app_data == dpg.mvKey_G:
-            self.layout = "both" if self.layout == "graph" else "graph"
-            self.ui = True
-            self.request_layout()
-        elif app_data == dpg.mvKey_Delete and self.layout == "graph":
-            self.gp.delete_selected()
+        action = self.keys.lookup(binding, "graph" if self.layout == "graph" else "global") if binding else None
+        if action:
+            self.run_action(action)
+
+    def run_action(self, action):
+        """Every keyboard action by name; the menus and toolbar call the same."""
+        gp = self.gp
+        table = {
+            "view_net":     lambda: self.set_layout("net"),
+            "view_cube":    lambda: self.set_layout("cube"),
+            "view_both":    lambda: self.set_layout("both"),
+            "pane_code":    lambda: self.toggle_pane("edit"),
+            "pane_graph":   lambda: self.toggle_pane("graph"),
+            "presentation": self.toggle_ui,
+            "fullscreen":   dpg.toggle_viewport_fullscreen,
+            "side_panel":   self.toggle_side,
+            "play_pause":   self.toggle_play,
+            "step":         self.step_once,
+            "restart":      lambda: self.eng.select(self.eng.idx),
+            "prev_effect":  lambda: self.step_effect(-1),
+            "next_effect":  lambda: self.step_effect(1),
+            "prev_palette": lambda: self.step_palette(-1),
+            "next_palette": lambda: self.step_palette(1),
+            "live":         lambda: gp.set_auto(not gp.auto),
+            "build":        self.build_current,
+            "new":          self.new_effect,
+            "open":         lambda: chrome.show_open(self),
+            "save":         self.save_current,
+            "rename":       self.rename_current,
+            "import":       self.toggle_import_current,
+            "find":         self.focus_find,
+            "external":     self.open_external,
+            "screenshot":   lambda: setattr(self, "shot_req", True),
+            "record":       lambda: self.start_rec(15.0),
+            "shortcuts":    lambda: chrome.show_keys(self),
+            "undo":         gp.undo,
+            "redo":         gp.redo,
+            "cut":          gp.cut,
+            "copy":         gp.copy,
+            "paste":        gp.paste,
+            "duplicate":    self.duplicate_selected,
+            "delete":       gp.delete_selected,
+            "add_node":     self.search_nodes,
+            "connect":      gp.connect_selected,
+            "mute":         lambda: gp.toggle_selected("muted"),
+            "collapse":     lambda: gp.toggle_selected("collapsed"),
+            "hide_pins":    lambda: gp.toggle_selected("hide_pins"),
+            "fold":         lambda: chrome.ask(self, "Sub-graph", "a name for the new node type", "",
+                                               lambda v: gp.make_sub_from_selection(v)),
+            "enter_sub":    self.enter_or_back,
+            "arrange":      gp.arrange,
+            "zoom_in":      lambda: gp.zoom_step(1),
+            "zoom_out":     lambda: gp.zoom_step(-1),
+            "zoom_reset":   lambda: gp.set_zoom(1.0),
+            "frame_all":    gp.home,
+            "stop_preview": gp.stop_preview,
+        }
+        fn = table.get(action)
+        if fn:
+            fn()
+
+    def toggle_pane(self, which):
+        """C and G: the pane, or back to the two views if it is already up."""
+        self.layout = "both" if self.layout == which else which
+        self.ui = True
+        self.request_layout()
+
+    def toggle_side(self):
+        self.side = not self.side
+        self.request_layout()
+
+    def step_effect(self, d):
+        names = self.eng.names
+        if names:
+            self.on_effect(None, names[(self.eng.idx + d) % len(names)])
+            dpg.set_value("fx_combo", names[self.eng.idx])
+
+    def step_palette(self, d):
+        names = [p[0] for p in PALETTES]
+        cur = self.palette_name_for(self.eng.pal)
+        i = names.index(cur) if cur in names else 0
+        self.on_palette(None, names[(i + d) % len(names)])
+        dpg.set_value("pal_combo", names[(i + d) % len(names)])
+
+    def enter_or_back(self):
+        if self.gp.stack:
+            self.gp.back()
+        else:
+            self.enter_selected_sub()
 
     def set_layout(self, which):
         """Q, E and W go straight to a full-frame picture, every time.
@@ -1719,10 +1753,14 @@ def service_command(app):
                       "footer rect", dpg.get_item_rect_min("footer"), dpg.get_item_rect_max("footer"))
             if "key" in c:                              # test hook: a key press, by mvKey_ name
                 app.on_key(None, getattr(dpg, "mvKey_" + c["key"]))
+            if "action" in c:                           # test hook: a keymap action by name
+                app.run_action(c["action"])
+            if "bind" in c:                             # test hook: [action, binding]
+                app.keys.set(*c["bind"]); chrome.refresh_keys(app)
             if "chrome" in c:                           # test hook: a chrome action by name
                 {"new": lambda: app.new_effect(), "rename": app.rename_current, "open": lambda: chrome.show_open(app),
                  "device": lambda: chrome.show_device(app), "editor": lambda: chrome.show_editor(app),
-                 "shortcuts": lambda: dpg.show_item("shortcuts_win"), "about": lambda: dpg.show_item("about_win"),
+                 "shortcuts": lambda: chrome.show_keys(app), "about": lambda: dpg.show_item("about_win"),
                  "search": app.search_nodes, "name_ok": lambda: chrome._name_ok(app)}[c["chrome"]]()
             if "name_text" in c:
                 dpg.set_value("name_input", c["name_text"])

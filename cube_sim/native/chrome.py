@@ -17,45 +17,39 @@ import subprocess
 import dearpygui.dearpygui as dpg
 
 from native.icons import texture
+from native.keys import ACTIONS, FIXED
 
 TEXT   = (215, 219, 227, 255)
 DIM    = (139, 147, 163, 255)
 ACCENT = (90, 169, 230, 255)
 ICON   = 16
 
-LAYOUTS = (("net", "Logical net", "Q"), ("cube", "3-D view", "E"), ("both", "Net and 3-D", "W"),
-           ("edit", "Code", "C"), ("graph", "Graph", "G"))
-
-SHORTCUTS = [
-    ("Views", [("Q / E / W", "logical net / 3-D / both, full frame; again returns to the panels"), ("C", "code pane"), ("G", "graph pane"),
-               ("H", "presentation: hide every control"), ("F11", "fullscreen window"),
-               ("drag the bars between panes", "resize them")]),
-    ("Playback", [("space", "play / pause"), ("F5", "compile + reload the current effect")]),
-    ("Files", [("Ctrl+N", "new effect"), ("Ctrl+S", "save"), ("F2", "rename")]),
-    ("Graph", [("right-click", "add a node (type to search)"), ("drag a wire to empty space", "add a node wired to it"),
-               ("Ctrl+Z / Ctrl+Y", "undo / redo"), ("Ctrl+C / X / V", "copy / cut / paste"), ("Shift+D", "duplicate with its inputs"),
-               ("Delete", "delete the selection"), ("F", "connect two selected nodes"), ("M", "mute"),
-               ("Ctrl+H", "hide unwired pins"), ("Ctrl+L", "arrange"), ("arrows / Shift+arrows", "nudge 10 / 1"),
-               ("Ctrl+= / Ctrl+- / Ctrl+0", "zoom in / out / 100%"), ("wheel", "zoom about the pointer"),
-               ("middle-drag", "pan"), ("Home", "frame the whole graph"), ("Alt+click a node", "detach it from its wires"),
-               ("double-click a sub-graph", "enter it"), ("click a pin", "preview that pin's value on the cube")]),
-]
-
+LAYOUTS = (("net", "Logical net", "view_net"), ("cube", "3-D view", "view_cube"), ("both", "Net and 3-D", "view_both"),
+           ("edit", "Code", "pane_code"), ("graph", "Graph", "pane_graph"))
 
 # --- the menu bar -------------------------------------------------------------------
+def _mi(app, label, action=None, **kw):
+    """A menu item; with an action, its shortcut shows the keymap's key and
+    the item is tagged so a rebind updates it."""
+    if action:
+        kw.setdefault("tag", f"mi_{action}")
+        kw["shortcut"] = app.keys.label(action)
+    return dpg.add_menu_item(label=label, **kw)
+
+
 def build_menus(app):
     with dpg.menu_bar(tag="menubar"):
         with dpg.menu(label="File"):
-            dpg.add_menu_item(label="New graph effect...", shortcut="Ctrl+N", callback=lambda: app.new_effect("graph"))
+            _mi(app, "New graph effect...", "new", callback=lambda: app.new_effect("graph"))
             dpg.add_menu_item(label="New code effect...", callback=lambda: app.new_effect("code"))
             with dpg.menu(label="Open graph", tag="menu_open_graph"):
                 pass
             with dpg.menu(label="Open code effect", tag="menu_open_code"):
                 pass
-            dpg.add_menu_item(label="Save", shortcut="Ctrl+S", callback=lambda: app.save_current())
-            dpg.add_menu_item(label="Rename...", shortcut="F2", callback=lambda: app.rename_current())
+            _mi(app, "Save", "save", callback=lambda: app.save_current())
+            _mi(app, "Rename...", "rename", callback=lambda: app.rename_current())
             dpg.add_separator()
-            dpg.add_menu_item(label="Add to the effects list", tag="menu_import", callback=lambda: app.toggle_import_current())
+            _mi(app, "Add to the effects list", "import", tag="menu_import", callback=lambda: app.toggle_import_current())
             dpg.add_menu_item(label="Open graph as code", callback=lambda: app.open_graph_code())
             dpg.add_separator()
             with dpg.menu(label="Project"):
@@ -71,74 +65,77 @@ def build_menus(app):
             dpg.add_menu_item(label="Import graph bundle...", callback=lambda: dpg.show_item("graph_import_dialog"))
             dpg.add_menu_item(label="Export graph bundle", callback=lambda: app.gp.export_bundle())
             dpg.add_separator()
-            dpg.add_menu_item(label="Screenshot of the 3-D view", callback=lambda: setattr(app, "shot_req", True))
-            dpg.add_menu_item(label="Record 15 s GIF", callback=lambda: app.start_rec(15.0))
+            _mi(app, "Screenshot of the 3-D view", "screenshot", callback=lambda: setattr(app, "shot_req", True))
+            _mi(app, "Record 15 s GIF", "record", callback=lambda: app.start_rec(15.0))
             dpg.add_separator()
             dpg.add_menu_item(label="Quit", callback=lambda: dpg.stop_dearpygui())
         with dpg.menu(label="Edit"):
-            dpg.add_menu_item(label="Undo", shortcut="Ctrl+Z", callback=lambda: app.gp.undo())
-            dpg.add_menu_item(label="Redo", shortcut="Ctrl+Y", callback=lambda: app.gp.redo())
+            _mi(app, "Undo", "undo", callback=lambda: app.gp.undo())
+            _mi(app, "Redo", "redo", callback=lambda: app.gp.redo())
             dpg.add_separator()
-            dpg.add_menu_item(label="Cut", shortcut="Ctrl+X", callback=lambda: app.gp.cut())
-            dpg.add_menu_item(label="Copy", shortcut="Ctrl+C", callback=lambda: app.gp.copy())
-            dpg.add_menu_item(label="Paste", shortcut="Ctrl+V", callback=lambda: app.gp.paste())
-            dpg.add_menu_item(label="Duplicate with inputs", shortcut="Shift+D", callback=lambda: app.duplicate_selected())
-            dpg.add_menu_item(label="Delete", shortcut="Del", callback=lambda: app.gp.delete_selected())
+            _mi(app, "Cut", "cut", callback=lambda: app.gp.cut())
+            _mi(app, "Copy", "copy", callback=lambda: app.gp.copy())
+            _mi(app, "Paste", "paste", callback=lambda: app.gp.paste())
+            _mi(app, "Duplicate with inputs", "duplicate", callback=lambda: app.duplicate_selected())
+            _mi(app, "Delete", "delete", callback=lambda: app.gp.delete_selected())
             dpg.add_separator()
-            dpg.add_menu_item(label="Connect selected", shortcut="F", callback=lambda: app.gp.connect_selected())
-            dpg.add_menu_item(label="Mute", shortcut="M", callback=lambda: app.gp.toggle_selected("muted"))
-            dpg.add_menu_item(label="Collapse", callback=lambda: app.gp.toggle_selected("collapsed"))
-            dpg.add_menu_item(label="Hide unwired pins", shortcut="Ctrl+H", callback=lambda: app.gp.toggle_selected("hide_pins"))
-            dpg.add_menu_item(label="Fold into sub-graph...", callback=lambda: ask(
+            _mi(app, "Connect selected", "connect", callback=lambda: app.gp.connect_selected())
+            _mi(app, "Mute", "mute", callback=lambda: app.gp.toggle_selected("muted"))
+            _mi(app, "Collapse", "collapse", callback=lambda: app.gp.toggle_selected("collapsed"))
+            _mi(app, "Hide unwired pins", "hide_pins", callback=lambda: app.gp.toggle_selected("hide_pins"))
+            _mi(app, "Fold into sub-graph...", "fold", callback=lambda: ask(
                 app, "Sub-graph", "a name for the new node type", "", lambda v: app.gp.make_sub_from_selection(v)))
-            dpg.add_menu_item(label="Arrange", shortcut="Ctrl+L", callback=lambda: app.gp.arrange())
+            _mi(app, "Arrange", "arrange", callback=lambda: app.gp.arrange())
             dpg.add_separator()
-            dpg.add_menu_item(label="Find / replace in code", shortcut="Ctrl+F", callback=lambda: app.focus_find())
-            dpg.add_menu_item(label="Open code in external editor", callback=lambda: app.open_external())
+            _mi(app, "Find / replace in code", "find", callback=lambda: app.focus_find())
+            _mi(app, "Open code in external editor", "external", callback=lambda: app.open_external())
         with dpg.menu(label="View"):
-            for key, label, sc in LAYOUTS:
-                dpg.add_menu_item(label=label, shortcut=sc, check=True, tag=f"menu_view_{key}",
-                                  callback=lambda s, a, u: app.show_layout(u), user_data=key)
+            for key, label, act in LAYOUTS:
+                _mi(app, label, act, check=True, tag=f"menu_view_{key}",
+                    callback=lambda s, a, u: app.show_layout(u), user_data=key)
             dpg.add_separator()
-            dpg.add_menu_item(label="Presentation (hide controls)", shortcut="H", check=True, tag="menu_present",
-                              callback=lambda: app.toggle_ui())
-            dpg.add_menu_item(label="Fullscreen", shortcut="F11", callback=lambda: dpg.toggle_viewport_fullscreen())
+            _mi(app, "Presentation (hide controls)", "presentation", check=True, tag="menu_present",
+                callback=lambda: app.toggle_ui())
+            dpg.add_menu_item(label="Side panel", check=True, default_value=True, tag="menu_side",
+                              callback=lambda: app.toggle_side())
+            _mi(app, "Fullscreen", "fullscreen", callback=lambda: dpg.toggle_viewport_fullscreen())
             dpg.add_separator()
-            dpg.add_menu_item(label="Zoom in", shortcut="Ctrl+=", callback=lambda: app.gp.zoom_step(1))
-            dpg.add_menu_item(label="Zoom out", shortcut="Ctrl+-", callback=lambda: app.gp.zoom_step(-1))
-            dpg.add_menu_item(label="Zoom 100%", shortcut="Ctrl+0", callback=lambda: app.gp.set_zoom(1.0))
-            dpg.add_menu_item(label="Frame all", shortcut="Home", callback=lambda: app.gp.home())
+            _mi(app, "Zoom in", "zoom_in", callback=lambda: app.gp.zoom_step(1))
+            _mi(app, "Zoom out", "zoom_out", callback=lambda: app.gp.zoom_step(-1))
+            _mi(app, "Zoom 100%", "zoom_reset", callback=lambda: app.gp.set_zoom(1.0))
+            _mi(app, "Frame all", "frame_all", callback=lambda: app.gp.home())
             dpg.add_separator()
             dpg.add_menu_item(label="Minimap", check=True, default_value=True, tag="menu_minimap",
                               callback=lambda s, a: dpg.configure_item("node_editor", minimap=bool(a)))
             dpg.add_menu_item(label="Reset pane sizes", callback=lambda: app.reset_layout())
         with dpg.menu(label="Node"):
-            dpg.add_menu_item(label="Add node...  (or right-click the graph)", callback=lambda: app.search_nodes())
+            _mi(app, "Add node...  (or right-click the graph)", "add_node", callback=lambda: app.search_nodes())
             with dpg.menu(label="Add", tag="menu_add"):
                 pass
             dpg.add_separator()
-            dpg.add_menu_item(label="Enter sub-graph", callback=lambda: app.enter_selected_sub())
+            _mi(app, "Enter sub-graph", "enter_sub", callback=lambda: app.enter_selected_sub())
             dpg.add_menu_item(label="Back to parent graph", callback=lambda: app.gp.back())
             dpg.add_separator()
-            dpg.add_menu_item(label="Stop pin preview", callback=lambda: app.gp.set_preview(None))
+            _mi(app, "Stop pin preview", "stop_preview", callback=lambda: app.gp.set_preview(None))
         with dpg.menu(label="Playback"):
-            dpg.add_menu_item(label="Play / pause", shortcut="space", callback=lambda: app.toggle_play())
-            dpg.add_menu_item(label="Step one frame", callback=lambda: app.step_once())
-            dpg.add_menu_item(label="Restart effect", callback=lambda: app.eng.select(app.eng.idx))
+            _mi(app, "Play / pause", "play_pause", callback=lambda: app.toggle_play())
+            _mi(app, "Step one frame", "step", callback=lambda: app.step_once())
+            _mi(app, "Restart effect", "restart", callback=lambda: app.eng.select(app.eng.idx))
             dpg.add_separator()
-            dpg.add_menu_item(label="Compile + reload", shortcut="F5", callback=lambda: app.build_current())
-            dpg.add_menu_item(label="Live: rebuild the graph as it changes", check=True, tag="menu_live",
+            _mi(app, "Compile + reload", "build", callback=lambda: app.build_current())
+            _mi(app, "Live: rebuild the graph as it changes", "live", check=True, tag="menu_live",
                               default_value=app.gp.auto, callback=lambda s, a: app.gp.set_auto(bool(a)))
             dpg.add_menu_item(label="Watch: rebuild when the code is saved outside", check=True, tag="edit_watch",
                               default_value=False)
         with dpg.menu(label="Settings"):
+            dpg.add_menu_item(label="Keyboard shortcuts...", callback=lambda: show_keys(app))
             dpg.add_menu_item(label="Device address...", callback=lambda: show_device(app))
             dpg.add_menu_item(label="External editor command...", callback=lambda: show_editor(app))
             dpg.add_separator()
             dpg.add_menu_item(label="Open the project folder", callback=lambda: app.reveal(app.project.path))
             dpg.add_menu_item(label="Open the build folder", callback=lambda: app.reveal(app.build_dir()))
         with dpg.menu(label="Help"):
-            dpg.add_menu_item(label="Keyboard shortcuts", callback=lambda: dpg.show_item("shortcuts_win"))
+            _mi(app, "Keyboard shortcuts", "shortcuts", callback=lambda: show_keys(app))
             dpg.add_menu_item(label="Node reference (NODES.md)", callback=lambda: app.reveal(app.doc_path("NODES.md")))
             dpg.add_menu_item(label="Studio guide (STUDIO.md)", callback=lambda: app.reveal(app.doc_path("STUDIO.md")))
             dpg.add_menu_item(label="Effect API reference", callback=lambda: app.show_api())
@@ -154,53 +151,61 @@ def _sep():
     dpg.add_spacer(width=1)
 
 
-def _btn(app, icon, tip, cb, tag=None):
+def _btn(app, icon, tip, cb, tag=None, action=None):
+    """An icon button with a tooltip; with an action, the tooltip carries
+    its key and follows a rebind (the text is tagged by the action)."""
     kw = {"tag": tag} if tag else {}
     b = dpg.add_image_button(texture(icon, ICON), width=ICON, height=ICON, tint_color=TEXT,
                              frame_padding=3, callback=cb, **kw)
     with dpg.tooltip(b):
-        dpg.add_text(tip)
+        tt = f"tbtip_{action}"
+        if action and not dpg.does_item_exist(tt):
+            dpg.add_text("", tag=tt)
+            app._tips[action] = tip
+        else:
+            dpg.add_text(tip + ("  " + app.keys.label(action) if action else ""))
     return b
 
 
 def build_toolbar(app):
+    app._tips = {"zoom_reset": "Zoom 100%"}
     with dpg.group(horizontal=True, tag="toolbar"):
-        _btn(app, "new", "New effect  Ctrl+N", lambda: app.new_effect())
-        _btn(app, "open", "Open a graph or a code effect", lambda: show_open(app), tag="tb_open")
-        _btn(app, "save", "Save  Ctrl+S", lambda: app.save_current())
+        _btn(app, "new", "New effect", lambda: app.new_effect(), action="new")
+        _btn(app, "open", "Open a graph or a code effect", lambda: show_open(app), tag="tb_open", action="open")
+        _btn(app, "save", "Save", lambda: app.save_current(), action="save")
         _sep()
-        _btn(app, "build", "Compile + reload  F5", lambda: app.build_current())
-        _btn(app, "live", "Live: rebuild the graph as it changes", lambda: app.gp.set_auto(not app.gp.auto), tag="tb_live")
+        _btn(app, "build", "Compile + reload", lambda: app.build_current(), action="build")
+        _btn(app, "live", "Live: rebuild the graph as it changes", lambda: app.gp.set_auto(not app.gp.auto), tag="tb_live", action="live")
         _sep()
-        _btn(app, "undo", "Undo  Ctrl+Z", lambda: app.gp.undo())
-        _btn(app, "redo", "Redo  Ctrl+Y", lambda: app.gp.redo())
+        _btn(app, "undo", "Undo", lambda: app.gp.undo(), action="undo")
+        _btn(app, "redo", "Redo", lambda: app.gp.redo(), action="redo")
         _sep()
-        _btn(app, "play", "Play  space", lambda: app.toggle_play(), tag="tb_play")
-        _btn(app, "pause", "Pause  space", lambda: app.toggle_play(), tag="tb_pause")
-        _btn(app, "step", "Step one frame", lambda: app.step_once())
-        _btn(app, "restart", "Restart the effect", lambda: app.eng.select(app.eng.idx))
+        _btn(app, "play", "Play", lambda: app.toggle_play(), tag="tb_play", action="play_pause")
+        _btn(app, "pause", "Pause", lambda: app.toggle_play(), tag="tb_pause", action="play_pause")
+        _btn(app, "step", "Step one frame", lambda: app.step_once(), action="step")
+        _btn(app, "restart", "Restart the effect", lambda: app.eng.select(app.eng.idx), action="restart")
         _sep()
-        for key, label, sc in LAYOUTS:
-            _btn(app, "code" if key == "edit" else key, f"{label}  {sc}", lambda s, a, u: app.show_layout(u), tag=f"tb_view_{key}")
+        for key, label, act in LAYOUTS:
+            _btn(app, "code" if key == "edit" else key, label, lambda s, a, u: app.show_layout(u), tag=f"tb_view_{key}", action=act)
             dpg.configure_item(f"tb_view_{key}", user_data=key)
         _sep()
-        _btn(app, "zoom_out", "Zoom out  Ctrl+-", lambda: app.gp.zoom_step(-1))
+        _btn(app, "zoom_out", "Zoom out", lambda: app.gp.zoom_step(-1), action="zoom_out")
         z = dpg.add_button(label="100%", tag="tb_zoom", width=46, callback=lambda: app.gp.set_zoom(1.0))
         with dpg.tooltip(z):
-            dpg.add_text("Zoom 100%  Ctrl+0")
-        _btn(app, "zoom_in", "Zoom in  Ctrl+=", lambda: app.gp.zoom_step(1))
-        _btn(app, "frame_all", "Frame the whole graph  Home", lambda: app.gp.home())
+            dpg.add_text("", tag="tbtip_zoom_reset")
+        _btn(app, "zoom_in", "Zoom in", lambda: app.gp.zoom_step(1), action="zoom_in")
+        _btn(app, "frame_all", "Frame the whole graph", lambda: app.gp.home(), action="frame_all")
         _sep()
-        _btn(app, "search", "Add a node  (right-click the graph)", lambda: app.search_nodes())
-        _btn(app, "trash", "Delete the selection  Del", lambda: app.gp.delete_selected())
-        _btn(app, "arrange", "Arrange the graph  Ctrl+L", lambda: app.gp.arrange())
-        _btn(app, "fold", "Fold the selection into a sub-graph", lambda: ask(
-            app, "Sub-graph", "a name for the new node type", "", lambda v: app.gp.make_sub_from_selection(v)))
+        _btn(app, "search", "Add a node (or right-click the graph)", lambda: app.search_nodes(), action="add_node")
+        _btn(app, "trash", "Delete the selection", lambda: app.gp.delete_selected(), action="delete")
+        _btn(app, "arrange", "Arrange the graph", lambda: app.gp.arrange(), action="arrange")
+        _btn(app, "fold", "Fold the selection into a sub-graph", lambda: app.run_action("fold"), action="fold")
         _sep()
-        _btn(app, "external", "Open the code in an external editor", lambda: app.open_external())
-        _btn(app, "camera", "Screenshot of the 3-D view", lambda: setattr(app, "shot_req", True), tag="shot_btn")
-        _btn(app, "record", "Record a 15 s GIF", lambda: app.start_rec(15.0), tag="rec_btn")
+        _btn(app, "external", "Open the code in an external editor", lambda: app.open_external(), action="external")
+        _btn(app, "camera", "Screenshot of the 3-D view", lambda: setattr(app, "shot_req", True), tag="shot_btn", action="screenshot")
+        _btn(app, "record", "Record a 15 s GIF", lambda: app.start_rec(15.0), tag="rec_btn", action="record")
         dpg.add_text("", tag="rec_msg", color=DIM)
+    refresh_keys(app)
 
 
 # --- dialogs ------------------------------------------------------------------------
@@ -230,12 +235,14 @@ def build_dialogs(app):
     with dpg.file_dialog(directory_selector=True, show=False, tag="project_dialog", width=620, height=420,
                          callback=lambda s, a: app.new_project(a.get("file_path_name", ""))):
         pass
-    with dpg.window(tag="shortcuts_win", label="Keyboard shortcuts", show=False, width=560, height=520, no_collapse=True):
-        for group, rows in SHORTCUTS:
-            dpg.add_text(group, color=ACCENT)
-            for key, what in rows:
-                dpg.add_text(f"  {key:34s} {what}")
-            dpg.add_spacer(height=4)
+    with dpg.window(tag="keys_win", label="Keyboard shortcuts", show=False, width=640, height=600, no_collapse=True,
+                    on_close=lambda: setattr(app, "_capture", None)):
+        dpg.add_text("Click a key to change it, then press the new one (Escape keeps the old). "
+                     "A key taken from another action leaves that one unbound.", color=DIM, wrap=600)
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Reset all to defaults", callback=lambda: (app.keys.reset(), refresh_keys(app)))
+        with dpg.child_window(tag="keys_rows", height=-1, border=False):
+            pass
     with dpg.window(tag="about_win", label="About", show=False, width=460, height=200, no_collapse=True):
         dpg.add_text("WLED Effect Studio")
         dpg.add_text("Node graphs and C++ compiled into WLED effects, previewed on a\n"
@@ -266,6 +273,46 @@ def _name_ok(app):
         cb(v)
 
 
+def show_keys(app):
+    refresh_keys(app)
+    _centre("keys_win", 640, 600)
+    dpg.show_item("keys_win")
+
+
+def refresh_keys(app):
+    """The keymap dialog's rows, and every menu item's shortcut label."""
+    for action, _, _, _ in ACTIONS:
+        tag = f"mi_{action}"
+        if dpg.does_item_exist(tag):
+            dpg.configure_item(tag, shortcut=app.keys.label(action))
+        tt = f"tbtip_{action}"
+        if dpg.does_item_exist(tt):
+            b = app.keys.label(action)
+            dpg.set_value(tt, app._tips.get(action, "") + (f"  {b}" if b else ""))
+    if not dpg.does_item_exist("keys_rows"):
+        return
+    dpg.delete_item("keys_rows", children_only=True)
+    last = None
+    for action, label, default, ctx in ACTIONS:
+        if ctx != last:
+            dpg.add_text("anywhere" if ctx == "global" else "in the graph", parent="keys_rows", color=ACCENT)
+            last = ctx
+        with dpg.group(horizontal=True, parent="keys_rows"):
+            b = app.keys.label(action)
+            waiting = app._capture == action
+            dpg.add_button(label="press a key..." if waiting else (b or "-"), width=130, user_data=action,
+                           callback=lambda s, a, u: (setattr(app, "_capture", u), refresh_keys(app)))
+            dpg.add_button(label="x", small=True, user_data=action, enabled=bool(b),
+                           callback=lambda s, a, u: (app.keys.set(u, ""), refresh_keys(app)))
+            dpg.add_text(label, color=TEXT if b else DIM)
+            if b != default:
+                dpg.add_text(f"(default {default or '-'})", color=DIM)
+    dpg.add_spacer(height=6, parent="keys_rows")
+    dpg.add_text("always", parent="keys_rows", color=ACCENT)
+    for key, what in FIXED:
+        dpg.add_text(f"  {key:30s} {what}", parent="keys_rows", color=DIM)
+
+
 def show_device(app):
     dpg.set_value("device_host", app.project.options.get("device", ""))
     _centre("device_dialog", 380)
@@ -279,9 +326,10 @@ def show_editor(app):
     dpg.show_item("editor_dialog")
 
 
-def _centre(tag, w):
+def _centre(tag, w, h=None):
     vw, vh = dpg.get_viewport_client_width(), dpg.get_viewport_client_height()
-    dpg.configure_item(tag, pos=(max(0, vw // 2 - w // 2), max(0, vh // 3)))
+    y = max(0, vh // 3) if h is None else max(10, (vh - h) // 2)
+    dpg.configure_item(tag, pos=(max(0, vw // 2 - w // 2), y))
 
 
 def show_open(app):
@@ -346,7 +394,7 @@ def refresh_files(app):
 
 
 def _signature(app):
-    return (app.layout, app.ui, app.playing, app.gp.auto, app.gp.zoom, bool(app.gp.stack), app.building)
+    return (app.layout, app.ui, app.side, app.playing, app.gp.auto, app.gp.zoom, bool(app.gp.stack), app.building)
 
 
 def refresh(app):
@@ -359,6 +407,7 @@ def refresh(app):
         dpg.set_value(f"menu_view_{key}", on)
         dpg.configure_item(f"tb_view_{key}", tint_color=ACCENT if on else TEXT)
     dpg.set_value("menu_present", not app.ui)
+    dpg.set_value("menu_side", app.side)
     dpg.set_value("menu_live", app.gp.auto)
     dpg.configure_item("tb_live", tint_color=ACCENT if app.gp.auto else TEXT)
     dpg.configure_item("tb_play", show=not app.playing)

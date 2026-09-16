@@ -333,6 +333,18 @@ editor. Ticked when done; the order within a group is the order to do them.
       status line, find / replace under the code - and names are asked for
       in a small dialog instead of a box on the pane. Presentation mode
       (H) hides the menus and toolbar with the rest.
+- [x] **A keymap** (`native/keys.py`): every keyboard action with a default
+      key and a context (anywhere / the graph), rebound under Settings >
+      Keyboard shortcuts - click the key, press the new one; a key taken
+      from another action leaves that one unbound; the changes alone are
+      kept in `studio.json`. Menu items and toolbar tooltips show the
+      current key. Added on the way: `.` step, `Ctrl+R` restart, `[` `]`
+      previous / next effect, `Shift+[` `]` palette, `L` live, `Ctrl+O`
+      the open list, `Ctrl+I` add to / remove from the list, `Ctrl+E`
+      external editor, `F12` screenshot, `Ctrl+F12` GIF, `F1` shortcuts,
+      `Ctrl+Shift+H` the side panel; in the graph `Shift+A` add node, `K`
+      collapse, `Ctrl+G` fold, `Tab` enter / leave a sub-graph, `Escape`
+      stop the pin preview.
 
 ### Against Blender's node editors
 
@@ -429,8 +441,8 @@ python build.py --native-only                          # once; the app rebuilds 
 python -m native.app
 ```
 
-Every action is on the menus with its shortcut, and Help > Keyboard
-shortcuts lists them. Keys: **G** node graph, **C** code pane, **Q** logical view, **E** 3-D, **W** both,
+Every action is on the menus with its shortcut; Settings > Keyboard
+shortcuts (F1) lists them and lets you change any of them. Keys: **G** node graph, **C** code pane, **Q** logical view, **E** 3-D, **W** both,
 (again returns to the panels), **H** hide the controls, **space** pause, **Ctrl+N / Ctrl+S / F2 / F5** new, save, rename, build. In the graph: **Delete** removes selected nodes,
 **Ctrl+Z / Ctrl+Y** undo / redo, **Ctrl+C / X / V** copy, cut, paste, **wheel / Ctrl+= / Ctrl+- / Ctrl+0** zoom,
 **M** mute, **Shift+D** duplicate with inputs, **Ctrl+L** arrange, **Ctrl+H** hide unwired pins, **F** connect two
