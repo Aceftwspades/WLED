@@ -1501,7 +1501,7 @@ class App:
             if self.focus:
                 r = self._screen_rect(self.focus)
                 if r:
-                    rects.append(r + (None, 0.55))
+                    rects.append(r + (None, 0.55, "focus"))
             pane = self._screen_rect("graph_win")
             if self.layout == "graph" and self.gp.graph and pane and dpg.does_item_exist("node_editor") \
                     and not (dpg.is_item_shown("graph_menu") or dpg.is_item_shown("graph_ctx")):
@@ -1517,7 +1517,7 @@ class App:
                     st = dpg.get_item_state(tag)
                     (x0, y0), (x1, y1) = st.get("rect_min", (0, 0)), st.get("rect_max", (0, 0))
                     if x1 > x0 and y1 > y0:          # the content rect; the node is a padding wider
-                        rects.append((x0 - pad, y0 - pad, x1 + pad, y1 + pad, clip, 1.0))
+                        rects.append((x0 - pad, y0 - pad, x1 + pad, y1 + pad, clip, 1.0, "sel"))
         self.frames.update(rects)
 
     def toggle_pane(self, which):
@@ -1794,6 +1794,7 @@ def build(app):
         app.gp.open(gfiles[0])
     dpg.set_primary_window("root", True)
     app.frames = glow.Frames()
+    chrome.apply_frames(app)
     # Callbacks are taken off Dear PyGui's own schedule and run at the top of
     # each pass of the loop below, before the frame is drawn. Otherwise they
     # run inside render_dearpygui_frame() - a callback that changes the
@@ -1873,7 +1874,13 @@ def service_command(app):
                 {"new": lambda: app.new_effect(), "rename": app.rename_current, "open": lambda: chrome.show_open(app),
                  "device": lambda: chrome.show_device(app), "editor": lambda: chrome.show_editor(app),
                  "shortcuts": lambda: chrome.show_keys(app), "about": lambda: dpg.show_item("about_win"),
-                 "search": app.search_nodes, "name_ok": lambda: chrome._name_ok(app)}[c["chrome"]]()
+                 "search": app.search_nodes, "name_ok": lambda: chrome._name_ok(app),
+                 "frames": lambda: chrome.show_frames(app)}[c["chrome"]]()
+            if "chrome_call" in c:                      # test hook: [function in chrome, args]
+                getattr(chrome, c["chrome_call"][0])(app, *c["chrome_call"][1])
+            if "frame_gradient" in c:                   # test hook: [kind, key]
+                app.prefs.setdefault("frames", {})[c["frame_gradient"][0]] = c["frame_gradient"][1]
+                chrome.apply_frames(app); chrome.refresh_frames(app)
             if "name_text" in c:
                 dpg.set_value("name_input", c["name_text"])
             if "graph_zoom" in c:                       # test hook: zoom level, optionally about a screen point

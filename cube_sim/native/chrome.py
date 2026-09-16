@@ -18,6 +18,7 @@ import dearpygui.dearpygui as dpg
 
 from native.icons import texture
 from native.keys import ACTIONS, FIXED
+from native import glow
 
 TEXT   = (215, 219, 227, 255)
 DIM    = (139, 147, 163, 255)
@@ -132,6 +133,7 @@ def build_menus(app):
                               default_value=False)
         with dpg.menu(label="Settings"):
             dpg.add_menu_item(label="Keyboard shortcuts...", callback=lambda: show_keys(app))
+            dpg.add_menu_item(label="Selection frames...", callback=lambda: show_frames(app))
             dpg.add_menu_item(label="Device address...", callback=lambda: show_device(app))
             dpg.add_menu_item(label="External editor command...", callback=lambda: show_editor(app))
             dpg.add_separator()
@@ -254,6 +256,7 @@ def build_dialogs(app):
         dpg.add_text("", tag="about_paths", color=DIM)
     with dpg.window(tag="open_menu", show=False, no_title_bar=True, no_resize=True, no_move=True, autosize=True, popup=True):
         pass
+    build_frames_dialog(app)
 
 
 def ask(app, title, prompt, default, cb):
@@ -358,6 +361,203 @@ def show_open(app):
     x, y = dpg.get_item_rect_min("tb_open")
     dpg.configure_item("open_menu", show=True)
     dpg.set_item_pos("open_menu", [x, y + 26])
+
+
+# --- the selection frames: which gradient, and a creator ---------------------------------
+# A gradient key is "studio", "wled:<palette name>" or "custom:<name>". The
+# choice per frame kind lives in prefs["frames"]; custom gradients in
+# prefs["gradients"] as {name: {"stops": [[pos, r, g, b], ...], "mirror": bool}}.
+FRAME_KINDS = (("sel", "Selected nodes"), ("focus", "Pane last clicked in"))
+
+
+def _palettes(app):
+    """(name, id) for every WLED palette the engine has, asked once."""
+    if not hasattr(app, "_pal_list"):
+        app._pal_list = app.eng.palette_list()
+    return app._pal_list
+
+
+def gradient_keys(app):
+    return ["studio"] + [f"wled:{n}" for n, _ in _palettes(app)] + \
+           [f"custom:{n}" for n in sorted(app.prefs.get("gradients") or {})]
+
+
+def gradient_label(key):
+    return {"studio": "Studio"}.get(key) or key.replace("wled:", "WLED: ").replace("custom:", "Custom: ")
+
+
+def resolve_gradient(app, key):
+    """(stops, mirror) for a key; the studio's own when it names nothing."""
+    if key and key.startswith("wled:"):
+        pid = dict(_palettes(app)).get(key[5:])
+        if pid is not None:
+            sw = app.eng.palette_swatch(pid, 16)
+            return [[k / 15.0, r, g, b] for k, (r, g, b) in enumerate(sw)], True
+    if key and key.startswith("custom:"):
+        g = (app.prefs.get("gradients") or {}).get(key[7:])
+        if g and g.get("stops"):
+            return [list(st) for st in g["stops"]], bool(g.get("mirror"))
+    return [list(st) for st in glow.DEFAULT_STOPS], False
+
+
+def apply_frames(app):
+    """The frames take their gradients from the prefs."""
+    if not app.frames:
+        return
+    choice = app.prefs.get("frames") or {}
+    for kind, _ in FRAME_KINDS:
+        stops, mirror = resolve_gradient(app, choice.get(kind, "studio"))
+        app.frames.set_gradient(kind, stops, mirror)
+
+
+def _strip(stops, mirror, width=260, height=14, parent=None):
+    """A gradient drawn across a strip, as it goes round the frame."""
+    kw = {"parent": parent} if parent else {}
+    with dpg.drawlist(width=width, height=height, **kw):
+        for x in range(0, width, 2):
+            r, g, b = glow.sample(stops, x / max(1, width - 1), mirror)
+            dpg.draw_rectangle((x, 0), (x + 2, height), color=(r, g, b, 255), fill=(r, g, b, 255))
+
+
+def build_frames_dialog(app):
+    app._gc = {"name": "", "stops": [list(st) for st in glow.DEFAULT_STOPS], "mirror": False}
+    with dpg.window(tag="frames_win", label="Selection frames", show=False, width=560, height=620, no_collapse=True):
+        dpg.add_text("The turning gradient frame around the selected nodes, and the one around the pane\n"
+                     "last clicked in. Pick a WLED palette, the studio's own, or one you made below.", color=DIM, wrap=530)
+        dpg.add_group(tag="frames_choice")
+        dpg.add_separator()
+        dpg.add_text("GRADIENT CREATOR", color=ACCENT)
+        with dpg.group(horizontal=True):
+            dpg.add_combo([], tag="gc_from", width=220, callback=lambda s, v: _gc_load(app, v))
+            dpg.add_text("start from", color=DIM)
+        with dpg.group(horizontal=True):
+            dpg.add_input_text(tag="gc_name", hint="a name for this gradient", width=220,
+                               callback=lambda s, v: app._gc.__setitem__("name", v))
+            dpg.add_checkbox(label="mirror (seamless: 0 to 1 and back)", tag="gc_mirror",
+                             callback=lambda s, v: (app._gc.__setitem__("mirror", bool(v)), refresh_frames(app)))
+        dpg.add_group(tag="gc_rows")
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Save", callback=lambda: _gc_save(app))
+            dpg.add_button(label="Save + use for nodes", callback=lambda: _gc_save(app, "sel"))
+            dpg.add_button(label="Save + use for pane", callback=lambda: _gc_save(app, "focus"))
+            dpg.add_button(label="Delete", tag="gc_delete", callback=lambda: _gc_delete(app))
+        dpg.add_text("", tag="gc_status", color=DIM)
+
+
+def show_frames(app):
+    refresh_frames(app)
+    _centre("frames_win", 560, 620)
+    dpg.show_item("frames_win")
+
+
+def refresh_frames(app):
+    if not dpg.does_item_exist("frames_choice"):
+        return
+    keys = gradient_keys(app)
+    labels = [gradient_label(k) for k in keys]
+    choice = app.prefs.get("frames") or {}
+    dpg.delete_item("frames_choice", children_only=True)
+    for kind, label in FRAME_KINDS:
+        cur = choice.get(kind, "studio")
+        if cur not in keys:
+            cur = "studio"
+        with dpg.group(parent="frames_choice"):
+            dpg.add_text(label, color=TEXT)
+            with dpg.group(horizontal=True):
+                dpg.add_combo(labels, width=260, default_value=gradient_label(cur), user_data=kind,
+                              callback=lambda s, v, u: _choose(app, u, keys[labels.index(v)]))
+                stops, mirror = resolve_gradient(app, cur)
+                _strip(stops, mirror)
+    dpg.configure_item("gc_from", items=labels)
+    gc = app._gc
+    dpg.set_value("gc_name", gc["name"])
+    dpg.set_value("gc_mirror", gc["mirror"])
+    dpg.configure_item("gc_delete", enabled=gc["name"] in (app.prefs.get("gradients") or {}))
+    dpg.delete_item("gc_rows", children_only=True)
+    _strip(gc["stops"], gc["mirror"], parent="gc_rows")
+    for k, st in enumerate(sorted(gc["stops"], key=lambda q: q[0])):
+        with dpg.group(horizontal=True, parent="gc_rows"):
+            dpg.add_input_float(width=64, default_value=float(st[0]), step=0, format="%.2f",
+                                user_data=(k, "pos"), callback=lambda s, v, u: _gc_edit(app, u, v))
+            dpg.add_color_edit([int(st[1]), int(st[2]), int(st[3]), 255], width=90, no_alpha=True, no_inputs=True,
+                               user_data=(k, "col"), callback=lambda s, v, u: _gc_edit(app, u, v))
+            if len(gc["stops"]) > 2:
+                dpg.add_button(label="-", small=True, user_data=(k, "del"), callback=lambda s, a, u: _gc_edit(app, u, None))
+    dpg.add_button(label="+ stop", small=True, parent="gc_rows", user_data=(-1, "add"),
+                   callback=lambda s, a, u: _gc_edit(app, u, None))
+
+
+def _choose(app, kind, key):
+    app.prefs.setdefault("frames", {})[kind] = key
+    from native.project import save_prefs
+    save_prefs(app.prefs)
+    apply_frames(app)
+    refresh_frames(app)
+
+
+def _gc_load(app, label):
+    keys = gradient_keys(app)
+    labels = [gradient_label(k) for k in keys]
+    if label not in labels:
+        return
+    key = keys[labels.index(label)]
+    stops, mirror = resolve_gradient(app, key)
+    app._gc = {"name": key[7:] if key.startswith("custom:") else "", "stops": stops, "mirror": mirror}
+    refresh_frames(app)
+
+
+def _gc_edit(app, ud, val):
+    k, what = ud
+    gc = app._gc
+    gc["stops"] = sorted(gc["stops"], key=lambda q: q[0])
+    if what == "pos":
+        gc["stops"][k][0] = max(0.0, min(1.0, float(val)))
+    elif what == "col":
+        gc["stops"][k][1:4] = [int(round(c * 255)) if c <= 1.0 else int(c) for c in val[:3]]
+    elif what == "del":
+        gc["stops"].pop(k)
+    elif what == "add":
+        gc["stops"].append([1.0, 255, 255, 255])
+    refresh_frames(app)
+
+
+def _gc_save(app, use=None):
+    gc = app._gc
+    name = (dpg.get_value("gc_name") or gc["name"] or "").strip()
+    if not name:
+        dpg.set_value("gc_status", "give it a name first"); return
+    gc["name"] = name
+    app.prefs.setdefault("gradients", {})[name] = {"stops": [list(st) for st in gc["stops"]], "mirror": bool(gc["mirror"])}
+    if use:
+        app.prefs.setdefault("frames", {})[use] = f"custom:{name}"
+    from native.project import save_prefs
+    save_prefs(app.prefs)
+    apply_frames(app)
+    refresh_frames(app)
+    dpg.set_value("gc_status", f"saved {name}" + (f" - in use for the {dict(FRAME_KINDS)[use].lower()}" if use else ""))
+
+
+def _gc_save_named(app, name, use=None):
+    dpg.set_value("gc_name", name)
+    app._gc["name"] = name
+    _gc_save(app, use)
+
+
+def _gc_delete(app):
+    name = app._gc.get("name")
+    grads = app.prefs.get("gradients") or {}
+    if name not in grads:
+        return
+    grads.pop(name)
+    for kind, key in list((app.prefs.get("frames") or {}).items()):
+        if key == f"custom:{name}":
+            app.prefs["frames"][kind] = "studio"
+    from native.project import save_prefs
+    save_prefs(app.prefs)
+    app._gc["name"] = ""
+    apply_frames(app)
+    refresh_frames(app)
+    dpg.set_value("gc_status", f"deleted {name}")
 
 
 # --- state -> chrome ------------------------------------------------------------------
