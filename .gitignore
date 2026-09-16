@@ -34,3 +34,6 @@ wled-update.sh
 
 # cube_sim recordings - made by the record button, kept out of the repo
 cube_sim/captures/
+
+# the studio stages a project's effects here to build them into the firmware
+usermods/usermod_studio/

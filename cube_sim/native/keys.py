@@ -45,9 +45,11 @@ ACTIONS = [
     ("screenshot",    "Screenshot of the 3-D view",                          "F12",    "global"),
     ("record",        "Record a 15 s GIF",                                   "Ctrl+F12", "global"),
     ("shortcuts",     "Keyboard shortcuts",                                  "F1",     "global"),
+    ("flash",         "Build the firmware and flash the device",             "Ctrl+Shift+U", "global"),
+    ("push",          "Send the current effect's settings to the device",     "Ctrl+Shift+P", "global"),
     # the graph
-    ("undo",          "Undo",                                                "Ctrl+Z", "graph"),
-    ("redo",          "Redo",                                                "Ctrl+Y", "graph"),
+    ("undo",          "Undo (the graph, or the code)",                       "Ctrl+Z", "global"),
+    ("redo",          "Redo (the graph, or the code)",                       "Ctrl+Y", "global"),
     ("cut",           "Cut",                                                 "Ctrl+X", "graph"),
     ("copy",          "Copy",                                                "Ctrl+C", "graph"),
     ("paste",         "Paste",                                               "Ctrl+V", "graph"),

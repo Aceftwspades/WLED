@@ -453,21 +453,34 @@ them within each group; ticked when done.
 
 ### Getting effects onto the cube
 
-- [ ] **Flash from the studio.** Export stops at a usermod folder and a zip.
-      A "build firmware + flash" that stages the usermod into the WLED tree,
-      generates an environment extending the chosen one (its usermods plus
-      ours), runs PlatformIO, and sends the binary to the device over OTA
-      (`/update`) closes the loop the whole tool exists for.
-- [ ] **Push the current effect's settings** - sliders, palette, colours -
-      to the device over the JSON API, so what was tuned in the sim is what
-      runs.
+- [x] **Flash from the studio** (`native/flash.py`; File > Project, the
+      toolbar's plane, Ctrl+Shift+U). The export is staged into the WLED
+      tree as `usermods/usermod_studio` (gitignored; beside cube_fx the
+      bank's own usermod is left out, the effects register through
+      cube_fx's and take bank slots), a generated `[env:studio_<base>]` is
+      written into `platformio_override.ini` extending the chosen env with
+      its usermods plus ours (its libraries seeded from the base env's, so
+      the first build needs no registry), PlatformIO runs on a worker with
+      its output in the dialog, and the binary goes to the device's
+      `/update` as the web UI's update page sends it. Build and send are
+      each a checkbox; Cancel stops the compiler; the env and address are
+      remembered per project.
+- [x] **Push the current effect's settings** (File > Project, Ctrl+Shift+P):
+      the effect and palette found by name in the device's own lists, the
+      five sliders, the three checkboxes and the three colours to the first
+      segment over `/json/state`.
 
 ### Working with graphs
 
-- [ ] **Undo for code edits** - the graph has undo; the code box does not.
-- [ ] **Expose a param as an input pin** with one toggle (a sub-graph with
-      promoted params is most of the way there).
-- [ ] **Where used**: which graphs use a node type or a sub-graph.
+- [x] **Undo for code edits**: edits within a second share a step, as the
+      graph's do; Ctrl+Z / Ctrl+Y, the menu and the toolbar act on whichever
+      pane is up (the box keeps its own undo while it has the keyboard).
+- [x] **Expose a setting as a pin**: a node's right-click menu lists its
+      numbers, switches and colours; one becomes an input pin with the value
+      it had as the default, wired or not, and goes back the same way. The
+      compiler rewrites the node's template for it (`exposed_def`).
+- [x] **Where used**: a node's right-click menu and the Node menu list every
+      graph and sub-graph with that type, with counts; a click opens it.
 - [ ] **Node presets**: save a configured node (Noise with these octaves)
       to drop in again.
 - [ ] **Version history** per graph: a copy per save, restorable, so live

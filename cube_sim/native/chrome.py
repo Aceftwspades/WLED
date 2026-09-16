@@ -18,7 +18,7 @@ import dearpygui.dearpygui as dpg
 
 from native.icons import texture
 from native.keys import ACTIONS, FIXED
-from native import glow
+from native import glow, flash
 
 TEXT   = (215, 219, 227, 255)
 DIM    = (139, 147, 163, 255)
@@ -66,6 +66,8 @@ def build_menus(app):
                 dpg.add_menu_item(label="Device address...", callback=lambda: show_device(app))
                 dpg.add_menu_item(label="Send ledmap to device", callback=lambda: app.send_ledmap())
                 dpg.add_menu_item(label="Export usermod (folder + zip)", callback=lambda: app.export_usermod())
+                _mi(app, "Build firmware + flash the device...", "flash", callback=lambda: show_flash(app))
+                _mi(app, "Send the current effect's settings to the device", "push", callback=lambda: app.push_settings())
             dpg.add_menu_item(label="Import graph bundle...", callback=lambda: dpg.show_item("graph_import_dialog"))
             dpg.add_menu_item(label="Export graph bundle", callback=lambda: app.gp.export_bundle())
             dpg.add_separator()
@@ -74,8 +76,8 @@ def build_menus(app):
             dpg.add_separator()
             dpg.add_menu_item(label="Quit", callback=lambda: dpg.stop_dearpygui())
         with dpg.menu(label="Edit"):
-            _mi(app, "Undo", "undo", callback=lambda: app.gp.undo())
-            _mi(app, "Redo", "redo", callback=lambda: app.gp.redo())
+            _mi(app, "Undo", "undo", callback=lambda: app.run_action("undo"))
+            _mi(app, "Redo", "redo", callback=lambda: app.run_action("redo"))
             dpg.add_separator()
             _mi(app, "Cut", "cut", callback=lambda: app.gp.cut())
             _mi(app, "Copy", "copy", callback=lambda: app.gp.copy())
@@ -117,6 +119,7 @@ def build_menus(app):
             with dpg.menu(label="Add", tag="menu_add"):
                 pass
             dpg.add_separator()
+            dpg.add_menu_item(label="Where is the selected node's type used", callback=lambda: app.where_used_selected())
             _mi(app, "Enter sub-graph", "enter_sub", callback=lambda: app.enter_selected_sub())
             dpg.add_menu_item(label="Back to parent graph", callback=lambda: app.gp.back())
             dpg.add_separator()
@@ -182,8 +185,8 @@ def build_toolbar(app):
         _btn(app, "build", "Compile + reload", lambda: app.build_current(), tag="tb_build", action="build")
         _btn(app, "live", "Live: rebuild the graph as it changes", lambda: app.gp.set_auto(not app.gp.auto), tag="tb_live", action="live")
         _sep()
-        _btn(app, "undo", "Undo", lambda: app.gp.undo(), action="undo")
-        _btn(app, "redo", "Redo", lambda: app.gp.redo(), action="redo")
+        _btn(app, "undo", "Undo", lambda: app.run_action("undo"), action="undo")
+        _btn(app, "redo", "Redo", lambda: app.run_action("redo"), action="redo")
         _sep()
         _btn(app, "play", "Play", lambda: app.toggle_play(), tag="tb_play", action="play_pause")
         _btn(app, "pause", "Pause", lambda: app.toggle_play(), tag="tb_pause", action="play_pause")
@@ -206,6 +209,7 @@ def build_toolbar(app):
         _btn(app, "arrange", "Arrange the graph", lambda: app.gp.arrange(), action="arrange")
         _btn(app, "fold", "Fold the selection into a sub-graph", lambda: app.run_action("fold"), action="fold")
         _sep()
+        _btn(app, "send", "Build the firmware and flash the device", lambda: show_flash(app), action="flash")
         _btn(app, "external", "Open the code in an external editor", lambda: app.open_external(), action="external")
         _btn(app, "camera", "Screenshot of the 3-D view", lambda: setattr(app, "shot_req", True), tag="shot_btn", action="screenshot")
         _btn(app, "record", "Record a 15 s GIF", lambda: app.start_rec(15.0), tag="rec_btn", action="record")
@@ -257,6 +261,7 @@ def build_dialogs(app):
     with dpg.window(tag="open_menu", show=False, no_title_bar=True, no_resize=True, no_move=True, autosize=True, popup=True):
         pass
     build_frames_dialog(app)
+    build_flash_dialog(app)
 
 
 def ask(app, title, prompt, default, cb):
@@ -558,6 +563,87 @@ def _gc_delete(app):
     apply_frames(app)
     refresh_frames(app)
     dpg.set_value("gc_status", f"deleted {name}")
+
+
+# --- build + flash ------------------------------------------------------------------------
+def build_flash_dialog(app):
+    app.flash_job = None
+    envs, default = flash.read_envs()
+    with dpg.window(tag="flash_win", label="Build firmware + flash", show=False, width=720, height=560, no_collapse=True):
+        dpg.add_text("Stages the project's effects into the WLED tree as a usermod, builds the firmware on an "
+                     "environment that extends the one chosen (its usermods plus ours), and sends the binary to "
+                     "the device's /update. The device must have OTA unlocked and be on this subnet.", color=DIM, wrap=690)
+        with dpg.group(horizontal=True):
+            dpg.add_combo(envs, tag="flash_env", width=260, default_value=app.project.options.get("flash_env") or default or "")
+            dpg.add_text("environment", color=DIM)
+            dpg.add_input_text(tag="flash_host", hint="device address", width=200,
+                               default_value=app.project.options.get("device", ""))
+        with dpg.group(horizontal=True):
+            dpg.add_checkbox(label="build", tag="flash_build", default_value=True)
+            dpg.add_checkbox(label="send to the device", tag="flash_upload", default_value=True)
+            dpg.add_button(label="Start", tag="flash_start", callback=lambda: start_flash(app))
+            dpg.add_button(label="Cancel", tag="flash_cancel", enabled=False,
+                           callback=lambda: app.flash_job and app.flash_job.cancel())
+            dpg.add_button(label="Open the build folder", callback=lambda: app.reveal(os.path.join(flash.ROOT, ".pio", "build")))
+        dpg.add_text("", tag="flash_status", color=DIM, wrap=690)
+        with dpg.child_window(tag="flash_log", height=-1, border=True):
+            pass
+
+
+def show_flash(app):
+    dpg.set_value("flash_host", app.project.options.get("device", "") or dpg.get_value("flash_host"))
+    _centre("flash_win", 720, 560)
+    dpg.show_item("flash_win")
+
+
+def start_flash(app):
+    if app.flash_job and not app.flash_job.done:
+        return
+    env = dpg.get_value("flash_env")
+    host = dpg.get_value("flash_host")
+    if not env:
+        dpg.set_value("flash_status", "choose an environment"); return
+    if dpg.get_value("flash_upload") and not host.strip():
+        dpg.set_value("flash_status", "a device address is needed to send, or untick sending"); return
+    app.project.options["device"] = host
+    app.project.options["flash_env"] = env
+    app.project.save()
+    dpg.delete_item("flash_log", children_only=True)
+    done = app.gp.regenerate(app.project.build_files())
+    if done:
+        dpg.add_text(f"regenerated {len(done)} graph effect(s) with the current compiler", parent="flash_log", color=TEXT)
+    dpg.set_value("flash_status", "working...")
+    dpg.configure_item("flash_start", enabled=False)
+    dpg.configure_item("flash_cancel", enabled=True)
+    app.flash_job = flash.Job(app.project, env, host, build=dpg.get_value("flash_build"), upload=dpg.get_value("flash_upload"))
+    app.flash_job.start()
+
+
+def poll_flash(app):
+    """Every frame: the job's lines into the log, its end into the status."""
+    job = getattr(app, "flash_job", None)
+    if job is None or not dpg.does_item_exist("flash_log"):
+        return
+    n = 0
+    while n < 60:
+        try:
+            line = job.q.get_nowait()
+        except Exception:
+            break
+        dpg.add_text(line, parent="flash_log", color=RED if "error" in line.lower() else TEXT)
+        n += 1
+    if n:
+        kids = dpg.get_item_children("flash_log", 1) or []
+        for k in kids[:-400]:
+            dpg.delete_item(k)
+        dpg.set_y_scroll("flash_log", -1.0)
+    if job.done and not getattr(job, "_reported", False):
+        job._reported = True
+        dpg.set_value("flash_status", job.result)
+        dpg.configure_item("flash_status", color=GREEN if job.ok else AMBER)
+        dpg.configure_item("flash_start", enabled=True)
+        dpg.configure_item("flash_cancel", enabled=False)
+        app.gp.status(job.result)
 
 
 # --- state -> chrome ------------------------------------------------------------------

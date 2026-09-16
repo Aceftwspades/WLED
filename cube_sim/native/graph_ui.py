@@ -1498,6 +1498,7 @@ class GraphPanel:
                 dpg.add_text(m, parent=P, color=(235, 80, 70) if m.startswith("error") else (240, 190, 70))
             if n["type"].startswith(G.SUB):
                 row("edit sub-graph", lambda: self.enter_sub(nid))
+            row("where is this type used", lambda: self.show_where_used(n["type"]))
             if n["type"] == "Image":
                 row("convert to Bitmap + Colour pick", lambda: self.image_to_bitmap(nid))
             if dpg.get_selected_nodes("node_editor"):
@@ -1509,10 +1510,74 @@ class GraphPanel:
                 row("expand" if n.get("collapsed") else "collapse", lambda: self._collapse(nid))
                 row("show all pins" if n.get("hide_pins") else "hide unwired pins", lambda: self._toggle(nid, "hide_pins"))
             row("unmute" if n.get("muted") else "mute (pass through)", lambda: self._toggle(nid, "muted"))
+            base = self.lib.get(n["type"])
+            if base and G.exposable(base):
+                exp = n.get("expose") or []
+                free = [p for p in G.exposable(base) if p not in exp]
+                if free:
+                    dpg.add_text("expose a setting as a pin", parent=P, color=DIM)
+                    for p in free:
+                        row(f"  {p}", lambda p=p: self._expose(nid, p, True))
+                if exp:
+                    dpg.add_text("back to a setting", parent=P, color=DIM)
+                    for p in exp:
+                        row(f"  {p}", lambda p=p: self._expose(nid, p, False))
             row("duplicate with inputs", lambda: self._dup(nid, True))
             row("disconnect all", lambda: self._disconnect_node(nid))
             row("delete", lambda: self._delete_node(nid))
             self._node_colour_rows(P, nid)
+
+    def where_used(self, type_):
+        """Every graph and sub-graph in the project with a node of this type,
+        with how many: [(file, is_sub, count)]."""
+        import json
+        out = []
+        for d, sub in ((self.dir, False), (self.sub_dir, True)):
+            for f in sorted(os.listdir(d)):
+                if not f.endswith(".json"):
+                    continue
+                try:
+                    nodes = json.load(open(os.path.join(d, f), encoding="utf-8")).get("nodes", [])
+                except Exception:
+                    continue
+                n = sum(1 for x in nodes if x.get("type") == type_)
+                if n:
+                    out.append((f, sub, n))
+        return out
+
+    def show_where_used(self, type_):
+        """The list, in a small window: a click opens that graph."""
+        P = "where_win"
+        if not dpg.does_item_exist(P):
+            dpg.add_window(tag=P, label="Where used", width=360, height=300, show=False, no_collapse=True)
+        dpg.delete_item(P, children_only=True)
+        label = self.lib.get(type_, {}).get("label") or (type_[len(G.SUB):] + " (sub-graph)" if type_.startswith(G.SUB) else type_)
+        dpg.add_text(label, parent=P, color=(90, 169, 230))
+        rows = self.where_used(type_)
+        if not rows:
+            dpg.add_text("used in no graph", parent=P, color=DIM)
+        for f, sub, n in rows:
+            dpg.add_selectable(label=f"{f[:-5]}{'  (sub-graph)' if sub else ''}   x{n}", parent=P, user_data=(f, sub),
+                               callback=lambda s, a, u: (dpg.hide_item(P), self.app.show_layout("graph"), self.open(u[0], sub=u[1])))
+        vw, vh = dpg.get_viewport_client_width(), dpg.get_viewport_client_height()
+        dpg.configure_item(P, pos=(vw // 2 - 180, vh // 3), show=True)
+
+    def _expose(self, nid, name, on):
+        """A param becomes an input pin (its value the pin's default), or
+        goes back to being a setting - any wire into it dropped."""
+        n = self.graph.nodes[nid]
+        self.touch(); self.snapshot(); self._sync_pos()
+        exp = [x for x in n.get("expose") or [] if x != name]
+        if on:
+            exp.append(name)
+        else:
+            self.graph.unlink(nid, name)
+        if exp:
+            n["expose"] = exp
+        else:
+            n.pop("expose", None)
+        self.rebuild()
+        self.status(f"{name}: {'a pin now' if on else 'a setting again'}")
 
     def _node_colour_rows(self, P, nid):
         dpg.add_text("node colour", parent=P, color=DIM)
@@ -1939,6 +2004,27 @@ class GraphPanel:
             self.app.edit_open(fname)
             self.app.edit_build()
         return fname
+
+    def regenerate(self, files):
+        """The C++ of every listed effect that comes from a graph, written
+        afresh by the compiler as it is now - before an export or a flash,
+        so an old generation never ships. Returns the names regenerated."""
+        if self.graph:
+            self.save()
+        self.refresh_lib()
+        done = []
+        for fname in files:
+            path = os.path.join(self.dir, os.path.splitext(fname)[0] + ".json")
+            if not os.path.exists(path):
+                continue
+            try:
+                g = G.load(path, lib=self.lib, resolver=self.resolve_sub)
+                g.project_dir = self.app.project.path
+                self.app.project.write_effect(fname, g.compile())
+                done.append(fname)
+            except Exception as e:
+                self.status(f"{fname}: {e}")
+        return done
 
     def import_effect(self):
         """The graph's effect joins the list - generated first if it has not

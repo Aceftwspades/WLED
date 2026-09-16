@@ -202,6 +202,7 @@ class App:
         self.side_w = int(self.prefs.get("side_w", SIDE_W))
         self.side = True             # the side panel shown (Ctrl+Shift+H hides it)
         self.focus = None            # the pane last clicked in: it wears the frame
+        self._code_undo, self._code_redo, self._code_text, self._code_t = [], [], "", 0.0
         self.frames = None           # glow.Frames, once the viewport exists
         self.keys = Keymap(self.prefs)
         self._capture = None         # an action waiting for its key, in the shortcuts dialog
@@ -526,6 +527,7 @@ class App:
         self.edit_dirty = False
         self._watch_mtime = self._mtime(fname)
         dpg.set_value("code", self.project.read_effect(fname))
+        self._code_reset(dpg.get_value("code"))
         if dpg.does_item_exist("meta_name"):
             self.meta_read()
         dpg.set_value("edit_status", f"{fname}")
@@ -775,8 +777,45 @@ class App:
         self.edit_dirty = False
         dpg.set_value("edit_status", f"{self.edit_file} saved")
 
+    # --- undo for the code box -----------------------------------------------
+    # The box reports its whole text on every keystroke. Edits within a
+    # second of each other share one undo step, as the graph's do, so undo
+    # steps back over a word or a line, not a character. (While the box has
+    # the keyboard, Ctrl+Z is its own; these are for the menu, the toolbar
+    # and the key once the box is left.)
     def on_code_edit(self, s, v):
         self.edit_dirty = True
+        now = time.time()
+        if now - self._code_t > 1.0:
+            self._code_undo.append(self._code_text)
+            del self._code_undo[:-200]
+            self._code_redo.clear()
+        self._code_t = now
+        self._code_text = v
+
+    def _code_reset(self, text):
+        self._code_undo, self._code_redo = [], []
+        self._code_text, self._code_t = text, 0.0
+
+    def code_undo(self):
+        if not self._code_undo:
+            dpg.set_value("edit_status", "nothing to undo"); return
+        self._code_redo.append(dpg.get_value("code"))
+        self._code_text = self._code_undo.pop()
+        dpg.set_value("code", self._code_text)
+        self.edit_dirty = True
+        self._code_t = 0.0
+        dpg.set_value("edit_status", f"undo ({len(self._code_undo)} more)")
+
+    def code_redo(self):
+        if not self._code_redo:
+            dpg.set_value("edit_status", "nothing to redo"); return
+        self._code_undo.append(dpg.get_value("code"))
+        self._code_text = self._code_redo.pop()
+        dpg.set_value("code", self._code_text)
+        self.edit_dirty = True
+        self._code_t = 0.0
+        dpg.set_value("edit_status", f"redo ({len(self._code_redo)} more)")
 
     def open_graph_code(self):
         """Generate the graph's C++ and show it in the code pane - the hand-off
@@ -1053,6 +1092,13 @@ class App:
         else:
             self.gp.status("select a sub-graph node first")
 
+    def where_used_selected(self):
+        sel = self.gp._selected()
+        if sel and self.gp.graph:
+            self.gp.show_where_used(self.gp.graph.nodes[sel[0]]["type"])
+        else:
+            self.gp.status("select a node first")
+
     def focus_find(self):
         self.show_layout("edit")
         if dpg.does_item_exist("find_text"):
@@ -1064,6 +1110,7 @@ class App:
             dpg.set_value("api_header", True)
 
     def export_usermod(self):
+        self.gp.regenerate(self.project.build_files())
         msg = "exported to " + self.project.export()
         dpg.set_value("edit_status", msg); self.gp.status(msg)
 
@@ -1447,8 +1494,10 @@ class App:
             "screenshot":   lambda: setattr(self, "shot_req", True),
             "record":       lambda: self.start_rec(15.0),
             "shortcuts":    lambda: chrome.show_keys(self),
-            "undo":         gp.undo,
-            "redo":         gp.redo,
+            "flash":        lambda: chrome.show_flash(self),
+            "push":         self.push_settings,
+            "undo":         lambda: self.code_undo() if self.layout == "edit" else gp.undo(),
+            "redo":         lambda: self.code_redo() if self.layout == "edit" else gp.redo(),
             "cut":          gp.cut,
             "copy":         gp.copy,
             "paste":        gp.paste,
@@ -1486,7 +1535,7 @@ class App:
         x, y = st.get("rect_min") or dpg.get_item_pos(tag)
         return (x, y, x + w, y + h)
 
-    FLOATING = ("frames_win", "keys_win", "name_dialog", "device_dialog", "editor_dialog", "about_win",
+    FLOATING = ("frames_win", "keys_win", "flash_win", "where_win", "name_dialog", "device_dialog", "editor_dialog", "about_win",
                 "open_menu", "graph_menu", "graph_ctx", "project_dialog", "graph_import_dialog", "xyz_dialog")
 
     def poll_glow(self):
@@ -1530,6 +1579,21 @@ class App:
                     x, y = dpg.get_item_pos(tag)
                     holes.append((x - 1, y - 1, x + w + 1, y + h + 1))
         self.frames.update(rects, holes)
+
+    def push_settings(self):
+        """The effect on the cube here, with its sliders, checkboxes, palette
+        and colours, becomes the device's first segment."""
+        from native import flash
+        host = self.project.options.get("device", "")
+        if not host.strip():
+            chrome.show_device(self)
+            self.gp.status("set the device's address first"); return
+        f = self.eng.fx
+        params = {k: f.get(k) for k in ("sx", "ix", "c1", "c2", "c3")}
+        params.update({k: bool(f.get(k)) for k in ("o1", "o2", "o3")})
+        ok, msg = flash.push_settings(host, self.eng.names[self.eng.idx], params,
+                                      self.palette_name_for(self.eng.pal), self.seg_cols)
+        dpg.set_value("edit_status", msg); self.gp.status(msg)
 
     def toggle_pane(self, which):
         """C and G: the pane, or back to the two views if it is already up."""
@@ -1886,7 +1950,15 @@ def service_command(app):
                  "device": lambda: chrome.show_device(app), "editor": lambda: chrome.show_editor(app),
                  "shortcuts": lambda: chrome.show_keys(app), "about": lambda: dpg.show_item("about_win"),
                  "search": app.search_nodes, "name_ok": lambda: chrome._name_ok(app),
-                 "frames": lambda: chrome.show_frames(app)}[c["chrome"]]()
+                 "frames": lambda: chrome.show_frames(app), "flash": lambda: chrome.show_flash(app),
+                 "flash_start": lambda: chrome.start_flash(app)}[c["chrome"]]()
+            if "flash_opts" in c:                       # test hook: {"env":..., "host":..., "build":..., "upload":...}
+                o = c["flash_opts"]
+                for k, tag in (("env", "flash_env"), ("host", "flash_host"), ("build", "flash_build"), ("upload", "flash_upload")):
+                    if k in o:
+                        dpg.set_value(tag, o[k])
+            if "gp_call" in c:                          # test hook: [method of the graph panel, args]
+                getattr(app.gp, c["gp_call"][0])(*c["gp_call"][1])
             if "chrome_call" in c:                      # test hook: [function in chrome, args]
                 getattr(chrome, c["chrome_call"][0])(app, *c["chrome_call"][1])
             if "frame_gradient" in c:                   # test hook: [kind, key]
@@ -1913,7 +1985,7 @@ def service_command(app):
             if "new" in c:
                 app.edit_new(c["new"])
             if "code" in c:
-                dpg.set_value("code", c["code"]); app.edit_dirty = True
+                dpg.set_value("code", c["code"]); app.on_code_edit(None, c["code"])
             if c.get("build"):
                 app.edit_build()
             if "param" in c:
@@ -2132,6 +2204,7 @@ def main():
                 app.gp.poll()
                 app.poll_watch()
                 chrome.poll(app)
+                chrome.poll_flash(app)
                 app.poll_glow()
                 app.step_sim()
                 app.draw()

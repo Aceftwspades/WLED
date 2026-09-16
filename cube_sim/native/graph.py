@@ -136,6 +136,42 @@ def boundary_def(base, n):
     return d
 
 
+EXPOSABLE = {"float": "float", "int": "float", "bool": "bool", "color": "color"}
+
+
+def exposable(d):
+    """The params of a definition that can be pins: numbers, switches and
+    colours, on a node whose code is a template (a codegen reads its params
+    itself)."""
+    if d.get("codegen"):
+        return []
+    return [p["name"] for p in d["params"] if p["type"] in EXPOSABLE]
+
+
+def exposed_def(base, n):
+    """The definition with the node's exposed params turned into inputs: a
+    slider's worth of setting becomes a pin, wired or left at the value it
+    had. The template reads `$in.name` where it read `$p.name`."""
+    names = [x for x in n.get("expose") or [] if x in exposable(base)]
+    if not names:
+        return base
+    d = dict(base)
+    d["params"] = [p for p in base["params"] if p["name"] not in names]
+    ins = list(base["inputs"])
+    code = base["code"]
+    for p in base["params"]:
+        if p["name"] in names:
+            v = n.get("params", {}).get(p["name"], p["default"])
+            if p["type"] == "color" and isinstance(v, (list, tuple)):
+                v = list(v)
+            ins.append({"name": p["name"], "type": EXPOSABLE[p["type"]], "default": v,
+                        "doc": (p.get("doc") or "") + " (a setting, exposed as a pin)"})
+            code = _sub(code, "p", p["name"], "$in." + p["name"])
+    d["inputs"] = ins
+    d["code"] = code
+    return d
+
+
 def sub_def(name, sub):
     """The definition of a sub-graph as a node: one pin per boundary node."""
     ins, outs = [], []
@@ -180,6 +216,8 @@ class Graph:
             raise GraphError(f"node {n['id']}: unknown type {t!r}")
         if t in ("Graph input", "Graph output"):
             return boundary_def(d, n)
+        if n.get("expose"):
+            return exposed_def(d, n)
         return d
 
     # --- editing -----------------------------------------------------------
@@ -608,8 +646,14 @@ class Graph:
                     state += (f"  float *gc_fr{k} = gc_st + {nstate} + (2 * {k} + (SEGENV.call & 1)) * N;\n"
                               f"  float *gc_fw{k} = gc_st + {nstate} + (2 * {k} + ((SEGENV.call + 1) & 1)) * N;\n"
                               f"  if (gc_first) memset(gc_fr{k}, 0, N * sizeof(float));\n")
-            else:
+            elif nstate <= 64:
+                # A few floats: a static fallback keeps the effect running
+                # when the segment has no room. More would be DRAM spent for
+                # every effect in the build whether it runs or not - the
+                # firmware would not link with two of the big ones.
                 state += f"  static float gc_st_fallback[{max(1, nstate)}]; if (!gc_st) gc_st = gc_st_fallback;\n"
+            else:
+                state += "  if (!gc_st) { SEGMENT.fill(0); FX_DONE; }   // no room for the state\n"
             state += "  (void)gc_first;\n"
         return GENERATED.format(title=title, ident=ident, upper=ident.upper(), helpers=HELPERS,
                                 frame=frame, pixel=pixel, meta=meta, state=state)
