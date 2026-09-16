@@ -1486,6 +1486,9 @@ class App:
         x, y = st.get("rect_min") or dpg.get_item_pos(tag)
         return (x, y, x + w, y + h)
 
+    FLOATING = ("frames_win", "keys_win", "name_dialog", "device_dialog", "editor_dialog", "about_win",
+                "open_menu", "graph_menu", "graph_ctx", "project_dialog", "graph_import_dialog", "xyz_dialog")
+
     def poll_glow(self):
         """The gradient frames: the pane in focus, and the selected nodes
         (clipped to the editor). None while presenting, or while a menu is
@@ -1518,7 +1521,15 @@ class App:
                     (x0, y0), (x1, y1) = st.get("rect_min", (0, 0)), st.get("rect_max", (0, 0))
                     if x1 > x0 and y1 > y0:          # the content rect; the node is a padding wider
                         rects.append((x0 - pad, y0 - pad, x1 + pad, y1 + pad, clip, 1.0, "sel"))
-        self.frames.update(rects)
+        # Every window that floats over the panes is a hole in the frames.
+        holes = []
+        for tag in self.FLOATING:
+            if dpg.does_item_exist(tag) and dpg.is_item_shown(tag):
+                w, h = dpg.get_item_rect_size(tag)
+                if w > 0 and h > 0:
+                    x, y = dpg.get_item_pos(tag)
+                    holes.append((x - 1, y - 1, x + w + 1, y + h + 1))
+        self.frames.update(rects, holes)
 
     def toggle_pane(self, which):
         """C and G: the pane, or back to the two views if it is already up."""

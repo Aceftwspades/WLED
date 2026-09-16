@@ -30,7 +30,7 @@ SIZE = 128
 BORDER = 2
 GLOW = 5
 TURNS_PER_S = 0.1
-POOL = {"sel": 8 * 8, "focus": 8}
+POOL = {"sel": 8 * 14, "focus": 8 * 4}      # strips, split round any dialog
 
 
 def sample(stops, t, mirror=False):
@@ -103,9 +103,32 @@ class Frames:
         yield (x0 - o, y0 - b, x0 - b, y1 + b, 70)
         yield (x1 + b, y0 - b, x1 + o, y1 + b, 70)
 
-    def update(self, rects):
+    @staticmethod
+    def _subtract(r, holes):
+        """The parts of rectangle r outside every hole - the drawing is in
+        the foreground, so a window over it would otherwise be drawn on."""
+        out = [r]
+        for (hx0, hy0, hx1, hy1) in holes:
+            nxt = []
+            for (x0, y0, x1, y1) in out:
+                if hx1 <= x0 or hx0 >= x1 or hy1 <= y0 or hy0 >= y1:
+                    nxt.append((x0, y0, x1, y1)); continue
+                if y0 < hy0:
+                    nxt.append((x0, y0, x1, min(y1, hy0)))
+                if y1 > hy1:
+                    nxt.append((x0, max(y0, hy1), x1, y1))
+                my0, my1 = max(y0, hy0), min(y1, hy1)
+                if x0 < hx0:
+                    nxt.append((x0, my0, min(x1, hx0), my1))
+                if x1 > hx1:
+                    nxt.append((max(x0, hx1), my0, x1, my1))
+            out = [q for q in nxt if q[2] > q[0] and q[3] > q[1]]
+        return out
+
+    def update(self, rects, holes=()):
         """rects: (x0, y0, x1, y1, clip, alpha, kind) - clip a rect to keep
-        the strips inside (or None), alpha 0..1 scaling the frame."""
+        the strips inside (or None), alpha 0..1 scaling the frame. holes:
+        rectangles (windows over the top) the strips are cut around."""
         th = (time.perf_counter() * TURNS_PER_S * 2 * math.pi) % (2 * math.pi)
         c, s = math.cos(th), math.sin(th)
         used = {k: 0 for k in self.quads}
@@ -126,13 +149,14 @@ class Frames:
                     sx1, sy1 = min(sx1, clip[2]), min(sy1, clip[3])
                     if sx1 <= sx0 or sy1 <= sy0:
                         continue
-                k = used[kind]
-                if k >= len(quads):
-                    break
-                dpg.configure_item(quads[k], p1=(sx0, sy0), p2=(sx1, sy0), p3=(sx1, sy1), p4=(sx0, sy1),
-                                   uv1=uv(sx0, sy0), uv2=uv(sx1, sy0), uv3=uv(sx1, sy1), uv4=uv(sx0, sy1),
-                                   color=(255, 255, 255, int(a * alpha)), show=True)
-                used[kind] = k + 1
+                for (sx0, sy0, sx1, sy1) in self._subtract((sx0, sy0, sx1, sy1), holes):
+                    k = used[kind]
+                    if k >= len(quads):
+                        break
+                    dpg.configure_item(quads[k], p1=(sx0, sy0), p2=(sx1, sy0), p3=(sx1, sy1), p4=(sx0, sy1),
+                                       uv1=uv(sx0, sy0), uv2=uv(sx1, sy0), uv3=uv(sx1, sy1), uv4=uv(sx0, sy1),
+                                       color=(255, 255, 255, int(a * alpha)), show=True)
+                    used[kind] = k + 1
         for kind, quads in self.quads.items():
             for j in range(used[kind], self.shown[kind]):
                 dpg.configure_item(quads[j], show=False)
