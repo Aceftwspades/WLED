@@ -1272,7 +1272,13 @@ STATIC = {"Cube Axes", "Smiley"}          # still by design
 
 def check():
     """Compile every example to C++, build them all into one engine, run
-    each for a moment with the fake audio and report lit pixels and motion."""
+    each for a moment with the fake audio and report lit pixels and motion.
+    First, though: every node must be documented, or the check fails."""
+    from native.nodedocs import gaps
+    missing = gaps()
+    if missing:
+        print("  undocumented nodes or pins - write them in native/nodedocs.py:", ", ".join(missing))
+        return False
     import numpy as np
     sys.path.insert(0, os.path.dirname(HERE))
     import build as B

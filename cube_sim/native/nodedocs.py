@@ -500,6 +500,22 @@ def apply(lib):
     return lib
 
 
+def gaps():
+    """Every node, pin and setting with nothing written about it. Empty
+    is the rule: a new node is not finished until this is empty and
+    NODES.md has been regenerated."""
+    from native.nodedefs import library
+    out = []
+    for name, d in library().items():
+        if name not in DOCS or not d.get("doc"):
+            out.append(name)
+        for key, pins in (("in", d["inputs"]), ("out", d["outputs"]), ("params", d["params"])):
+            for p in pins:
+                if not p.get("doc"):
+                    out.append(f"{name} . {p['name']}")
+    return out
+
+
 def markdown():
     """The whole reference as Markdown, one section per category."""
     from native.nodedefs import library
@@ -532,6 +548,10 @@ def markdown():
 if __name__ == "__main__":
     import os, sys
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    missing = gaps()
+    if missing:
+        print("undocumented:", ", ".join(missing))
+        sys.exit(1)
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "NODES.md")
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write(markdown())
