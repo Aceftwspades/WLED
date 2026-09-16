@@ -505,14 +505,24 @@ them within each group; ticked when done.
 
 ### Preview and testing
 
-- [ ] **A/B compare**: two effects, or two versions of one, side by side.
-- [ ] **Slider sweep**: drive a slider through its range on a timer to see
-      the whole space; record that as the GIF.
-- [ ] **Audio file input**: a WAV through the analyser, for reproducible
-      beat tests, alongside synth and live capture.
-- [ ] **Timeline scrub** over the last seconds of frames, for transients.
-- [ ] **Per-effect cost on the device**: a calibrated µs/frame estimate for
-      the ESP32 from the host's measure, which says whether it will run.
+- [x] **A/B compare** (Playback, Ctrl+Shift+B): a second engine from a copy
+      of the library (one process gets one instance per file), fed A's
+      geometry, colours and audio each frame, the two renders side by side
+      in the 3-D pane under a shared camera; it follows a rebuild.
+- [x] **Slider sweep** (Playback, Ctrl+Shift+W): a slider goes 0 to full and
+      back over N seconds, looping or once, optionally recorded as the GIF;
+      the slider's own widgets follow.
+- [x] **Audio file input**: "play a WAV file" in the Audio section runs a
+      WAV through the same analyser as the live sources, at real time and
+      looping (`audio.FileAudio`).
+- [x] **Timeline scrub**: the last 300 net frames are kept while playing;
+      paused, a slider above the parameters shows any of them in both
+      views (the cube's face renderer; the point cloud still shows the
+      live pixels).
+- [x] **Per-effect cost on the device**: the engine's ms/frame on this PC,
+      smoothed, and a device fps from it by a factor (60 by default,
+      Settings > Device speed factor) - an estimate, labelled as one, until
+      a device measurement calibrates the factor.
 
 ### Geometry
 

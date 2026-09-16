@@ -255,6 +255,7 @@ class Engine:
         self.lib.simColors(*self._colors)
 
     def audio(self, vol, peak):
+        self.last_audio = (float(vol), int(peak))
         self.lib.simAudioSet(C.c_float(vol), int(peak))
 
     @property

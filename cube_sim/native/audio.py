@@ -20,6 +20,8 @@ synth.Synth, so the three are interchangeable everywhere.
 import sys
 
 import numpy as np
+import time
+import os
 
 try:
     import pyaudiowpatch as pyaudio
@@ -212,6 +214,64 @@ class LiveInput:
             self.stream.stop(); self.stream.close()
         except Exception:
             pass
+
+
+class FileAudio:
+    """A WAV file through the same analyser as the live sources, at real
+    time and looping: the same passage every run, so a beat response can be
+    judged twice and compared. 8 / 16 / 24 / 32-bit PCM, any rate."""
+    LO, HI, BANDS = LiveAudio.LO, LiveAudio.HI, LiveAudio.BANDS
+
+    def __init__(self, path, gain=3.0, chunk=2048):
+        import wave
+        with wave.open(path, "rb") as w:
+            self.rate = w.getframerate()
+            ch, sw, n = w.getnchannels(), w.getsampwidth(), w.getnframes()
+            raw = w.readframes(n)
+        if sw == 1:
+            a = (np.frombuffer(raw, np.uint8).astype(np.float32) - 128.0) / 128.0
+        elif sw == 2:
+            a = np.frombuffer(raw, np.int16).astype(np.float32) / 32768.0
+        elif sw == 3:
+            b = np.frombuffer(raw, np.uint8).reshape(-1, 3).astype(np.int32)
+            a = ((b[:, 0] | (b[:, 1] << 8) | (b[:, 2] << 16)) ^ 0x800000) - 0x800000
+            a = a.astype(np.float32) / 8388608.0
+        else:
+            a = np.frombuffer(raw, np.int32).astype(np.float32) / 2147483648.0
+        if ch > 1:
+            a = a.reshape(-1, ch).mean(axis=1)
+        self.samples = np.ascontiguousarray(a, dtype=np.float32)
+        self.name = os.path.basename(path)
+        self.seconds = len(self.samples) / float(self.rate)
+        self.gain = gain
+        self.chunk = chunk
+        self._buf = np.zeros(chunk, np.float32)
+        self._win = np.hanning(chunk).astype(np.float32)
+        self._edges = _band_edges(chunk, self.rate, self.LO, self.HI, self.BANDS)
+        self._prev_low = 0.0
+        self._floor = 0.0
+        self._primed = False
+        self._agc = 1.0
+        self.level = 0.0
+        self.t0 = time.perf_counter()
+
+    @property
+    def position(self):
+        return (time.perf_counter() - self.t0) % max(0.01, self.seconds)
+
+    def push(self, eng):
+        n = len(self.samples)
+        if n < self.chunk:
+            return 0
+        end = int(self.position * self.rate) % n
+        if end >= self.chunk:
+            self._buf = self.samples[end - self.chunk:end]
+        else:
+            self._buf = np.concatenate([self.samples[n - (self.chunk - end):], self.samples[:end]])
+        return _push(self, eng)
+
+    def close(self):
+        pass
 
 
 def list_inputs():

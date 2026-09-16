@@ -202,6 +202,14 @@ class App:
         self.side_w = int(self.prefs.get("side_w", SIDE_W))
         self.side = True             # the side panel shown (Ctrl+Shift+H hides it)
         self.focus = None            # the pane last clicked in: it wears the frame
+        self.sweep = None            # {"key", "secs", "t0", "loop", "record"} while a slider is swept
+        self.frames = None           # (glow.Frames) - set in build()
+        self.history_frames = []     # the last seconds of net frames, for scrubbing while paused
+        self.scrub = None            # an index into history_frames while paused, or None
+        self.frame_ms = 0.0          # the engine's cost per frame on this machine, smoothed
+        self.ab = None               # a second engine, for comparing two effects side by side
+        self.ab_name = None
+        self._ab_n = 0
         self._code_undo, self._code_redo, self._code_text, self._code_t = [], [], "", 0.0
         self.frames = None           # glow.Frames, once the viewport exists
         self.keys = Keymap(self.prefs)
@@ -267,14 +275,15 @@ class App:
         np.multiply(img, np.float32(1.0 / 255.0), out=buf[..., :3], casting="unsafe")
         return buf.reshape(-1)
 
-    def net_image(self):
+    def net_image(self, eng=None):
         """The logical view: the segment as the effect sees it. A 1-D strip is
         one row, drawn tall enough to look at."""
-        rgb = self.eng.rgb().copy()
-        if not self.eng.fx.get("o3"):
+        eng = eng or self.eng
+        rgb = eng.rgb().copy()
+        if not eng.fx.get("o3"):
             # Cube mode: the gap corners are not pixels and effects skip them,
             # so without this they keep whatever flat mode last left there.
-            mask = self.eng.lit_mask()
+            mask = eng.lit_mask()
             if mask.shape != rgb.shape[:2]:
                 # the geometry changed under us between the two reads (a
                 # callback on another thread): one black frame, not a crash
@@ -285,14 +294,15 @@ class App:
             rgb = np.repeat(rgb, rows, axis=0)
         return rgb
 
-    def view_image(self, net, px):
+    def view_image(self, net, px, eng=None):
         """The 3-D view: the face-warp renderer for the cube (faster, and
         exact for flat faces), the point cloud for everything else."""
-        g = self.eng.geom
-        if g is not None and g.kind == "cube" and not self.eng.fx.get("o3"):
-            return render.render(net if net.shape[0] == self.eng.rows else self.eng.rgb(),
-                                 self.eng.B, px, self.yaw, self.pitch, self.dist)
-        rgb = self.eng.rgb().reshape(-1, 3)
+        eng = eng or self.eng
+        g = eng.geom
+        if g is not None and g.kind == "cube" and not eng.fx.get("o3"):
+            return render.render(net if net.shape[0] == eng.rows else eng.rgb(),
+                                 eng.B, px, self.yaw, self.pitch, self.dist)
+        rgb = eng.rgb().reshape(-1, 3)
         if g is None:
             return np.zeros((px, px, 3), np.uint8)
         return render.render_points(g.pos, rgb, px, self.yaw, self.pitch, self.dist)
@@ -326,6 +336,18 @@ class App:
             dpg.configure_item("live_btn", label="stop live audio")
         except Exception as e:
             dpg.set_value("live_msg", f"could not start: {e}")
+
+    def start_file_audio(self, path):
+        """A WAV file as the audio source, looping, in place of the synth or
+        a capture."""
+        try:
+            from native.audio import FileAudio
+            self.stop_live()
+            self.live = FileAudio(path, gain=float(dpg.get_value("inp_live_gain")))
+            dpg.set_value("live_msg", f"playing {self.live.name} ({self.live.seconds:.0f} s, looping)")
+            dpg.configure_item("live_btn", label="stop the file")
+        except Exception as e:
+            dpg.set_value("live_msg", f"could not open the file: {e}")
 
     def stop_live(self):
         if self.live:
@@ -407,6 +429,13 @@ class App:
     def toggle_live(self):
         self.stop_live() if self.live else self.start_live()
 
+    def set_device_factor(self, v):
+        try:
+            self.prefs["device_factor"] = max(1.0, float(v))
+            save_prefs(self.prefs)
+        except ValueError:
+            self.gp.status("a number, please: how many times slower than this PC the device is")
+
     # --- callbacks -----------------------------------------------------------
     def on_effect(self, s, val):
         self.eng.select(self.eng.names.index(val))
@@ -421,6 +450,7 @@ class App:
 
     def on_pal_source(self, s, val):
         self.eng.pal_source = dict(PALETTES)[val]
+        self._ab_sync()
 
     def palette_name_for(self, pid):
         for n, i in PALETTES:
@@ -462,6 +492,7 @@ class App:
             return
         self.project.geometry = geom
         self.project.save()
+        self._ab_sync()
         self.rebuild_params()
         self.request_layout()
         try:
@@ -890,6 +921,7 @@ class App:
         # success: swap the engine, keep everything the user had
         want = self.project.effect_title(self.edit_file) if self.edit_file else self.project.selected
         self.eng.reload(rep.library)
+        self._ab_reloaded(rep.library)
         dpg.configure_item("fx_combo", items=self.eng.names)
         if want in self.eng.names:
             self.eng.select(self.eng.names.index(want))
@@ -902,6 +934,7 @@ class App:
         r, g, b = (int(c * 255) if c <= 1.0 else int(c) for c in val[:3])
         self.seg_cols[int(dpg.get_item_user_data(sender))] = (r << 16) | (g << 8) | b
         self.eng.colors(*self.seg_cols)
+        self._ab_sync()
 
     def _set_param(self, k, v):
         self.eng.fx[k] = int(v)
@@ -1249,7 +1282,7 @@ class App:
         # at its true size would take the whole app from 35 fps to 15, so
         # fullscreen makes the picture BIGGER, not sharper. Raising this is not
         # a free win; measure before touching it.
-        self.cube_px = min(CUBE_MAX, side)
+        self.cube_px = min(CUBE_MAX, side // 2 if self.ab else side)
         self.view_side = side
 
         if self.ui:
@@ -1325,17 +1358,21 @@ class App:
 
     def remake_cube_texture(self):
         p = self.cube_px
+        w, h = (2 * p + 8, p) if self.ab else (p, p)
         if dpg.does_item_exist("cube_img"):
             dpg.delete_item("cube_img")
         if dpg.does_item_exist("cube_tex"):
             dpg.delete_item("cube_tex")
         with dpg.texture_registry():
-            dpg.add_raw_texture(p, p, np.zeros(p * p * 4, np.float32),
+            dpg.add_raw_texture(w, h, np.zeros(w * h * 4, np.float32),
                                 format=dpg.mvFormat_Float_rgba, tag="cube_tex")
         # Drawn at view_side even when rendered smaller, so capping the render
         # cost does not also shrink the picture.
         dpg.add_image("cube_tex", tag="cube_img", parent="cube_win",
-                      width=self.view_side, height=self.view_side)
+                      width=self.view_side, height=int(self.view_side * h / w))
+        if dpg.does_item_exist("cube_cap"):
+            dpg.set_value("cube_cap", f"A: {self.eng.names[self.eng.idx]}    B: {self.ab_name}" if self.ab
+                          else "3-D - drag to rotate, wheel to zoom")
         self._bufs.pop("cube", None)
 
     # --- interaction ---------------------------------------------------------
@@ -1519,6 +1556,8 @@ class App:
             "stop_preview": gp.stop_preview,
             "focus_mode":   lambda: gp.set_focus_mode(not gp.focus_mode),
             "history":      lambda: chrome.show_history(self),
+            "compare":      lambda: self.stop_ab() if self.ab else chrome.show_compare(self),
+            "sweep":        lambda: self.stop_sweep() if self.sweep else chrome.show_sweep(self),
         }
         fn = table.get(action)
         if fn:
@@ -1537,7 +1576,7 @@ class App:
         x, y = st.get("rect_min") or dpg.get_item_pos(tag)
         return (x, y, x + w, y + h)
 
-    FLOATING = ("frames_win", "keys_win", "flash_win", "where_win", "history_win", "name_dialog", "device_dialog", "editor_dialog", "about_win",
+    FLOATING = ("frames_win", "keys_win", "flash_win", "where_win", "history_win", "compare_menu", "sweep_win", "wav_dialog", "name_dialog", "device_dialog", "editor_dialog", "about_win",
                 "open_menu", "graph_menu", "graph_ctx", "project_dialog", "graph_import_dialog", "xyz_dialog")
 
     def poll_glow(self):
@@ -1597,6 +1636,63 @@ class App:
                                       self.palette_name_for(self.eng.pal), self.seg_cols)
         dpg.set_value("edit_status", msg); self.gp.status(msg)
 
+    # --- A/B: two effects side by side ------------------------------------------
+    # The engine is one strip in one DLL, so a second effect needs a second
+    # engine: the same library copied under another name (the loader gives
+    # one process one instance per FILE). B gets A's geometry, colours and
+    # audio each frame; the view splits, the camera is shared.
+    def _b_library(self):
+        lib = self.eng.library
+        self._ab_n += 1
+        root, ext = os.path.splitext(lib)
+        path = f"{root}_b{self._ab_n}{ext}"
+        shutil.copyfile(lib, path)
+        return path
+
+    def start_ab(self, name):
+        if name not in self.eng.names:
+            return
+        try:
+            if self.ab is None:
+                self.ab = Engine(self._b_library())
+            self._ab_sync()
+            self.ab.select(self.ab.names.index(name))
+        except Exception as e:
+            self.gp.status(f"cannot compare: {e}"); self.ab = None; return
+        self.ab_name = name
+        self.request_layout()
+        self.gp.status(f"A: {self.eng.names[self.eng.idx]}   B: {name}")
+
+    def stop_ab(self):
+        self.ab = None
+        self.ab_name = None
+        self.request_layout()
+
+    def _ab_sync(self):
+        """B follows A's geometry, colours and palette source."""
+        if not self.ab:
+            return
+        try:
+            self.ab.set_geometry(self.project.geometry)
+            self.ab.colors(*self.seg_cols)
+            self.ab.pal_source = self.eng.pal_source
+            if dpg.does_item_exist("map1d2d"):
+                self.ab.set_map1d2d(["strip", "bars", "arcs", "corner"].index(dpg.get_value("map1d2d")))
+        except Exception:
+            pass
+
+    def _ab_reloaded(self, library):
+        """The library was rebuilt: B takes a fresh copy and its effect back."""
+        if not self.ab:
+            return
+        try:
+            self.ab.reload(self._b_library())
+            self._ab_sync()
+            if self.ab_name in self.ab.names:
+                self.ab.select(self.ab.names.index(self.ab_name))
+        except Exception as e:
+            self.gp.status(f"comparison dropped: {e}"); self.ab = None
+
     def toggle_pane(self, which):
         """C and G: the pane, or back to the two views if it is already up."""
         self.layout = "both" if self.layout == which else which
@@ -1649,6 +1745,40 @@ class App:
         self.request_layout()
 
     # --- the loop ------------------------------------------------------------
+    # --- sweep: a slider driven through its range ----------------------------------
+    def start_sweep(self, key, secs, loop=True, record=False):
+        if key not in self.eng.fx:
+            return
+        self.sweep = {"key": key, "secs": max(1.0, float(secs)), "t0": time.perf_counter(), "loop": loop,
+                      "was": self.eng.fx[key]}
+        self.playing = True
+        if record:
+            self.start_rec(self.sweep["secs"])
+        self.gp.status(f"sweeping {key} over {secs:.0f} s" + (", looping" if loop else ""))
+
+    def stop_sweep(self, restore=True):
+        if self.sweep and restore:
+            self.eng.fx[self.sweep["key"]] = self.sweep["was"]
+            self.eng.push(); self.rebuild_params()
+        self.sweep = None
+
+    def _poll_sweep(self):
+        sw = self.sweep
+        if not sw:
+            return
+        t = (time.perf_counter() - sw["t0"]) / sw["secs"]
+        if t >= 1.0 and not sw["loop"]:
+            self.stop_sweep(); return
+        phase = t % 1.0
+        hi = 31 if sw["key"] == "c3" else 255
+        v = int(round(hi * (1.0 - abs(2.0 * phase - 1.0))))        # up, then back down
+        if v != self.eng.fx.get(sw["key"]):
+            self.eng.fx[sw["key"]] = v
+            self.eng.push()
+            for tag in (f"sld_{sw['key']}", f"inp_{sw['key']}"):
+                if dpg.does_item_exist(tag):
+                    dpg.set_value(tag, v)
+
     def step_sim(self):
         now = time.perf_counter()
         dt = min(0.25, now - self.last)      # a stalled window must not sprint
@@ -1656,22 +1786,50 @@ class App:
         if not self.playing:
             self.acc = 0.0
             return
+        self.scrub = None
+        self._poll_sweep()
         self.acc += dt * 1000.0
         n = 0
         while self.acc >= STEP and n < 6:
             self.audio_push()
+            t0 = time.perf_counter()
             self.eng.frame(STEP)
+            ms = (time.perf_counter() - t0) * 1000.0
+            self.frame_ms = ms if self.frame_ms == 0.0 else self.frame_ms * 0.95 + ms * 0.05
+            if self.ab:
+                try:
+                    self.ab.fft[:] = self.eng.fft[:]
+                    self.ab.audio(*getattr(self.eng, "last_audio", (0.0, 0)))
+                    self.ab.frame(STEP)
+                except Exception:
+                    self.ab = None
             self.acc -= STEP
             n += 1
 
+    SCRUB_FRAMES = 300           # ~10 s at the simulated frame rate
+
     def draw(self):
         net = self.net_image()
+        # the last seconds of frames are kept while playing; paused, the
+        # scrub slider picks one of them to show instead of the live one
+        if self.playing:
+            self.history_frames.append(net)
+            del self.history_frames[:-self.SCRUB_FRAMES]
+        elif self.scrub is not None and self.history_frames:
+            net = self.history_frames[max(0, min(len(self.history_frames) - 1, self.scrub))]
         big = img = None
         if self.layout in ("both", "net"):
             big = net.repeat(self.net_scale, 0).repeat(self.net_scale, 1)
             dpg.set_value("net_tex", self._rgba("net", big))
         if self.layout in ("both", "cube", "edit", "graph"):
             img = self.view_image(net, self.cube_px)
+            if self.ab:
+                # side by side, a gap between: the texture is two renders wide
+                p = self.cube_px
+                imgb = self.view_image(self.net_image(self.ab), p, self.ab)
+                both = np.zeros((p, 2 * p + 8, 3), np.uint8)
+                both[:, :p] = img; both[:, p + 8:] = imgb
+                img = both
             dpg.set_value("cube_tex", self._rgba("cube", img))
         # Records whatever is being SHOWN, so Q, E and W frame the clip too.
         self.rec_frame(big, img)
@@ -1680,9 +1838,19 @@ class App:
 
         raw = self.eng.rgb()
         s = stats(raw, self.eng.lit_mask(flat=bool(self.eng.fx.get("o3"))))
+        factor = float(self.prefs.get("device_factor", 60.0))
+        est = f"   this PC {self.frame_ms:.2f} ms/frame  ->  device ~{1000.0 / max(0.001, self.frame_ms * factor):.0f} fps (x{factor:.0f}, Settings)" \
+              if self.frame_ms > 0 else ""
         dpg.set_value("stat_txt",
                       f"mean {s['mean']:5.1f}   sigma {s['sigma']:5.1f}   "
-                      f"dark {s['dark']:4.1f}%   sat {s['sat']:3d}")
+                      f"dark {s['dark']:4.1f}%   sat {s['sat']:3d}" + est)
+        if dpg.does_item_exist("scrub_row"):
+            show = (not self.playing) and len(self.history_frames) > 1
+            if dpg.is_item_shown("scrub_row") != show:
+                dpg.configure_item("scrub_row", show=show)
+                if show:
+                    dpg.configure_item("scrub", max_value=len(self.history_frames) - 1)
+                    dpg.set_value("scrub", len(self.history_frames) - 1)
         lvl = self.live.level if self.live else 0.0
         dpg.set_value("lvl_bar", min(1.0, lvl / 220.0))
         if self.beat_flash:
@@ -1708,6 +1876,7 @@ def build(app):
         dpg.add_mouse_release_handler(button=dpg.mvMouseButton_Middle, callback=lambda s, a: app.gp.on_mid_release())
         dpg.add_key_press_handler(callback=app.on_key)
 
+    self_app = [app]
     with dpg.window(tag="root", no_scroll_with_mouse=True):
         chrome.build_menus(app)
         chrome.build_toolbar(app)
@@ -1807,6 +1976,10 @@ def build(app):
                     dpg.add_color_edit(_rgb, label=_lbl, width=170, no_alpha=True,
                                        user_data=_ci, callback=app.on_color)
                 dpg.add_separator()
+                with dpg.group(tag="scrub_row", show=False):
+                    dpg.add_text("paused - scrub the last seconds", color=SECTION)
+                    dpg.add_slider_int(tag="scrub", width=280, min_value=0, max_value=1, default_value=0, format="frame %d",
+                                       callback=lambda s, v: setattr(self_app[0], "scrub", int(v)))
                 dpg.add_text("PARAMETERS", color=SECTION)
                 dpg.add_group(tag="params")
                 dpg.add_separator()
@@ -1845,8 +2018,14 @@ def build(app):
                     _devs = ["system output"]
                 dpg.add_combo(_devs, label="source", tag="live_dev", width=200,
                               default_value=_devs[0])
-                dpg.add_button(label="use live audio", tag="live_btn",
-                               callback=lambda: app.toggle_live())
+                with dpg.group(horizontal=True):
+                    dpg.add_button(label="use live audio", tag="live_btn",
+                                   callback=lambda: app.toggle_live())
+                    dpg.add_button(label="play a WAV file...", callback=lambda: dpg.show_item("wav_dialog"))
+                with dpg.file_dialog(directory_selector=False, show=False, tag="wav_dialog", width=620, height=420,
+                                     callback=lambda s, a: app.start_file_audio(a.get("file_path_name", ""))):
+                    dpg.add_file_extension(".wav", color=(120, 200, 120))
+                    dpg.add_file_extension(".*")
                 dpg.add_group(tag="gain_row")
                 app.pair("gain_row", "live_gain", "live gain", 3.0, 0.2, 12.0,
                          lambda v: setattr(app.live, "gain", float(v)) if app.live else None,
@@ -1936,7 +2115,7 @@ def service_command(app):
                     if dpg.does_item_exist(t):
                         print("measure", t, "pos", dpg.get_item_pos(t), "size", dpg.get_item_rect_size(t),
                               "conf", dpg.get_item_configuration(t).get("height"))
-                print("measure layout", app.layout, "ui", app.ui)
+                print("measure layout", app.layout, "ui", app.ui, "playing", app.playing, "scrub_row", dpg.does_item_exist("scrub_row") and dpg.is_item_shown("scrub_row"), len(app.history_frames))
                 print("measure viewport", dpg.get_viewport_client_width(), dpg.get_viewport_client_height(),
                       "footer rect", dpg.get_item_rect_min("footer"), dpg.get_item_rect_max("footer"))
             if "key" in c:                              # test hook: a key press, by mvKey_ name
@@ -1963,6 +2142,14 @@ def service_command(app):
                         dpg.set_value(tag, o[k])
             if "gp_call" in c:                          # test hook: [method of the graph panel, args]
                 getattr(app.gp, c["gp_call"][0])(*c["gp_call"][1])
+            if "sweep" in c:                            # test hook: [key, secs, loop, record] or null to stop
+                app.start_sweep(*c["sweep"]) if c["sweep"] else app.stop_sweep()
+            if "wav" in c:
+                app.start_file_audio(c["wav"])
+            if "scrub" in c:
+                app.scrub = int(c["scrub"])
+            if "compare" in c:                          # test hook: an effect name, or "" to stop
+                app.start_ab(c["compare"]) if c["compare"] else app.stop_ab()
             if "chrome_call" in c:                      # test hook: [function in chrome, args]
                 getattr(chrome, c["chrome_call"][0])(app, *c["chrome_call"][1])
             if "frame_gradient" in c:                   # test hook: [kind, key]

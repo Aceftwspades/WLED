@@ -131,6 +131,8 @@ def build_menus(app):
             _mi(app, "Play / pause", "play_pause", callback=lambda: app.toggle_play())
             _mi(app, "Step one frame", "step", callback=lambda: app.step_once())
             _mi(app, "Restart effect", "restart", callback=lambda: app.eng.select(app.eng.idx))
+            _mi(app, "Compare with another effect...", "compare", callback=lambda: app.run_action("compare"))
+            _mi(app, "Sweep a slider...", "sweep", callback=lambda: app.run_action("sweep"))
             dpg.add_separator()
             _mi(app, "Compile + reload", "build", callback=lambda: app.build_current())
             _mi(app, "Live: rebuild the graph as it changes", "live", check=True, tag="menu_live",
@@ -142,6 +144,9 @@ def build_menus(app):
             dpg.add_menu_item(label="Selection frames...", callback=lambda: show_frames(app))
             dpg.add_menu_item(label="Device address...", callback=lambda: show_device(app))
             dpg.add_menu_item(label="External editor command...", callback=lambda: show_editor(app))
+            dpg.add_menu_item(label="Device speed factor...", callback=lambda: ask(
+                app, "Device speed", "how many times slower than this PC the device is (the fps estimate in the footer)",
+                str(app.prefs.get("device_factor", 60)), lambda v: app.set_device_factor(v)))
             dpg.add_separator()
             dpg.add_menu_item(label="Open the project folder", callback=lambda: app.reveal(app.project.path))
             dpg.add_menu_item(label="Open the build folder", callback=lambda: app.reveal(app.build_dir()))
@@ -263,6 +268,20 @@ def build_dialogs(app):
         dpg.add_text("", tag="about_paths", color=DIM)
     with dpg.window(tag="open_menu", show=False, no_title_bar=True, no_resize=True, no_move=True, autosize=True, popup=True):
         pass
+    with dpg.window(tag="compare_menu", show=False, no_title_bar=True, no_resize=True, no_move=True, autosize=True, popup=True):
+        pass
+    with dpg.window(tag="sweep_win", label="Sweep a slider", show=False, width=400, height=190, no_collapse=True):
+        dpg.add_text("The slider goes 0 to full and back over the seconds given, so the whole range is seen; "
+                     "record makes that one pass the GIF.", color=DIM, wrap=380)
+        with dpg.group(horizontal=True):
+            dpg.add_combo([], tag="sweep_key", width=200)
+            dpg.add_input_float(tag="sweep_secs", width=80, default_value=8.0, step=0, format="%.0f s")
+        with dpg.group(horizontal=True):
+            dpg.add_checkbox(label="loop", tag="sweep_loop", default_value=True)
+            dpg.add_checkbox(label="record a GIF of one pass", tag="sweep_rec")
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Start", callback=lambda: _sweep_start(app))
+            dpg.add_button(label="Cancel", callback=lambda: dpg.hide_item("sweep_win"))
     build_frames_dialog(app)
     build_flash_dialog(app)
     with dpg.window(tag="history_win", label="History", show=False, width=520, height=420, no_collapse=True):
@@ -790,6 +809,44 @@ def _restore(app, kind, stem, ext, path):
     app.gp.status(f"restored {os.path.basename(path)}")
 
 
+# --- compare ------------------------------------------------------------------------------
+def show_compare(app):
+    """Pick the effect to run beside the current one."""
+    dpg.delete_item("compare_menu", children_only=True)
+    dpg.add_text(f"beside {app.eng.names[app.eng.idx]}, show", parent="compare_menu", color=DIM)
+    with dpg.child_window(width=240, height=360, border=False, parent="compare_menu"):
+        for n in app.eng.names:
+            dpg.add_selectable(label=n, width=220, user_data=n,
+                               callback=lambda s, a, u: (dpg.hide_item("compare_menu"), app.start_ab(u)))
+    vw, vh = dpg.get_viewport_client_width(), dpg.get_viewport_client_height()
+    dpg.configure_item("compare_menu", show=True)
+    dpg.set_item_pos("compare_menu", [vw // 2 - 130, vh // 4])
+
+
+# --- sweep --------------------------------------------------------------------------------
+SWEEP_KEYS = ("sx", "ix", "c1", "c2", "c3")
+
+
+def show_sweep(app):
+    m = app.eng.meta[app.eng.idx]
+    generic = {"sx": "Speed", "ix": "Intensity", "c1": "Custom 1", "c2": "Custom 2", "c3": "Custom 3"}
+    labels = []
+    for i, k in enumerate(SWEEP_KEYS):
+        lab = (m["labels"][i] if i < len(m["labels"]) else "").strip()
+        labels.append(f"{k}  {lab if lab and lab != '!' else generic[k]}")
+    dpg.configure_item("sweep_key", items=labels)
+    dpg.set_value("sweep_key", labels[0])
+    _centre("sweep_win", 400, 190)
+    dpg.show_item("sweep_win")
+
+
+def _sweep_start(app):
+    key = (dpg.get_value("sweep_key") or "sx").split()[0]
+    dpg.hide_item("sweep_win")
+    app.start_sweep(key, dpg.get_value("sweep_secs"), loop=dpg.get_value("sweep_loop") and not dpg.get_value("sweep_rec"),
+                    record=dpg.get_value("sweep_rec"))
+
+
 # --- state -> chrome ------------------------------------------------------------------
 def refresh_files(app):
     """The Open submenus and the Add submenu follow the project."""
@@ -828,7 +885,7 @@ def refresh_files(app):
 
 def _signature(app):
     return (app.layout, app.ui, app.side, app.playing, app.gp.auto, app.gp.zoom, bool(app.gp.stack), app.building,
-            app.gp.focus_mode)
+            app.gp.focus_mode, app.ab_name, bool(app.sweep))
 
 
 def refresh(app):
@@ -843,6 +900,10 @@ def refresh(app):
     dpg.set_value("menu_present", not app.ui)
     dpg.set_value("menu_side", app.side)
     dpg.set_value("menu_focus", app.gp.focus_mode)
+    if dpg.does_item_exist("mi_compare"):
+        dpg.configure_item("mi_compare", label="Stop comparing" if app.ab else "Compare with another effect...")
+    if dpg.does_item_exist("mi_sweep"):
+        dpg.configure_item("mi_sweep", label="Stop the sweep" if app.sweep else "Sweep a slider...")
     dpg.set_value("menu_live", app.gp.auto)
     dpg.configure_item("tb_live", tint_color=AMBER if app.gp.auto else TEXT)
     dpg.configure_item("tb_build", tint_color=AMBER if app.building else TEXT)
