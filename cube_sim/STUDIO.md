@@ -176,6 +176,14 @@ the solid on two Springs the beat kicks; wet below, a meniscus, ripples,
 the lid a pool). Readings of the originals in nodes, not ports; the ones
 that were particle systems are shader-style.
 
+Every node, pin and setting carries a plain-words description
+(`native/nodedocs.py`, merged into the library): hover a node's title or a
+pin and it appears under the toolbar; a node's or pin's right-click menu
+shows it too, and the add menu's search matches it. `python
+native/nodedocs.py` writes the whole reference as `NODES.md` - and refuses,
+naming them, while any node or pin is undocumented; the examples' `--check`
+refuses the same way. A new node is not finished until both pass.
+
 Sub-graphs: select some nodes and "fold into sub-graph" (toolbar or the
 node's right-click menu) and they become one node. Each wire that crossed the
 boundary becomes a pin — a "Graph input" node inside for every incoming one,
