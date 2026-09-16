@@ -145,6 +145,11 @@ class Engine:
         self.cols, self.rows = geom.w, geom.h
         self.B = geom.params.get("B", self.B) if geom.kind == "cube" else self.B
         self.lib.simInit(self.cols, self.rows)
+        # the engine clamps what it cannot hold; a size it did not take would
+        # leave the pixel view reading past the buffer
+        got = (self.lib.simWidth(), self.lib.simHeight())
+        if got != (self.cols, self.rows):
+            raise ValueError(f"the engine cannot hold {self.cols} x {self.rows} pixels (max 65536)")
         self.lib.simSetMap1D2D(self.map1d2d)
         self._px = self.lib.simPixels()
         self._fft = self.lib.simFftPtr()

@@ -35,7 +35,10 @@ int Segment::_vh = 48;
 uint8_t Segment::map1D2D = 0;
 
 static Segment  gSeg;
-static uint32_t gPixels[192 * 192];
+// Room for the largest geometry the studio offers: a 256 x 256 matrix, or a
+// cube with 85-pixel faces. simInit() refuses anything larger, and the Python
+// side reads the size back rather than assuming it got what it asked for.
+static uint32_t gPixels[256 * 256];
 
 // --- audio the page can steer ------------------------------------------------
 static float   gVolume = 0.0f;
@@ -204,7 +207,7 @@ SIM_API const char *simEffectMeta(int i) {
 SIM_API void simInit(int w, int h) {
   if (w < 1) w = 1;
   if (h < 1) h = 1;
-  if ((size_t)w * h > sizeof(gPixels) / sizeof(gPixels[0])) { w = 192; h = 192; }
+  if ((size_t)w * h > sizeof(gPixels) / sizeof(gPixels[0])) { w = 256; h = 256; }
   Segment::_vw = w; Segment::_vh = h;
   gSeg.pixels = gPixels;
   gSeg.data = nullptr; gSeg._dataLen = 0;

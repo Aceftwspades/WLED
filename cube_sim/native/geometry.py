@@ -49,11 +49,28 @@ class Geometry:
         self._build()
 
     # --- construction -------------------------------------------------------
+    # what the engine can hold and the views can show; a project.json edited
+    # by hand, or an old one, is clamped here rather than trusted
+    MAX_PIXELS = 256 * 256
+    LIMITS = {"n": (1, 2000), "w": (1, 256), "h": (1, 256), "B": (1, 85)}
+
+    def _clamp(self, key, default, lo=None):
+        a, b = self.LIMITS[key]
+        if lo is not None:
+            a = max(a, lo)
+        try:
+            v = int(self.params.get(key, default))
+        except (TypeError, ValueError):
+            v = default
+        v = min(b, max(a, v))
+        self.params[key] = v
+        return v
+
     def _build(self):
         p = self.params
         k = self.kind
         if k == "strip":
-            n = int(p.get("n", 60))
+            n = self._clamp("n", 60)
             self.w, self.h = n, 1
             t = np.arange(n, dtype=np.float32)
             if p.get("ring"):
@@ -65,7 +82,7 @@ class Geometry:
             self.lit = np.ones(n, bool)
             self.phys = np.arange(n)
         elif k == "matrix":
-            w, h = int(p.get("w", 16)), int(p.get("h", 16))
+            w, h = self._clamp("w", 16), self._clamp("h", 16)
             self.w, self.h = w, h
             ys, xs = np.mgrid[0:h, 0:w]
             # a panel stood upright in the X-Z plane, facing -Y (the camera side)
@@ -74,13 +91,13 @@ class Geometry:
             self.lit = np.ones(w * h, bool)
             self.phys = self._matrix_order(w, h, p)
         elif k == "cube":
-            B = int(p.get("B", 16))
+            B = self._clamp("B", 16)
             self.w = self.h = 3 * B
             pos, lit = _cube_net(B)
             self.pos, self.lit = pos, lit
             self.phys = np.nonzero(lit)[0]      # face by face, row by row
         elif k == "cylinder":
-            w, h = int(p.get("w", 32)), int(p.get("h", 16))
+            w, h = self._clamp("w", 32, lo=3), self._clamp("h", 16)
             self.w, self.h = w, h
             ys, xs = np.mgrid[0:h, 0:w]
             a = xs.ravel() * (2 * math.pi / w)
@@ -89,7 +106,7 @@ class Geometry:
             self.lit = np.ones(w * h, bool)
             self.phys = self._matrix_order(w, h, p)
         elif k == "sphere":
-            w, h = int(p.get("w", 32)), int(p.get("h", 16))
+            w, h = self._clamp("w", 32, lo=3), self._clamp("h", 16, lo=2)
             self.w, self.h = w, h
             ys, xs = np.mgrid[0:h, 0:w]
             a = xs.ravel() * (2 * math.pi / w)
@@ -102,7 +119,7 @@ class Geometry:
             self.lit = np.ones(w * h, bool)
             self.phys = self._matrix_order(w, h, p)
         elif k == "torus":
-            w, h = int(p.get("w", 40)), int(p.get("h", 12))
+            w, h = self._clamp("w", 40, lo=3), self._clamp("h", 12, lo=3)
             self.w, self.h = w, h
             ys, xs = np.mgrid[0:h, 0:w]
             u = xs.ravel() * (2 * math.pi / w)
@@ -115,6 +132,7 @@ class Geometry:
             self.phys = self._matrix_order(w, h, p)
         elif k == "xyz":
             pts = np.asarray(p.get("points", []), dtype=np.float32).reshape(-1, 3)
+            pts = pts[~np.isnan(pts).any(1)][:self.MAX_PIXELS]      # a bad row is dropped, not drawn at NaN
             n = len(pts)
             if n == 0:
                 pts = np.zeros((1, 3), np.float32); n = 1

@@ -218,7 +218,12 @@ class App:
         if not self.eng.fx.get("o3"):
             # Cube mode: the gap corners are not pixels and effects skip them,
             # so without this they keep whatever flat mode last left there.
-            rgb[~self.eng.lit_mask()] = 0
+            mask = self.eng.lit_mask()
+            if mask.shape != rgb.shape[:2]:
+                # the geometry changed under us between the two reads (a
+                # callback on another thread): one black frame, not a crash
+                return np.zeros(rgb.shape, np.uint8)
+            rgb[~mask] = 0
         if rgb.shape[0] == 1:
             rows = max(4, rgb.shape[1] // 12)
             rgb = np.repeat(rgb, rows, axis=0)
@@ -382,7 +387,7 @@ class App:
         "matrix":   [("w", "width", 1, 256), ("h", "height", 1, 256),
                      ("serpentine", "serpentine", None, None), ("vertical", "vertical", None, None),
                      ("start_right", "start right", None, None), ("start_bottom", "start bottom", None, None)],
-        "cube":     [("B", "pixels per face", 4, 64)],
+        "cube":     [("B", "pixels per face", 4, 85)],
         "cylinder": [("w", "around", 3, 256), ("h", "tall", 1, 256)],
         "sphere":   [("w", "around", 3, 256), ("h", "rows", 2, 128)],
         "torus":    [("w", "around", 3, 256), ("h", "tube", 3, 64)],
@@ -392,9 +397,15 @@ class App:
     def apply_geometry(self, geom):
         """A new geometry: into the engine, into the project, views resized.
         The effect restarts, so its sliders are rebuilt from the engine."""
+        try:
+            self.eng.set_geometry(geom)
+        except Exception as e:
+            # the engine said no (too many pixels): keep what was there
+            self.eng.set_geometry(self.project.geometry)
+            dpg.set_value("geom_desc", f"cannot use that geometry: {e}")
+            return
         self.project.geometry = geom
         self.project.save()
-        self.eng.set_geometry(geom)
         self.rebuild_params()
         self.request_layout()
         try:
@@ -905,7 +916,13 @@ class App:
         # What is on screen decides what there is room for. With the control
         # column hidden its 340 px come back, with one view hidden the other
         # gets the whole width, and the pane captions stop reserving a line.
-        nview = 2 if self.layout in ("both", "edit", "graph") else 1
+        # Presenting (H) shows pictures only: the code and graph panes are
+        # chrome too, so in those layouts the 3-D view stands alone.
+        show_net = self.layout in ("both", "net")
+        show_cube = self.layout in ("both", "cube", "edit", "graph")
+        show_edit = self.layout == "edit" and self.ui
+        show_graph = self.layout == "graph" and self.ui
+        nview = (show_net + show_cube + show_edit + show_graph) if self.ui else (show_net + show_cube)
         if self.ui:
             pane_h = max(VIEW_MIN, vh - 108)
             avail  = vw - SIDE_W - (22 * nview + 24)
@@ -922,10 +939,10 @@ class App:
         if self.layout == "graph":
             side = max(VIEW_MIN, min(side, 360))
 
-        dpg.configure_item("net_win",  show=self.layout in ("both", "net"))
-        dpg.configure_item("cube_win", show=self.layout in ("both", "cube", "edit", "graph"))
-        dpg.configure_item("edit_win", show=self.layout == "edit")
-        dpg.configure_item("graph_win", show=self.layout == "graph")
+        dpg.configure_item("net_win",  show=show_net)
+        dpg.configure_item("cube_win", show=show_cube)
+        dpg.configure_item("edit_win", show=show_edit)
+        dpg.configure_item("graph_win", show=show_graph)
         dpg.configure_item("side_win", show=self.ui)
 
         th = self._themes.get("present" if not self.ui else "normal")
@@ -956,6 +973,11 @@ class App:
         self.view_side = side
 
         if self.ui:
+            # Presenting placed the panes by hand; a pane once placed no longer
+            # flows in its row, so it would sit where it was left, under
+            # whatever now shares the row. Back to flowing before sizing.
+            for tag in ("net_win", "cube_win", "edit_win", "graph_win", "side_win"):
+                dpg.reset_pos(tag)
             for tag in ("net_win", "cube_win"):
                 dpg.configure_item(tag, width=side + 22, height=pane_h + 34)
             dpg.configure_item("edit_win", width=side + 22, height=pane_h + 34)
@@ -975,11 +997,11 @@ class App:
             total = side * nview + gap
             x0 = max(0, (vw - total) // 2)
             y0 = max(0, (vh - side) // 2)
-            if self.layout in ("both", "net"):
+            if show_net:
                 dpg.configure_item("net_win", width=side, height=side)
                 dpg.set_item_pos("net_win", [x0, y0])
                 x0 += side + gap
-            if self.layout in ("both", "cube"):
+            if show_cube:
                 dpg.configure_item("cube_win", width=side, height=side)
                 dpg.set_item_pos("cube_win", [x0, y0])
 
@@ -987,9 +1009,9 @@ class App:
         # allocate at full pane size and never be written to - 7.7 MB of
         # float32 for a net nobody is looking at. Switching back runs this
         # again, so the texture is there by the time anything draws into it.
-        if self.layout in ("both", "net"):
+        if show_net:
             self.remake_net_texture()
-        if self.layout in ("both", "cube", "edit", "graph"):
+        if show_cube:
             self.remake_cube_texture()
 
     def remake_net_texture(self):
@@ -1394,6 +1416,13 @@ def build(app):
     if gfiles:
         app.gp.open(gfiles[0])
     dpg.set_primary_window("root", True)
+    # Callbacks are taken off Dear PyGui's own schedule and run at the top of
+    # each pass of the loop below, before the frame is drawn. Otherwise they
+    # run inside render_dearpygui_frame() - a callback that changes the
+    # geometry while draw() is halfway through reading the engine gave a
+    # mismatched mask once - and a widget deleted from a callback can be the
+    # very one the renderer is walking.
+    dpg.configure_app(manual_callback_management=True)
     dpg.setup_dearpygui()
     app.relayout()
     # Both views follow the window from here on. Without this, maximising left
@@ -1446,8 +1475,12 @@ def service_command(app):
             if "effect" in c:
                 app.on_effect(None, c["effect"])
                 dpg.set_value("fx_combo", c["effect"])
+            if "viewport" in c:                         # test hook: resize the window (fires the resize callback)
+                dpg.set_viewport_width(int(c["viewport"][0])); dpg.set_viewport_height(int(c["viewport"][1]))
+            if "ui" in c:                               # test hook: H, the presentation toggle
+                app.ui = bool(c["ui"]); app.request_layout()
             if "layout" in c:
-                app.layout = c["layout"]; app.ui = True; app.request_layout()
+                app.layout = c["layout"]; app.ui = bool(c.get("with_ui", True)); app.request_layout()
             if "open" in c:
                 app.edit_open(c["open"])
             if "new" in c:
@@ -1625,6 +1658,13 @@ def main():
     print(f"remote control: write a JSON list of commands to {CMD_FILE}")
     try:
         while dpg.is_dearpygui_running():
+            try:
+                jobs = dpg.get_callback_queue()
+                if jobs:
+                    dpg.run_callbacks(jobs)
+            except Exception:
+                import traceback
+                traceback.print_exc()
             if app._need_layout:
                 app._need_layout = False
                 app.relayout()
