@@ -936,7 +936,13 @@ class App:
         # allows; a code or graph pane simply takes its width.
         split = self.splits.get(self.layout, 0.5)
         if self.ui:
-            pane_h = max(VIEW_MIN, vh - 108)
+            # The panes stop where the footer (record, stats, key hints)
+            # starts, so the root window never has anything to scroll to.
+            # The footer is measured rather than assumed; before the first
+            # frame it has no size yet and 102 px is what it comes to.
+            fh = dpg.get_item_rect_size("footer")[1] if dpg.does_item_exist("footer") else 0
+            fh = fh if fh > 0 else 102
+            pane_h = max(VIEW_MIN, vh - 10 - fh - 8 - 10 - 34)
             avail  = vw - self.side_w - (22 * nview + 24) - (8 * nview)   # splitter handles
             if nview == 2:
                 left_w = int(max(VIEW_MIN, min(avail - VIEW_MIN, avail * split)))
@@ -1455,15 +1461,16 @@ def build(app):
                          is_float=True)
                 dpg.add_progress_bar(tag="lvl_bar", default_value=0.0, width=280)
                 dpg.add_text("", tag="live_msg", wrap=300)
-        with dpg.group(horizontal=True):
+        with dpg.group(tag="footer"):
+          with dpg.group(horizontal=True):
             dpg.add_button(label="record 15 s GIF", tag="rec_btn",
                            callback=lambda: app.start_rec(15.0))
             dpg.add_button(label="screenshot", tag="shot_btn", callback=lambda: setattr(app, "shot_req", True))
             dpg.add_text("", tag="rec_msg", color=(139, 147, 163))
-        dpg.add_text("", tag="stat_txt")
-        dpg.add_text("Q net    E 3-D    W both    C code    G graph    H hide UI", tag="hint1",
+          dpg.add_text("", tag="stat_txt")
+          dpg.add_text("Q net    E 3-D    W both    C code    G graph    H hide UI", tag="hint1",
                      color=(130, 140, 155))
-        dpg.add_text("space = play/pause    F11 = fullscreen window", tag="hint2",
+          dpg.add_text("space = play/pause    F11 = fullscreen window", tag="hint2",
                      color=(130, 140, 155))
 
     app._themes['normal'] = apply_theme()
@@ -1536,6 +1543,13 @@ def service_command(app):
             if "effect" in c:
                 app.on_effect(None, c["effect"])
                 dpg.set_value("fx_combo", c["effect"])
+            if c.get("measure"):                        # test hook: print pane and content sizes
+                for t in ("root", "net_win", "cube_win", "edit_win", "graph_win", "side_win", "footer", "node_editor"):
+                    if dpg.does_item_exist(t):
+                        print("measure", t, "pos", dpg.get_item_pos(t), "size", dpg.get_item_rect_size(t),
+                              "conf", dpg.get_item_configuration(t).get("height"))
+                print("measure viewport", dpg.get_viewport_client_width(), dpg.get_viewport_client_height(),
+                      "footer rect", dpg.get_item_rect_min("footer"), dpg.get_item_rect_max("footer"))
             if "graph_zoom" in c:                       # test hook: zoom level, optionally about a screen point
                 z = c["graph_zoom"]
                 app.gp.set_zoom(z[0], tuple(z[1])) if isinstance(z, list) else app.gp.set_zoom(z)
