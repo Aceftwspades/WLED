@@ -574,10 +574,18 @@ def build_flash_dialog(app):
                      "environment that extends the one chosen (its usermods plus ours), and sends the binary to "
                      "the device's /update. The device must have OTA unlocked and be on this subnet.", color=DIM, wrap=690)
         with dpg.group(horizontal=True):
-            dpg.add_combo(envs, tag="flash_env", width=260, default_value=app.project.options.get("flash_env") or default or "")
+            dpg.add_combo(envs, tag="flash_env", width=260, default_value=app.project.options.get("flash_env") or default or "",
+                          callback=lambda: refresh_flash(app))
             dpg.add_text("environment", color=DIM)
             dpg.add_input_text(tag="flash_host", hint="device address", width=200,
                                default_value=app.project.options.get("device", ""))
+        with dpg.group(horizontal=True):
+            dpg.add_text("EFFECTS TO SHIP", color=ACCENT)
+            dpg.add_button(label="all", small=True, callback=lambda: _ship_all(app, True))
+            dpg.add_button(label="none", small=True, callback=lambda: _ship_all(app, False))
+            dpg.add_text("", tag="flash_budget", color=DIM)
+        with dpg.child_window(tag="flash_fx", height=150, border=True):
+            pass
         with dpg.group(horizontal=True):
             dpg.add_checkbox(label="build", tag="flash_build", default_value=True)
             dpg.add_checkbox(label="send to the device", tag="flash_upload", default_value=True)
@@ -590,8 +598,72 @@ def build_flash_dialog(app):
             pass
 
 
+def _ship_files(app):
+    """The effects ticked to ship: the project's choice, else all of the list."""
+    files = app.project.build_files()
+    chosen = app.project.options.get("ship")
+    return [f for f in files if chosen is None or f in chosen]
+
+
+def _ship_all(app, on):
+    app.project.options["ship"] = list(app.project.build_files()) if on else []
+    app.project.save()
+    refresh_flash(app)
+
+
+def _ship_toggle(app, fname, on):
+    cur = set(_ship_files(app))
+    (cur.add if on else cur.discard)(fname)
+    app.project.options["ship"] = [f for f in app.project.build_files() if f in cur]
+    app.project.save()
+    refresh_flash(app)
+
+
+def refresh_flash(app):
+    """The checklist of effects with their measured sizes, and the budget
+    for the chosen environment from its last build."""
+    if not dpg.does_item_exist("flash_fx"):
+        return
+    env = dpg.get_value("flash_env") or ""
+    stats = (app.project.options.get("flash_stats") or {}).get(env) or {}
+    sizes = stats.get("sizes") or {}                  # the effects in the last build: they set the base
+    known = stats.get("known") or sizes               # every effect this env has ever measured
+    ship = set(_ship_files(app))
+    files = app.project.build_files()
+    dpg.delete_item("flash_fx", children_only=True)
+    for f in files:
+        with dpg.group(horizontal=True, parent="flash_fx"):
+            dpg.add_checkbox(default_value=f in ship, user_data=f, callback=lambda s, a, u: _ship_toggle(app, u, bool(a)))
+            dpg.add_text(app.project.effect_title(f))
+            kb = known.get(f)
+            dpg.add_text(f"{kb / 1024:.1f} KB" if kb else "not measured yet", color=DIM)
+    if not files:
+        dpg.add_text("the effects list is empty - File > Add to the effects list", parent="flash_fx", color=DIM)
+    if stats.get("partition"):
+        base = stats["firmware"] - sum(sizes.values())
+        avg = (sum(sizes.values()) / len(sizes)) if sizes else 4096
+        est = base + sum(known.get(f, avg) for f in ship)
+        over = est - stats["partition"]
+        if base > stats["partition"]:
+            dpg.set_value("flash_budget", f"no selection fits: {base // 1024} KB before any effect, "
+                                          f"{stats['partition'] // 1024} KB partition")
+            dpg.configure_item("flash_budget", color=RED)
+        elif over > 0:
+            dpg.set_value("flash_budget", f"about {est // 1024} KB of {stats['partition'] // 1024} KB - "
+                                          f"{over // 1024} KB over: untick about {max(1, int(-(-over // avg)))} more")
+            dpg.configure_item("flash_budget", color=RED)
+        else:
+            dpg.set_value("flash_budget", f"about {est // 1024} KB of {stats['partition'] // 1024} KB "
+                                          f"({len(ship)} of {len(files)} effects; base firmware {base // 1024} KB)")
+            dpg.configure_item("flash_budget", color=GREEN if over < -32768 else AMBER)
+    else:
+        dpg.set_value("flash_budget", f"{len(ship)} of {len(files)} - build once to measure the sizes and the room")
+        dpg.configure_item("flash_budget", color=DIM)
+
+
 def show_flash(app):
     dpg.set_value("flash_host", app.project.options.get("device", "") or dpg.get_value("flash_host"))
+    refresh_flash(app)
     _centre("flash_win", 720, 560)
     dpg.show_item("flash_win")
 
@@ -615,7 +687,11 @@ def start_flash(app):
     dpg.set_value("flash_status", "working...")
     dpg.configure_item("flash_start", enabled=False)
     dpg.configure_item("flash_cancel", enabled=True)
-    app.flash_job = flash.Job(app.project, env, host, build=dpg.get_value("flash_build"), upload=dpg.get_value("flash_upload"))
+    only = _ship_files(app)
+    if not only:
+        dpg.set_value("flash_status", "tick at least one effect to ship"); return
+    app.flash_job = flash.Job(app.project, env, host, build=dpg.get_value("flash_build"),
+                              upload=dpg.get_value("flash_upload"), only=only)
     app.flash_job.start()
 
 
@@ -639,6 +715,10 @@ def poll_flash(app):
         dpg.set_y_scroll("flash_log", -1.0)
     if job.done and not getattr(job, "_reported", False):
         job._reported = True
+        if job.stats:
+            app.project.options.setdefault("flash_stats", {})[job.base_env] = job.stats
+            app.project.save()
+            refresh_flash(app)
         dpg.set_value("flash_status", job.result)
         dpg.configure_item("flash_status", color=GREEN if job.ok else AMBER)
         dpg.configure_item("flash_start", enabled=True)

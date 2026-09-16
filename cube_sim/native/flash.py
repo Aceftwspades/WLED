@@ -88,10 +88,48 @@ def usermods_of(env):
     return []
 
 
-def stage(project, base_env, log):
-    """Export, copy the usermod into the tree, write the env. Returns the
-    env name to build."""
-    out = project.export()
+def size_tool():
+    """A toolchain's `size`, for the objects' text + data - any xtensa or
+    riscv one reads any ELF object."""
+    import glob
+    home = os.path.expanduser("~/.platformio/packages")
+    for pat in ("toolchain-xtensa-esp32s3/bin/*-size*", "toolchain-xtensa-esp32/bin/*-size*", "toolchain-*/bin/*-size*"):
+        for p in glob.glob(os.path.join(home, pat)):
+            if p.endswith((".exe", "size")):
+                return p
+    return None
+
+
+def effect_sizes(env):
+    """{effect file: flash bytes} for the studio effects of a built env, from
+    their object files: text + data is what the linker places in flash."""
+    import glob
+    tool = size_tool()
+    objs = glob.glob(os.path.join(ROOT, ".pio", "build", env, "lib*", USERMOD, "*.cpp.o"))
+    if not tool or not objs:
+        return {}
+    try:
+        flags = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+        out = subprocess.run([tool] + objs, capture_output=True, text=True, timeout=60, **flags).stdout
+    except Exception:
+        return {}
+    # Objects of effects staged for an earlier build stay in the build
+    # directory; only what is staged now was linked.
+    staged = set(os.listdir(os.path.join(ROOT, "usermods", USERMOD))) if os.path.isdir(os.path.join(ROOT, "usermods", USERMOD)) else set()
+    sizes = {}
+    for line in out.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) >= 6 and parts[0].isdigit():
+            stem = os.path.basename(parts[-1])
+            if stem.endswith(".cpp.o") and stem != "cube_fx_bank.cpp.o" and stem[:-2] in staged:
+                sizes[stem[:-2]] = int(parts[0]) + int(parts[1])
+    return sizes
+
+
+def stage(project, base_env, log, only=None):
+    """Export (the effects chosen, or the list), copy the usermod into the
+    tree, write the env. Returns the env name to build."""
+    out = project.export(only)
     src = os.path.join(out, USERMOD)
     dst = os.path.join(ROOT, "usermods", USERMOD)
     if os.path.isdir(dst):
@@ -213,10 +251,32 @@ def push_settings(host, effect, params, palette, colours):
     return True, f"{effect} with its settings sent to {host} as effect {fx}" + note
 
 
+def advice(stats, env):
+    """What to do about a firmware that does not fit, from what was measured:
+    the effects' own sizes, and the rest - WLED, its usermods and the
+    library code the studio's effects pull in - which no selection changes."""
+    part, firm, sizes = stats["partition"], stats["firmware"], stats["sizes"]
+    total = sum(sizes.values())
+    base = firm - total
+    over = firm - part
+    if base > part:
+        return (f"the firmware is {over // 1024} KB over this environment's app partition ({part // 1024} KB), and "
+                f"{(base - part) // 1024} KB of that is not the effects: WLED with {env}'s usermods and the studio's "
+                f"runtime comes to {base // 1024} KB on its own. No selection fits. Drop a usermod from {env}, or build "
+                "for an environment with a bigger app partition (esp32dev_16M, an S3 with 16 MB).")
+    avg = total / len(sizes) if sizes else 4096.0
+    n = max(1, int(-(-over // avg)))
+    return (f"the firmware is {over // 1024} KB over this environment's app partition ({part // 1024} KB): untick "
+            f"{n} of the {len(sizes)} effects above (their measured sizes are beside them; the biggest first "
+            "gets there soonest), or build for an environment with a bigger partition.")
+
+
 class Job:
-    def __init__(self, project, base_env, host, build=True, upload=True):
+    def __init__(self, project, base_env, host, build=True, upload=True, only=None):
         self.project, self.base_env, self.host = project, base_env, host
         self.build, self.upload = build, upload
+        self.only = only
+        self.stats = None            # after a build: partition, firmware size, each effect's size
         self.q = queue.Queue()
         self.done = False
         self.ok = False
@@ -246,9 +306,9 @@ class Job:
         if m:
             over = int(m.group(1)) - int(m.group(2))
             return (f"the firmware is {over // 1024} KB over this environment's app partition "
-                    f"({int(m.group(2)) // 1024} KB). Take effects off the list (File > Remove from the "
-                    "effects list; ~5 KB each), or build for an environment with a bigger partition "
-                    "(esp32dev_16M, an S3 with 16 MB).")
+                    f"({int(m.group(2)) // 1024} KB): untick about {max(1, -(-over // 4096))} effect(s) "
+                    "above (~4 KB each - the sizes beside them are measured now), or build for an "
+                    "environment with a bigger partition (esp32dev_16M, an S3 with 16 MB).")
         m = re.search(r"region `(\w+)' overflowed by (\d+) bytes", line)
         if m:
             return (f"the firmware needs {int(m.group(2)) // 1024} KB more RAM than the chip has ({m.group(1)}): "
@@ -258,7 +318,7 @@ class Job:
 
     def _run(self):
         try:
-            env = stage(self.project, self.base_env, self.log)
+            env = stage(self.project, self.base_env, self.log, self.only)
             if self.build:
                 pio = pio_exe()
                 if not pio:
@@ -271,14 +331,31 @@ class Job:
                                              stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
                                              bufsize=1, **flags)
                 why = None
+                import re
+                part = firm = None
                 for line in self.proc.stdout:
                     line = line.rstrip()
                     if line:
                         self.log(line)
                         why = why or self._diagnose(line)
+                        m = re.search(r"Flash: \[.*?\]\s+[\d.]+% \(used (\d+) bytes from (\d+) bytes\)", line)
+                        if m:
+                            firm, part = int(m.group(1)), int(m.group(2))
+                        m = re.search(r"program size \((\d+) bytes\) is greater than maximum allowed \((\d+) bytes\)", line)
+                        if m:
+                            firm, part = int(m.group(1)), int(m.group(2))
                     if self._cancel:
                         break
                 rc = self.proc.wait()
+                sizes = effect_sizes(env)
+                if part and firm:
+                    known = dict((self.project.options.get("flash_stats") or {}).get(self.base_env, {}).get("sizes") or {})
+                    known.update(sizes)
+                    self.stats = {"partition": part, "firmware": firm, "sizes": sizes, "known": known}
+                    self.log(f"measured: firmware {firm // 1024} KB of {part // 1024} KB; "
+                             f"{len(sizes)} effect(s) {sum(sizes.values()) // 1024} KB together")
+                    if firm > part:
+                        why = advice(self.stats, self.base_env)
                 if self._cancel:
                     self.result = "cancelled"; return
                 if rc != 0:

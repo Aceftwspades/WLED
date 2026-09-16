@@ -464,7 +464,15 @@ them within each group; ticked when done.
       its output in the dialog, and the binary goes to the device's
       `/update` as the web UI's update page sends it. Build and send are
       each a checkbox; Cancel stops the compiler; the env and address are
-      remembered per project.
+      remembered per project. **Effects to ship** is a checklist of the
+      list, each with its flash cost measured from the last build's object
+      files, and a budget line for the chosen env - about N KB of the
+      partition, or how many to untick - so a plain ESP32 (1.5 MB app
+      partition) can be fitted by choice rather than by trial. A build
+      that does not fit says in plain words whether unticking would help
+      or whether the environment's own firmware is already past the
+      partition (esp32dev_customfx with cube_fx and audioreactive is: no
+      selection fits, the S3 does).
 - [x] **Push the current effect's settings** (File > Project, Ctrl+Shift+P):
       the effect and palette found by name in the device's own lists, the
       five sliders, the three checkboxes and the three colours to the first

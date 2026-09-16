@@ -246,15 +246,18 @@ class Project:
             return fname
 
     # --- export ---------------------------------------------------------------------
-    def export(self):
-        """ledmap.json for the geometry and a usermod folder with the effects.
-        Returns the export directory."""
+    def export(self, files=None):
+        """ledmap.json for the geometry and a usermod folder with the effects
+        (the list, or the `files` given). Returns the export directory."""
         out = os.path.join(self.path, "export")
         with open(os.path.join(out, "ledmap.json"), "w", encoding="utf-8") as f:
             json.dump(self.geometry.ledmap(), f)
         um = os.path.join(out, "usermod_studio")
+        if os.path.isdir(um):
+            shutil.rmtree(um)                     # nothing from a previous, larger selection
         os.makedirs(um, exist_ok=True)
-        for fname in self.build_files():
+        files = [f for f in (files if files is not None else self.build_files()) if f in self.effect_files()]
+        for fname in files:
             shutil.copyfile(self.effect_path(fname), os.path.join(um, fname))
         # what the effects include and register through, so the folder
         # builds on its own as a usermod: the two headers, the bank's
@@ -267,7 +270,7 @@ class Project:
             json.dump({"name": "usermod_studio", "version": "1.0.0",
                        "description": "Effects written in the WLED Effect Studio",
                        "build": {"libArchive": False}}, f, indent=2)
-        titles = [self.effect_title(f) for f in self.build_files()]
+        titles = [self.effect_title(f) for f in files]
         g = self.geometry
         with open(os.path.join(um, "README.md"), "w", encoding="utf-8") as f:
             f.write("# Studio export\n\n"
