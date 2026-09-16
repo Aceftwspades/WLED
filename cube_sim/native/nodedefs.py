@@ -144,6 +144,39 @@ LIBRARY = [
             "  $out.level = $p.interpolate ? S_[i0_] + (S_[i1_] - S_[i0_]) * (fi_ - (float)i0_) : S_[i0_]; }",
             "the 16 FFT bins, smoothed, read at index 0..1 - a spectrum along a coordinate"),
          state=17),
+    _n("Frame count", "signals", "frame", [], [("first", B), ("count", F)], [],
+       "$out.first = (SEGENV.call == 0); $out.count = (float)SEGENV.call;",
+       "true on the effect's first frame - for seeding a field - and the frame count"),
+    _n("Loudest bin", "signals", "frame", [], [("bin", F), ("level", F)], [_p("from", "int", 1, 0, 15), _p("to", "int", 15, 0, 15)],
+       "{ um_data_t *um_ = cfx_getAudioData(); const uint8_t *fft_ = (const uint8_t *)um_->u_data[2];\n"
+       "  int b_ = $p.from; for (int i_ = $p.from; i_ <= $p.to && i_ < 16; i_++) if (fft_[i_] > fft_[b_]) b_ = i_;\n"
+       "  $out.bin = (float)b_ * (1.0f / 15.0f); $out.level = (float)fft_[b_] * (1.0f / 255.0f); }",
+       "which FFT bin is loudest (0..1 across the 16) and how loud - a hue for whatever the beat drops"),
+    _n("Gravity", "signals", "frame", [("tilt_x", F, 0.0), ("tilt_y", F, 0.0)], [("gx", F), ("gy", F), ("gz", F), ("sensor", B)], [],
+       "{ float gx_ = $in.tilt_x, gy_ = $in.tilt_y, gz_ = -1.0f; $out.sensor = false;\n"
+       "#ifdef GC_HAS_IMU\n"
+       "  { const CfxImuState &imu_ = cfx_imu(); if (imu_.valid) { gx_ = imu_.gx * (1.0f / 127.0f); gy_ = imu_.gy * (1.0f / 127.0f); gz_ = imu_.gz * (1.0f / 127.0f); $out.sensor = true; } }\n"
+       "#endif\n"
+       "  const float L_ = sqrtf(gx_ * gx_ + gy_ * gy_ + gz_ * gz_); const float iL_ = L_ > 1e-6f ? 1.0f / L_ : 1.0f;\n"
+       "  $out.gx = gx_ * iL_; $out.gy = gy_ * iL_; $out.gz = gz_ * iL_; }",
+       "where things fall, as a unit vector in the cube's frame: the IMU when one is fitted, else straight down tilted by the inputs"),
+    # Emitters: up to eight things dropped on a trigger, each with a position,
+    # a tag and an age; Shells reads them per pixel. `slots` carries where the
+    # list lives so the two nodes can be wired.
+    dict(_n("Emitters", "signals", "frame", [("trigger", B, False), ("x", F, 0.0), ("y", F, 0.0), ("z", F, 1.0),
+                                             ("tag", F, 0.0), ("life", F, 4.0)],
+            [("slots", F), ("count", F)], [_p("random", "bool", True)],
+            "{ float *E_ = $st; if ($first) for (int k_ = 0; k_ < 8; k_++) E_[k_ * 6 + 4] = -1.0f;\n"
+            "  int n_ = 0;\n"
+            "  for (int k_ = 0; k_ < 8; k_++) { float *e_ = E_ + k_ * 6; if (e_[4] >= 0.0f) { e_[4] += (float)dt * 0.001f; if (e_[4] > e_[5]) e_[4] = -1.0f; else n_++; } }\n"
+            "  if ($in.trigger) for (int k_ = 0; k_ < 8; k_++) { float *e_ = E_ + k_ * 6; if (e_[4] >= 0.0f) continue;\n"
+            "    float px_ = $in.x, py_ = $in.y, pz_ = $in.z;\n"
+            "    if ($p.random) { px_ = gc_rnd() * 2.0f - 1.0f; py_ = gc_rnd() * 2.0f - 1.0f; pz_ = gc_rnd() * 2.0f - 1.0f;\n"
+            "      const float m_ = fmaxf(fabsf(px_), fmaxf(fabsf(py_), fabsf(pz_))); if (m_ > 1e-6f) { px_ /= m_; py_ /= m_; pz_ /= m_; } if (pz_ < -0.99f) pz_ = 1.0f; }\n"
+            "    e_[0] = px_; e_[1] = py_; e_[2] = pz_; e_[3] = $in.tag; e_[4] = 0.0f; e_[5] = $in.life; n_++; break; }\n"
+            "  $out.slots = (float)(E_ - gc_st); $out.count = (float)n_; }",
+            "a list of up to eight events dropped on the trigger - at x, y, z, or at a random point on the surface - each with a tag and an age until `life`; feed `slots` to Shells"),
+         state=48),
     _n("Number", "signals", "frame", [], [("value", F)], [_p("value", "float", 1.0, -1000.0, 1000.0)],
        "$out.value = $p.value;", "a constant"),
     _n("Toggle", "signals", "frame", [], [("on", B)], [_p("on", "bool", True)],
@@ -162,16 +195,16 @@ LIBRARY = [
     _n("Position", "coords", "pixel", [], [("x", F), ("y", F), ("z", F)], [],
        "$out.x = X3; $out.y = Y3; $out.z = Z3;",
        "the pixel's position in the cube's -1..1 box (z up, 1 on the lid); x, y on a matrix"),
-    _n("Cube face", "coords", "pixel", [], [("face", F), ("a", F), ("b", F)], [],
+    _n("Cube face", "coords", "pixel", [], [("face", F), ("a", F), ("b", F), ("nx", F), ("ny", F), ("nz", F)], [],
        "{ const float ax_ = fabsf(X3), ay_ = fabsf(Y3), az_ = fabsf(Z3);\n"
-       "  float m_, pa_, pb_;\n"
-       "  if (cube && az_ >= ax_ && az_ >= ay_) { $out.face = Z3 >= 0 ? 4.0f : 5.0f; m_ = az_; pa_ = X3; pb_ = Y3; }\n"
-       "  else if (cube && ay_ >= ax_)          { $out.face = Y3 >= 0 ? 2.0f : 3.0f; m_ = ay_; pa_ = X3; pb_ = Z3; }\n"
-       "  else if (cube)                         { $out.face = X3 >= 0 ? 0.0f : 1.0f; m_ = ax_; pa_ = Y3; pb_ = Z3; }\n"
-       "  else                                   { $out.face = 4.0f; m_ = 1.0f; pa_ = X3; pb_ = Y3; }\n"
+       "  float m_, pa_, pb_; $out.nx = 0.0f; $out.ny = 0.0f; $out.nz = 0.0f;\n"
+       "  if (cube && az_ >= ax_ && az_ >= ay_) { $out.face = Z3 >= 0 ? 4.0f : 5.0f; m_ = az_; pa_ = X3; pb_ = Y3; $out.nz = Z3 >= 0 ? 1.0f : -1.0f; }\n"
+       "  else if (cube && ay_ >= ax_)          { $out.face = Y3 >= 0 ? 2.0f : 3.0f; m_ = ay_; pa_ = X3; pb_ = Z3; $out.ny = Y3 >= 0 ? 1.0f : -1.0f; }\n"
+       "  else if (cube)                         { $out.face = X3 >= 0 ? 0.0f : 1.0f; m_ = ax_; pa_ = Y3; pb_ = Z3; $out.nx = X3 >= 0 ? 1.0f : -1.0f; }\n"
+       "  else                                   { $out.face = 4.0f; m_ = 1.0f; pa_ = X3; pb_ = Y3; $out.nz = 1.0f; }\n"
        "  if (m_ < 1e-3f) m_ = 1e-3f;\n"
        "  $out.a = pa_ / m_ * 0.5f + 0.5f; $out.b = pb_ / m_ * 0.5f + 0.5f; }",
-       "which face (0..5: +x -x +y -y top bottom) and where on it, a and b 0..1 - tiles per face"),
+       "which face (0..5: +x -x +y -y top bottom), where on it (a, b 0..1 - tiles per face), and the face's outward normal"),
     _n("Cube ring", "coords", "pixel", [], [("around", F), ("depth", F)], [],
        "{ if (cube) {\n"
        "    $out.around = cfx_atan2f(Y3, X3) * (0.5f / 3.14159265f) + 0.5f;\n"
@@ -181,6 +214,9 @@ LIBRARY = [
     _n("Ring to uv", "coords", "pixel", [("around", F, 0.0), ("depth", F, 0.5)], [("u", F), ("v", F)], [],
        "gc_ring_uv($in.around, $in.depth, W, H, B, cube, $out.u, $out.v);",
        "Cube ring backwards: a point on the ring as the u, v Previous at reads - step depth to read up the walls"),
+    _n("Position to uv", "coords", "pixel", [("x", F, 0.0), ("y", F, 0.0), ("z", F, 1.0)], [("u", F), ("v", F)], [],
+       "gc_pos_uv($in.x, $in.y, $in.z, W, H, B, cube, $out.u, $out.v);",
+       "any point of the box back to the pixel that shows it (pushed onto the surface) - read a neighbour one step along any 3-D direction"),
     _n("Pixel", "coords", "pixel", [], [("x", F), ("y", F), ("i", F)], [],
        "$out.x = (float)px; $out.y = (float)py; $out.i = (float)(py * W + px);", "integer pixel and index"),
 
@@ -207,9 +243,26 @@ LIBRARY = [
        [_p("iterations", "int", 40, 4, 200), _p("julia", "bool", False)],
        "$out.value = $p.julia ? gc_mandel($in.jx, $in.jy, $in.x, $in.y, $p.iterations) : gc_mandel($in.x, $in.y, 0.0f, 0.0f, $p.iterations);",
        "escape time at the point x, y as 0..1 (1 = inside); Julia mode uses jx, jy as the constant and x, y as the start"),
+    _n("Shells", "generate", "pixel", [("slots", F, 0.0), ("x", F, 0.0), ("y", F, 0.0), ("z", F, 0.0), ("speed", F, 1.0), ("width", F, 0.2)],
+       [("value", F), ("tag", F), ("age", F)], [],
+       "{ const float *E_ = gc_st + (int)$in.slots; float sum_ = 0.0f, best_ = 0.0f, tag_ = 0.0f, age_ = 0.0f;\n"
+       "  for (int k_ = 0; k_ < 8; k_++) { const float *e_ = E_ + k_ * 6; if (e_[4] < 0.0f) continue;\n"
+       "    const float dx_ = $in.x - e_[0], dy_ = $in.y - e_[1], dz_ = $in.z - e_[2];\n"
+       "    const float d_ = sqrtf(dx_ * dx_ + dy_ * dy_ + dz_ * dz_); const float rad_ = e_[4] * $in.speed;\n"
+       "    float off_ = fabsf(d_ - rad_); if (off_ >= $in.width) continue;\n"
+       "    const float life_ = 1.0f - e_[4] / (e_[5] > 0.0f ? e_[5] : 1.0f); const float v_ = (1.0f - off_ / $in.width) * life_;\n"
+       "    sum_ += v_; if (v_ > best_) { best_ = v_; tag_ = e_[3]; age_ = e_[4]; } }\n"
+       "  $out.value = sum_ > 1.0f ? 1.0f : sum_; $out.tag = tag_; $out.age = age_; }",
+       "spherical shells expanding from each Emitter through 3-D space at `speed`, `width` thick, fading with age: the ripple that crosses every fold correctly"),
     _n("Hash", "generate", "pixel", [("x", F, 0.0), ("y", F, 0.0), ("seed", F, 0.0)], [("value", F)], [],
        "$out.value = gc_hash($in.x, $in.y, $in.seed);",
        "a random 0..1 that is the same every frame for the same x, y, seed - one per cell or column"),
+    _n("Torus knot", "generate", "pixel", [("nx", F, 0.0), ("ny", F, 0.0), ("nz", F, 1.0), ("tube", F, 0.25)],
+       [("on", F), ("along", F), ("edge", F), ("Nx", F), ("Ny", F), ("Nz", F)],
+       [_p("p", "int", 2, 1, 7), _p("q", "int", 3, 1, 9), _p("R", "float", 0.62), _p("r", "float", 0.3)],
+       "{ float al_, ed_, Nx_, Ny_, Nz_; const bool hit_ = gc_knot($in.nx, $in.ny, $in.nz, $p.p, $p.q, $p.R, $p.r, $in.tube, al_, ed_, Nx_, Ny_, Nz_);\n"
+       "  $out.on = hit_ ? 1.0f : 0.0f; $out.along = al_; $out.edge = ed_; $out.Nx = Nx_; $out.Ny = Ny_; $out.Nz = Nz_; }",
+       "a (p, q) torus knot seen from the cube's centre along a direction: hit or not, where along the knot (0..1), how near the tube's edge (0 centre, 1 rim), and the tube's normal there for lighting"),
     _n("Sparkle", "generate", "pixel", [("density", F, 0.1), ("seed", F, 0.0)], [("value", F)], [],
        "{ uint32_t h_ = (uint32_t)(px * 73856093u) ^ (uint32_t)(py * 19349663u) ^ (uint32_t)($in.seed * 83492791.0f); h_ ^= h_ >> 13; h_ *= 0x5bd1e995u; h_ ^= h_ >> 15; $out.value = ((h_ & 0xFFFFu) * (1.0f / 65535.0f) < $in.density) ? 1.0f : 0.0f; }",
        "random pixels lit, a fraction `density` of them; change seed over time to twinkle"),
@@ -498,6 +551,61 @@ static inline float gc_mandel(float cx, float cy, float zx, float zy, int maxit)
   const float nu = (float)i + 1.0f - logf(logf(sqrtf(x2 + y2)) / 0.6931472f) / 0.6931472f;
   return gc_sat(nu / (float)maxit);
 }
+// Any point in the -1..1 box back to the logical pixel that shows it: the
+// point is pushed onto the cube's surface (the box's own max-norm) and the
+// face mapping of cfx_pos is run backwards. A read one step along gravity,
+// or along any 3-D direction, is this and then Field or Previous at.
+static inline void gc_pos_uv(float X, float Y, float Z, int W, int H, int B, bool cube, float &u, float &v) {
+  if (!cube) { u = gc_sat((X + 1.0f) * 0.5f); v = gc_sat((1.0f - Y) * 0.5f); return; }
+  const float m = fmaxf(fabsf(X), fmaxf(fabsf(Y), fabsf(Z)));
+  if (m > 1e-6f) { X /= m; Y /= m; Z /= m; }
+  int px_, py_;
+  const float ax = fabsf(X), ay = fabsf(Y), az = fabsf(Z);
+  if (az >= ax && az >= ay) {                                   // top (or the missing bottom)
+    px_ = B + gc_q(X, B); py_ = B + gc_q(-Y, B);
+  } else if (ay >= ax) {
+    px_ = B + gc_q(X, B); py_ = (Y > 0) ? gc_q(Z, B) : 2 * B + gc_q(-Z, B);
+  } else {
+    py_ = B + gc_q(-Y, B); px_ = (X < 0) ? gc_q(Z, B) : 2 * B + gc_q(-Z, B);
+  }
+  u = (W > 1) ? (float)px_ / (float)(W - 1) : 0.5f; v = (H > 1) ? (float)py_ / (float)(H - 1) : 0.5f;
+}
+// A (P, Q) torus knot seen from the centre: does the ray along direction n
+// hit the knot's tube, and where. For azimuth u the knot passes P times, at
+// t = (u + 2 pi k) / P; each pass is a point in the half-plane of u, and the
+// ray hits its tube if it passes within `tube` of it. The nearest hit wins.
+static inline bool gc_knot(float nx, float ny, float nz, int P, int Q, float R, float r, float tube,
+                           float &along, float &edge, float &Nx, float &Ny, float &Nz) {
+  const float sxy = sqrtf(nx * nx + ny * ny);
+  const float u = cfx_atan2f(ny, nx);
+  float bestL = 1e9f, bestT = 0.0f, bestRho = 0.0f, bestZ = 0.0f, bestD2 = 0.0f;
+  const float tube2 = tube * tube;
+  for (int k = 0; k < P; k++) {
+    const float t = (u + 6.2831853f * (float)k) / (float)P;
+    const float v = (float)Q * t;
+    const float rho = R + r * cosf(v), zz = r * sinf(v);
+    const float ell = rho * sxy + zz * nz;
+    if (ell <= 0.0f) continue;
+    float d2 = rho * rho + zz * zz - ell * ell; if (d2 < 0.0f) d2 = 0.0f;
+    if (d2 < tube2) {
+      const float hit = ell - sqrtf(tube2 - d2);
+      if (hit > 0.0f && hit < bestL) { bestL = hit; bestT = t; bestRho = rho; bestZ = zz; bestD2 = d2; }
+    }
+  }
+  if (bestL > 1e8f) { along = 0.0f; edge = 1.0f; Nx = Ny = 0.0f; Nz = 1.0f; return false; }
+  const float qx = bestL * nx, qy = bestL * ny, qz = bestL * nz;
+  const float cu = (sxy > 1e-6f) ? (nx / sxy) : 1.0f, su = (sxy > 1e-6f) ? (ny / sxy) : 0.0f;
+  Nx = qx - bestRho * cu; Ny = qy - bestRho * su; Nz = qz - bestZ;
+  const float NL = sqrtf(Nx * Nx + Ny * Ny + Nz * Nz); const float iN = (NL > 1e-6f) ? 1.0f / NL : 1.0f;
+  Nx *= iN; Ny *= iN; Nz *= iN;
+  along = bestT * (1.0f / 6.2831853f); along -= floorf(along);
+  edge = sqrtf(bestD2) / tube;
+  return true;
+}
+#if __has_include("cube_fx_imu.h")
+  #include "cube_fx_imu.h"
+  #define GC_HAS_IMU 1
+#endif
 static inline uint32_t gc_prev_at(float u, float v, int W, int H, bool is2d) {
   int x = (int)floorf(gc_sat(u) * (float)(W - 1) + 0.5f), y = (int)floorf(gc_sat(v) * (float)(H - 1) + 0.5f);
   return is2d ? SEGMENT.getPixelColorXY(x, y) : SEGMENT.getPixelColor(x);

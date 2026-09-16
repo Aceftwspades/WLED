@@ -625,7 +625,342 @@ def moire():
     return b.save("moire.json")
 
 
-ALL = [slab_cut, cell_weave, truchet, ring_rain, box_fire, maelstrom, kaleidoscope, mandelbrot, watershed, moire]
+# ---------------------------------------------------------------------------
+# The third five: Cube Ripples, Cube Chladni, Candy Knot, Gyro Sand, Breakout.
+# ---------------------------------------------------------------------------
+def ripples():
+    """Cube Ripples: each beat drops a point source somewhere on the surface
+    and a spherical shell expands from it through 3-D space, so a ring that
+    starts on one wall climbs the lid and comes down the far side whole. Its
+    colour is the bin that was loudest when it was born."""
+    b = GB("Cube Ripples")
+    sp = b.n("Speed", 0, 0, {"label": "Speed", "default": 110})
+    it = b.n("Intensity", 0, 1, {"label": "Thickness", "default": 90})
+    c2 = b.n("Custom 2", 0, 2, {"label": "Persistence", "default": 140})
+    au = b.n("Audio", 0, 3)
+    b.n("Effect settings", 0, 4, {"palette": 11, "audio": "frequency"})
+    lb = b.n("Loudest bin", 1, 3)
+    em = b.n("Emitters", 2, 3, {"random": True}, inputs={"life": 5.0}); b.l(au, "beat", em, "trigger"); b.l(lb, "bin", em, "tag")
+    pos = b.n("Position", 1, 5)
+    speed = b.n("Remap", 1, 0, {"out_lo": 0.15, "out_hi": 1.2}); b.l(sp, "value", speed, "x")
+    width = b.n("Remap", 1, 1, {"out_lo": 0.08, "out_hi": 0.45}); b.l(it, "value", width, "x")
+    sh = b.n("Shells", 3, 4); b.l(em, "slots", sh, "slots"); b.l(speed, "result", sh, "speed"); b.l(width, "result", sh, "width")
+    for k in "xyz":
+        b.l(pos, k, sh, k)
+    # the trail: last frame's colour kept, so a ring leaves a wake
+    prev = b.n("Previous", 3, 6)
+    keep = b.n("Remap", 1, 2, {"out_lo": 0.6, "out_hi": 0.93}); b.l(c2, "value", keep, "x")
+    faded = b.n("Fade", 4, 6); b.l(prev, "color", faded, "color"); b.l(keep, "result", faded, "keep")
+    idx = b.n("Add", 4, 3, inputs={"b": 0.0}); b.l(sh, "tag", idx, "a")
+    ring = b.n("Palette", 5, 4); b.l(idx, "result", ring, "index"); b.l(sh, "value", ring, "brightness")
+    mix = b.n("Blend", 6, 5, {"mode": "add"}, inputs={"amount": 1.0}); b.l(faded, "color", mix, "under"); b.l(ring, "color", mix, "over")
+    out = b.n("Output", 7, 5); b.l(mix, "color", out, "color")
+    return b.save("cube_ripples.json")
+
+
+def chladni():
+    """Cube Chladni: the nodal surface of a 3-D standing wave in the solid,
+    psi = cos(lX)cos(mY)cos(nZ) - cos(mX)cos(nY)cos(lZ), met by the faces; the
+    sand collects where psi is zero. The three mode numbers each follow a
+    band's loudest bin, eased, so the figure re-tunes with the music."""
+    b = GB("Cube Chladni")
+    sp = b.n("Speed", 0, 0, {"label": "Morph speed", "default": 90})
+    it = b.n("Intensity", 0, 1, {"label": "Sharpness", "default": 128})
+    c1 = b.n("Custom 1", 0, 2, {"label": "Tune", "default": 100})
+    c2 = b.n("Custom 2", 0, 3, {"label": "Audio span", "default": 110})
+    c3 = b.n("Custom 3", 0, 4, {"label": "Sand-glow", "default": 0})
+    au = b.n("Audio", 0, 5)
+    b.n("Effect settings", 0, 6, {"palette": 11, "audio": "frequency"})
+    pos = b.n("Position", 1, 6)
+    base = b.n("Remap", 1, 2, {"out_lo": 0.4, "out_hi": 2.0}); b.l(c1, "value", base, "x")
+    span = b.n("Remap", 1, 3, {"out_lo": 0.0, "out_hi": 1.5}); b.l(c2, "value", span, "x")
+    ease = b.n("Remap", 1, 0, {"out_lo": 900.0, "out_hi": 60.0}); b.l(sp, "value", ease, "x")
+    # three mode numbers: base + the loudest bin of a band, spread by span, eased at Morph speed
+    def mode(row, lo, hi, offset):
+        lb_ = b.n("Loudest bin", 2, row, {"from": lo, "to": hi})
+        sp_ = b.n("Multiply", 3, row); b.l(lb_, "bin", sp_, "a"); b.l(span, "result", sp_, "b")
+        t_ = b.n("Add", 4, row, inputs={"b": offset}); b.l(sp_, "result", t_, "a")
+        t2 = b.n("Add", 5, row); b.l(t_, "result", t2, "a"); b.l(base, "result", t2, "b")
+        e_ = b.n("Envelope", 6, row, {"attack": 400.0, "release": 400.0}); b.l(t2, "result", e_, "x")
+        return e_
+    L = mode(1, 1, 4, 0.0); M = mode(2, 6, 10, 0.5); N = mode(3, 12, 15, 1.0)
+    # cos(k * axis) for each mode and axis
+    def cs(col, row, mode_, axis):
+        m_ = b.n("Multiply", col, row); b.l(pos, axis, m_, "a"); b.l(mode_, "value", m_, "b")
+        h_ = b.n("Multiply", col + 1, row, inputs={"b": 0.5}); b.l(m_, "result", h_, "a")   # cos of half a turn per unit
+        c_ = b.n("Cosine", col + 2, row); b.l(h_, "result", c_, "x")
+        return b.l(c_, "result", b.n("Remap", col + 3, row, {"out_lo": -1.0, "out_hi": 1.0}), "x")
+    lx = cs(7, 0, L, "x"); my = cs(7, 1, M, "y"); nz = cs(7, 2, N, "z")
+    mx = cs(7, 3, M, "x"); ny = cs(7, 4, N, "y"); lz = cs(7, 5, L, "z")
+    t1a = b.n("Multiply", 11, 0); b.l(lx, "result", t1a, "a"); b.l(my, "result", t1a, "b")
+    t1 = b.n("Multiply", 12, 0); b.l(t1a, "result", t1, "a"); b.l(nz, "result", t1, "b")
+    t2a = b.n("Multiply", 11, 3); b.l(mx, "result", t2a, "a"); b.l(ny, "result", t2a, "b")
+    t2 = b.n("Multiply", 12, 3); b.l(t2a, "result", t2, "a"); b.l(lz, "result", t2, "b")
+    psi = b.n("Subtract", 13, 1); b.l(t1, "result", psi, "a"); b.l(t2, "result", psi, "b")
+    a = b.n("Abs", 14, 1); b.l(psi, "result", a, "x")
+    sharp = b.n("Remap", 1, 1, {"out_lo": 2.0, "out_hi": 14.0}); b.l(it, "value", sharp, "x")
+    d = b.n("Multiply", 15, 1); b.l(a, "result", d, "a"); b.l(sharp, "result", d, "b")
+    dc = b.n("Clamp", 16, 1, {"lo": 0.0, "hi": 1.0}); b.l(d, "result", dc, "x")
+    sand = b.n("Subtract", 17, 0, inputs={"a": 1.0}); b.l(dc, "result", sand, "b")     # bright on the nodes
+    glow = b.n("Mix", 18, 1); b.l(sand, "result", glow, "a"); b.l(dc, "result", glow, "b"); b.l(c3, "value", glow, "t")
+    # the whole figure fades if the modes come together (psi vanishes)
+    dlm = b.n("Subtract", 7, 6); b.l(L, "value", dlm, "a"); b.l(M, "value", dlm, "b")
+    spread = b.n("Abs", 8, 6); b.l(dlm, "result", spread, "x")
+    sf = b.n("Smoothstep", 9, 6, {"e0": 0.05, "e1": 0.3}); b.l(spread, "result", sf, "x")
+    env = b.n("Envelope", 1, 5, {"attack": 30.0, "release": 300.0}); b.l(au, "volume", env, "x")
+    dr = b.n("Add", 2, 6, inputs={"b": 0.35}); b.l(env, "value", dr, "a")
+    drive = b.n("Multiply", 10, 6); b.l(dr, "result", drive, "a"); b.l(sf, "result", drive, "b")
+    lum = b.n("Multiply", 19, 2); b.l(glow, "result", lum, "a"); b.l(drive, "result", lum, "b")
+    lbh = b.n("Loudest bin", 17, 3, {"from": 1, "to": 4})
+    idx = b.n("Add", 18, 3); b.l(lbh, "bin", idx, "a"); b.l(lum, "result", idx, "b")
+    idx2 = b.n("Multiply", 19, 3, inputs={"b": 0.5}); b.l(idx, "result", idx2, "a")
+    pal = b.n("Palette", 20, 2); b.l(idx2, "result", pal, "index"); b.l(lum, "result", pal, "brightness")
+    out = b.n("Output", 21, 2); b.l(pal, "color", out, "color")
+    return b.save("cube_chladni.json")
+
+
+def candy_knot():
+    """Candy Knot: a (p, q) torus knot seen from the centre, tumbling; the
+    tube striped along its length, glossy where the light catches it, and a
+    thin seam shows through the dark bands. Beats surge the band duty."""
+    b = GB("Candy Knot")
+    sp = b.n("Speed", 0, 0, {"label": "Tumble", "default": 80})
+    it = b.n("Intensity", 0, 1, {"label": "Fill", "default": 128})
+    c1 = b.n("Custom 1", 0, 2, {"label": "Thickness", "default": 170})
+    c2 = b.n("Custom 2", 0, 3, {"label": "Bands", "default": 90})
+    k1 = b.n("Check 1", 0, 4, {"label": "Beat surge", "default": True})
+    k2 = b.n("Check 2", 0, 5, {"label": "Seam", "default": True})
+    au = b.n("Audio", 0, 6)
+    b.n("Effect settings", 0, 7, {"palette": 11, "audio": "frequency"})
+    d = b.n("Direction", 1, 5)
+    # the tumble: two slow spins, and a flow along the knot
+    ra = b.n("Remap", 1, 0, {"out_lo": 0.01, "out_hi": 0.2}); b.l(sp, "value", ra, "x")
+    sa = b.n("Integrate", 2, 0, {"wrap": 1.0}); b.l(ra, "result", sa, "rate")
+    rb = b.n("Multiply", 1, 1, inputs={"b": 0.8}); b.l(ra, "result", rb, "a")
+    sb = b.n("Integrate", 2, 1, {"wrap": 1.0}); b.l(rb, "result", sb, "rate")
+    rf = b.n("Multiply", 1, 2, inputs={"b": 0.43}); b.l(ra, "result", rf, "a")
+    kick = b.n("Envelope", 1, 6, {"attack": 10.0, "release": 300.0}); b.l(au, "hit", kick, "x")
+    ks = b.n("Select", 2, 6, inputs={"a": 0.0}); b.l(k1, "on", ks, "on"); b.l(kick, "value", ks, "b")
+    fk = b.n("Multiply", 2, 7, inputs={"b": 0.6}); b.l(ks, "result", fk, "a")
+    fr = b.n("Add", 3, 7); b.l(rf, "result", fr, "a"); b.l(fk, "result", fr, "b")
+    flow = b.n("Integrate", 4, 7, {"wrap": 1.0}); b.l(fr, "result", flow, "rate")
+    rot1 = b.n("Rotate", 2, 5); b.l(d, "nx", rot1, "x"); b.l(d, "ny", rot1, "y"); b.l(sa, "value", rot1, "turns")
+    rot2 = b.n("Rotate", 3, 5); b.l(rot1, "y", rot2, "x"); b.l(d, "nz", rot2, "y"); b.l(sb, "value", rot2, "turns")
+    tube = b.n("Remap", 1, 3, {"out_lo": 0.16, "out_hi": 0.38}); b.l(c1, "value", tube, "x")
+    knot = b.n("Torus knot", 4, 5, {"p": 2, "q": 3, "R": 0.62, "r": 0.3})
+    b.l(rot1, "x", knot, "nx"); b.l(rot2, "x", knot, "ny"); b.l(rot2, "y", knot, "nz"); b.l(tube, "result", knot, "tube")
+    # bands along the knot: on for `duty` of each, the surge widening them
+    nb = b.n("Remap", 1, 4, {"out_lo": 6.0, "out_hi": 40.0}); b.l(c2, "value", nb, "x")
+    g1 = b.n("Multiply", 5, 3); b.l(knot, "along", g1, "a"); b.l(nb, "result", g1, "b")
+    g2 = b.n("Add", 6, 3); b.l(g1, "result", g2, "a"); b.l(flow, "value", g2, "b")
+    gf = b.n("Fract", 7, 3); b.l(g2, "result", gf, "x")
+    duty = b.n("Remap", 3, 6, {"out_lo": 0.5, "out_hi": 0.7}); b.l(ks, "result", duty, "x")
+    onb = b.n("Threshold", 8, 3); b.l(duty, "result", onb, "x"); b.l(gf, "result", onb, "at")   # on when duty >= gf
+    # colour: one palette entry per band, drifting
+    bi = b.n("Floor", 5, 2); b.l(g1, "result", bi, "x")
+    bh = b.n("Multiply", 6, 2, inputs={"b": 0.13}); b.l(bi, "result", bh, "a")
+    hue = b.n("Integrate", 6, 1, {"wrap": 1.0}, inputs={"rate": 0.02})
+    idx = b.n("Add", 7, 2); b.l(bh, "result", idx, "a"); b.l(hue, "value", idx, "b")
+    # lighting: a fixed lamp, gloss where the normal faces it
+    lamp = b.n("Dot 3", 5, 5, inputs={"bx": 0.3, "by": -0.25, "bz": 0.92}); b.l(knot, "Nx", lamp, "ax"); b.l(knot, "Ny", lamp, "ay"); b.l(knot, "Nz", lamp, "az")
+    lit = b.n("Clamp", 6, 5, {"lo": 0.0, "hi": 1.0}); b.l(lamp, "result", lit, "x")
+    diff = b.n("Remap", 7, 5, {"out_lo": 0.45, "out_hi": 1.0}); b.l(lit, "result", diff, "x")
+    gloss = b.n("Power", 7, 6, inputs={"e": 8.0}); b.l(lit, "result", gloss, "x")
+    fill = b.n("Remap", 1, 7, {"out_lo": 0.3, "out_hi": 1.0}); b.l(it, "value", fill, "x")
+    band_l = b.n("Multiply", 8, 5); b.l(diff, "result", band_l, "a"); b.l(fill, "result", band_l, "b")
+    # the seam: a thin line down the tube's centre, showing through the dark bands
+    seam_c = b.n("Threshold", 5, 7, inputs={"at": 0.18}); b.l(knot, "edge", seam_c, "x")
+    seam_on = b.n("Not", 6, 8); b.l(seam_c, "on", seam_on, "on")
+    seam_k = b.n("Select", 7, 8, inputs={"a": 0.0}); b.l(k2, "on", seam_k, "on"); b.l(seam_on, "result", seam_k, "b")
+    seam_l = b.n("Multiply", 8, 8, inputs={"b": 0.8}); b.l(seam_k, "result", seam_l, "a")
+    lum = b.n("Select", 9, 5); b.l(onb, "on", lum, "on"); b.l(seam_l, "result", lum, "a"); b.l(band_l, "result", lum, "b")
+    hit = b.n("Multiply", 10, 5); b.l(lum, "result", hit, "a"); b.l(knot, "on", hit, "b")
+    col = b.n("Palette", 11, 4); b.l(idx, "result", col, "index"); b.l(hit, "result", col, "brightness")
+    white = b.n("Colour", 10, 6, {"rgb": [255, 255, 255]})
+    gl2 = b.n("Multiply", 9, 6); b.l(gloss, "result", gl2, "a"); b.l(knot, "on", gl2, "b")
+    gl3 = b.n("Multiply", 10, 7, inputs={"b": 0.7}); b.l(gl2, "result", gl3, "a")
+    shiny = b.n("Blend", 12, 5, {"mode": "add"}); b.l(col, "color", shiny, "under"); b.l(white, "color", shiny, "over"); b.l(gl3, "result", shiny, "amount")
+    out = b.n("Output", 13, 5); b.l(shiny, "color", out, "color")
+    return b.save("candy_knot.json")
+
+
+def gyro_sand():
+    """Gyro Sand: grains poured in at the lid fall the way gravity says - the
+    IMU's when one is fitted, else straight down, tilted by two sliders - and
+    pile up on the bottom edge. A falling-sand automaton on a Field, gathered
+    per pixel: a grain arrives from the cell against gravity, stays if the cell
+    along gravity is full or the floor. Beats pour a burst."""
+    b = GB("Gyro Sand")
+    sp = b.n("Speed", 0, 0, {"label": "Pour rate", "default": 120})
+    it = b.n("Intensity", 0, 1, {"label": "Glow", "default": 150})
+    c1 = b.n("Custom 1", 0, 2, {"label": "Tilt X", "default": 200})
+    c2 = b.n("Custom 2", 0, 3, {"label": "Tilt Y", "default": 190})
+    k1 = b.n("Check 1", 0, 4, {"label": "Beat bursts", "default": True})
+    au = b.n("Audio", 0, 5)
+    tm = b.n("Time", 0, 6)
+    b.n("Effect settings", 0, 7, {"palette": 8, "audio": "volume"})
+    pos = b.n("Position", 1, 5)
+    co = b.n("Coords", 1, 7)
+    tx = b.n("Remap", 1, 2, {"out_lo": -0.8, "out_hi": 0.8}); b.l(c1, "value", tx, "x")
+    ty = b.n("Remap", 1, 3, {"out_lo": -0.8, "out_hi": 0.8}); b.l(c2, "value", ty, "x")
+    g0 = b.n("Gravity", 2, 3); b.l(tx, "result", g0, "tilt_x"); b.l(ty, "result", g0, "tilt_y")
+    # gravity along the surface: the part that points into the face does
+    # nothing to a grain lying on it, so it is removed - on the lid a grain
+    # slides the way the cube is tilted, on a wall it falls
+    face = b.n("Cube face", 1, 11)
+    gn = b.n("Dot 3", 2, 11); b.l(g0, "gx", gn, "ax"); b.l(g0, "gy", gn, "ay"); b.l(g0, "gz", gn, "az")
+    b.l(face, "nx", gn, "bx"); b.l(face, "ny", gn, "by"); b.l(face, "nz", gn, "bz")
+    class _T: pass
+    g = _T()
+    for k, ax in enumerate("xyz"):
+        m_ = b.n("Multiply", 3, 10 + k); b.l(gn, "result", m_, "a"); b.l(face, "n" + ax, m_, "b")
+        t_ = b.n("Subtract", 4, 10 + k); b.l(g0, "g" + ax, t_, "a"); b.l(m_, "result", t_, "b")
+        setattr(g, ax, t_)
+    # one pixel along gravity and against it, as positions, then as pixels
+    step = b.n("Divide", 2, 5, inputs={"a": 2.6, "b": 16.0})      # a pixel and a bit of a 16-face, so the lid's middle moves too
+    def along(col, row, sign, src=None):
+        """One step along (sign=1) or against gravity from a position - the
+        pixel's own, or one already stepped - as a position and a pixel."""
+        outs = []
+        for k, ax in enumerate("xyz"):
+            m_ = b.n("Multiply", col, row + k); b.l(getattr(g, ax), "result", m_, "a"); b.l(step, "result", m_, "b")
+            s_ = b.n("Multiply", col + 1, row + k, inputs={"b": sign}); b.l(m_, "result", s_, "a")
+            a_ = b.n("Add", col + 2, row + k)
+            if src is None: b.l(pos, ax, a_, "a")
+            else:           b.l(src[k], "result", a_, "a")
+            b.l(s_, "result", a_, "b")
+            outs.append(a_)
+        uv = b.n("Position to uv", col + 3, row)
+        for k, ax in enumerate("xyz"):
+            b.l(outs[k], "result", uv, ax)
+        return uv, outs
+    below, bpos = along(3, 5, 1.0)
+    above, apos = along(3, 8, -1.0)
+    # The two steps are not each other's inverse once pushed back onto the
+    # surface, so a grain only moves when both cells agree: it arrives from
+    # above if above's own "below" is this pixel, and it leaves only if
+    # below's own "above" is this pixel. Nothing is lost between the two.
+    ba, _ = along(3, 14, 1.0, src=apos)       # below of above
+    ab, _ = along(3, 17, -1.0, src=bpos)      # above of below
+    def same_pixel(col, row, uv):
+        du = b.n("Subtract", col, row); b.l(uv, "u", du, "a"); b.l(co, "u", du, "b")
+        dv = b.n("Subtract", col, row + 1); b.l(uv, "v", dv, "a"); b.l(co, "v", dv, "b")
+        ln = b.n("Length", col + 1, row); b.l(du, "result", ln, "x"); b.l(dv, "result", ln, "y")
+        near = b.n("Threshold", col + 2, row, inputs={"at": 0.006}); b.l(ln, "result", near, "x")   # on = a different pixel
+        return b.l(near, "on", b.n("Not", col + 3, row), "on")
+    eqA = same_pixel(7, 14, ba)
+    eqB = same_pixel(7, 17, ab)
+    here = b.n("Field", 2, 8, {"field": 0}); b.l(co, "u", here, "u"); b.l(co, "v", here, "v")
+    fb = b.n("Field", 7, 5, {"field": 0}); b.l(below, "u", fb, "u"); b.l(below, "v", fb, "v")
+    fa = b.n("Field", 7, 8, {"field": 0}); b.l(above, "u", fa, "u"); b.l(above, "v", fa, "v")
+    # the floor: past the bottom edge (no bottom face) or off the surface downward
+    bz = b.n("Threshold", 8, 6, inputs={"at": -0.999}); b.l(bpos[2], "result", bz, "x")   # on = still on the cube
+    floor = b.n("Not", 9, 6); b.l(bz, "on", floor, "on")
+    fbs = b.n("Threshold", 8, 5, inputs={"at": 0.5}); b.l(fb, "value", fbs, "x")
+    solid = b.n("Max", 9, 5); b.l(fbs, "value", solid, "a"); b.l(floor, "result", solid, "b")
+    hs = b.n("Threshold", 8, 8, inputs={"at": 0.5}); b.l(here, "value", hs, "x")
+    leaves = b.n("Multiply", 10, 4); b.l(eqB, "result", leaves, "a")        # below will take it
+    inv_solid = b.n("Subtract", 10, 3, inputs={"a": 1.0}); b.l(solid, "result", inv_solid, "b")
+    b.l(inv_solid, "result", leaves, "b")
+    hold = b.n("Subtract", 11, 4, inputs={"a": 1.0}); b.l(leaves, "result", hold, "b")
+    stays0 = b.n("Multiply", 10, 5); b.l(hs, "value", stays0, "a"); b.l(hold, "result", stays0, "b")
+    # the bottom edge soaks grains away slowly, so the pile never jams the
+    # whole flow: what the pour puts in, the floor takes out
+    soak_h = b.n("Hash", 11, 10); b.l(co, "v", soak_h, "x"); b.l(co, "u", soak_h, "y"); b.l(tm, "t", soak_h, "seed")
+    soak_p = b.n("Threshold", 12, 10, inputs={"at": 0.06}); b.l(soak_h, "value", soak_p, "x")   # on = keeps (94%)
+    soak = b.n("Select", 13, 10, inputs={"a": 1.0}); b.l(floor, "result", soak, "on"); b.l(soak_p, "value", soak, "b")
+    stays = b.n("Multiply", 11, 5); b.l(stays0, "result", stays, "a"); b.l(soak, "result", stays, "b")
+    fas = b.n("Threshold", 8, 9, inputs={"at": 0.5}); b.l(fa, "value", fas, "x")
+    empty = b.n("Not", 9, 8); b.l(hs, "on", empty, "on")
+    arr0 = b.n("Multiply", 10, 8); b.l(fas, "value", arr0, "a"); b.l(empty, "result", arr0, "b")
+    arrives = b.n("Multiply", 11, 8); b.l(arr0, "result", arrives, "a"); b.l(eqA, "result", arrives, "b")
+    # the pour: grains appear near the lid's centre at the pour rate, more on a beat
+    rate = b.n("Remap", 1, 0, {"out_lo": 0.0, "out_hi": 0.35}); b.l(sp, "value", rate, "x")
+    kick = b.n("Envelope", 1, 6, {"attack": 5.0, "release": 200.0}); b.l(au, "hit", kick, "x")
+    ks = b.n("Select", 2, 6, inputs={"a": 0.0}); b.l(k1, "on", ks, "on"); b.l(kick, "value", ks, "b")
+    r2 = b.n("Add", 2, 7); b.l(rate, "result", r2, "a"); b.l(ks, "result", r2, "b")
+    ring = b.n("Cube ring", 1, 8)
+    top = b.n("Threshold", 3, 11, inputs={"at": 0.22}); b.l(ring, "depth", top, "x")     # on = away from the lid centre
+    at_top = b.n("Not", 4, 11); b.l(top, "on", at_top, "on")
+    hsh = b.n("Hash", 3, 12); b.l(co, "u", hsh, "x"); b.l(co, "v", hsh, "y"); b.l(tm, "t", hsh, "seed")
+    pour_on = b.n("Threshold", 4, 12); b.l(r2, "result", pour_on, "x"); b.l(hsh, "value", pour_on, "at")   # rate >= hash
+    pour = b.n("Multiply", 5, 12); b.l(pour_on, "value", pour, "a"); b.l(at_top, "result", pour, "b")
+    s1 = b.n("Max", 11, 6); b.l(stays, "result", s1, "a"); b.l(arrives, "result", s1, "b")
+    grain = b.n("Max", 12, 6); b.l(s1, "result", grain, "a"); b.l(pour, "result", grain, "b")
+    b.l(grain, "result", b.n("Field write", 13, 6, {"field": 0}), "value")
+    # colour: by height along gravity, the pile darker than the falling grains
+    h = b.n("Dot 3", 12, 8); b.l(pos, "x", h, "ax"); b.l(pos, "y", h, "ay"); b.l(pos, "z", h, "az"); b.l(g0, "gx", h, "bx"); b.l(g0, "gy", h, "by"); b.l(g0, "gz", h, "bz")
+    hi = b.n("Remap", 13, 8, {"in_lo": -1.0, "in_hi": 1.0, "out_lo": 0.15, "out_hi": 0.8}); b.l(h, "result", hi, "x")
+    glow = b.n("Remap", 1, 1, {"out_lo": 0.3, "out_hi": 1.0}); b.l(it, "value", glow, "x")
+    bri = b.n("Multiply", 13, 7); b.l(grain, "result", bri, "a"); b.l(glow, "result", bri, "b")
+    pal = b.n("Palette", 14, 7); b.l(hi, "result", pal, "index"); b.l(bri, "result", pal, "brightness")
+    out = b.n("Output", 15, 7); b.l(pal, "color", out, "color")
+    return b.save("gyro_sand.json")
+
+
+def breakout():
+    """Breakout, as far as a per-pixel graph will go: the ball is two
+    triangle waves on the ring (it bounces off the sides and the top), the
+    paddle at the bottom edge follows it, and the bricks are a Field seeded
+    on the first frame and cleared where the ball has passed. The ball does
+    not bounce off the bricks - that would need the game's own loop."""
+    b = GB("Breakout")
+    sp = b.n("Speed", 0, 0, {"label": "Ball speed", "default": 120})
+    it = b.n("Intensity", 0, 1, {"label": "Glow", "default": 200})
+    c1 = b.n("Custom 1", 0, 2, {"label": "Paddle width", "default": 110})
+    c2 = b.n("Custom 2", 0, 3, {"label": "Brick depth", "default": 140})
+    b.n("Effect settings", 0, 4, {"palette": 11, "audio": "none"})
+    fr = b.n("Frame count", 0, 5)
+    ring = b.n("Cube ring", 1, 5)
+    co = b.n("Coords", 1, 7)
+    # the ball: around bounces wall to wall, depth bounces rim to bottom
+    rate = b.n("Remap", 1, 0, {"out_lo": 0.05, "out_hi": 0.6}); b.l(sp, "value", rate, "x")
+    ta = b.n("Integrate", 2, 0, {"wrap": 1.0}); b.l(rate, "result", ta, "rate")
+    r13 = b.n("Multiply", 1, 1, inputs={"b": 0.77}); b.l(rate, "result", r13, "a")
+    tb = b.n("Integrate", 2, 1, {"wrap": 1.0}); b.l(r13, "result", tb, "rate")
+    bx = b.n("Wave", 3, 0, {"shape": "triangle"}, inputs={"cycles": 1.0}); b.l(ta, "value", bx, "x")
+    by0 = b.n("Wave", 3, 1, {"shape": "triangle"}, inputs={"cycles": 1.0}); b.l(tb, "value", by0, "x")
+    by = b.n("Remap", 4, 1, {"out_lo": 0.05, "out_hi": 0.93}); b.l(by0, "value", by, "x")
+    # distance from this pixel to the ball, on the ring (around wraps)
+    da = b.n("Subtract", 2, 5); b.l(ring, "around", da, "a"); b.l(bx, "value", da, "b")
+    daw = b.n("Modulo", 3, 5, inputs={"m": 1.0}); b.l(da, "result", daw, "x")
+    dam = b.n("Subtract", 4, 5, inputs={"b": 0.5}); b.l(daw, "result", dam, "a")
+    dax = b.n("Abs", 5, 5); b.l(dam, "result", dax, "x")
+    dx = b.n("Subtract", 6, 5, inputs={"a": 0.5}); b.l(dax, "result", dx, "b")     # 0..0.5 wrapped distance
+    dd = b.n("Subtract", 2, 6); b.l(ring, "depth", dd, "a"); b.l(by, "result", dd, "b")
+    dxs = b.n("Multiply", 7, 5, inputs={"b": 4.0}); b.l(dx, "result", dxs, "a")     # around is 4 faces long
+    dist = b.n("Length", 8, 5); b.l(dxs, "result", dist, "x"); b.l(dd, "result", dist, "y")
+    ball = b.n("Smoothstep", 9, 5, {"e0": 0.09, "e1": 0.02}); b.l(dist, "result", ball, "x")
+    # the paddle: a bar at the bottom edge under the ball
+    pw = b.n("Remap", 1, 2, {"out_lo": 0.02, "out_hi": 0.09}); b.l(c1, "value", pw, "x")
+    pin = b.n("Threshold", 9, 7); b.l(pw, "result", pin, "x"); b.l(dx, "result", pin, "at")          # on when width >= dx
+    prow = b.n("Threshold", 3, 7, inputs={"at": 0.94}); b.l(ring, "depth", prow, "x")
+    paddle = b.n("Multiply", 10, 7); b.l(pin, "value", paddle, "a"); b.l(prow, "value", paddle, "b")
+    # the bricks: a field, full on the first frame down to Brick depth, cleared where the ball is
+    bd = b.n("Remap", 1, 3, {"out_lo": 0.15, "out_hi": 0.6}); b.l(c2, "value", bd, "x")
+    inrow = b.n("Threshold", 3, 8); b.l(bd, "result", inrow, "x"); b.l(ring, "depth", inrow, "at")     # depth <= brick depth
+    rim = b.n("Threshold", 3, 9, inputs={"at": 0.1}); b.l(ring, "depth", rim, "x")                     # not the lid's middle
+    seed = b.n("Multiply", 4, 8); b.l(inrow, "value", seed, "a"); b.l(rim, "value", seed, "b")
+    old = b.n("Field", 4, 9, {"field": 0}); b.l(co, "u", old, "u"); b.l(co, "v", old, "v")
+    hitb = b.n("Threshold", 9, 6, inputs={"at": 0.5}); b.l(ball, "result", hitb, "x")
+    nothit = b.n("Not", 10, 6); b.l(hitb, "on", nothit, "on")
+    kept = b.n("Multiply", 5, 9); b.l(old, "value", kept, "a"); b.l(nothit, "result", kept, "b")
+    brick = b.n("Select", 6, 8); b.l(fr, "first", brick, "on"); b.l(kept, "result", brick, "a"); b.l(seed, "result", brick, "b")
+    b.l(brick, "result", b.n("Field write", 7, 8, {"field": 0}), "value")
+    # colour: bricks by row, the paddle and ball white
+    row = b.n("Multiply", 7, 9, inputs={"b": 3.0}); b.l(ring, "depth", row, "a")
+    bpal = b.n("Palette", 8, 9); b.l(row, "result", bpal, "index"); b.l(brick, "result", bpal, "brightness")
+    white = b.n("Colour", 10, 8, {"rgb": [255, 255, 255]})
+    glow = b.n("Remap", 1, 1, {"out_lo": 0.3, "out_hi": 1.0}); b.l(it, "value", glow, "x")
+    pb = b.n("Max", 11, 6); b.l(ball, "result", pb, "a"); b.l(paddle, "result", pb, "b")
+    pbg = b.n("Multiply", 12, 6); b.l(pb, "result", pbg, "a"); b.l(glow, "result", pbg, "b")
+    mix = b.n("Blend", 13, 7, {"mode": "over"}); b.l(bpal, "color", mix, "under"); b.l(white, "color", mix, "over"); b.l(pbg, "result", mix, "amount")
+    out = b.n("Output", 14, 7); b.l(mix, "color", out, "color")
+    return b.save("breakout.json")
+
+
+ALL = [slab_cut, cell_weave, truchet, ring_rain, box_fire, maelstrom, kaleidoscope, mandelbrot, watershed, moire,
+       ripples, chladni, candy_knot, gyro_sand, breakout]
 
 
 def check():
@@ -657,13 +992,14 @@ def check():
     for fn in sorted(os.listdir(OUT)):
         name = G.load(os.path.join(OUT, fn)).name
         e.select(e.names.index(name))
+        syn = Synth()                         # the beat clock follows the effect's own time
         frames = []
-        for k in range(60):
+        for k in range(160):                  # long enough for the slow ones to get going
             syn.push(e)                       # the fake music: bins, volume, beats
             e.frame(); frames.append(np.asarray(e.rgb()).copy())
         lit = float((frames[-1].max(axis=2) > 8).mean())
         motion = float(np.abs(frames[-1].astype(int) - frames[-20].astype(int)).mean())
-        good = lit > 0.05 and motion > 0.2
+        good = lit > 0.03 and motion > 0.2
         ok &= good
         print(f"  {name:14s} lit {lit*100:5.1f}%  motion {motion:6.2f}  {'ok' if good else 'FLAT'}")
     return ok

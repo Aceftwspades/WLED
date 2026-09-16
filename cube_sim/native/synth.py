@@ -43,6 +43,12 @@ class Synth:
         # Beat timing runs on the SIMULATED clock, so stepping frame by frame
         # cannot drift relative to the beat.
         period = 60000.0 / max(1, self.bpm)
+        # The engine's clock restarts when an effect is (re)selected or the
+        # engine reloads; a beat timestamp from before that would hold the
+        # next beat back until the new clock caught up with the old one -
+        # minutes of silence after every rebuild. Re-arm instead.
+        if eng.sim_ms < self.last_beat:
+            self.last_beat = eng.sim_ms - period
         fire = self.kick_req
         if self.auto_beat and (eng.sim_ms - self.last_beat) >= period:
             fire = True

@@ -253,7 +253,7 @@ class Project:
         # what the effects include and register through, so the folder
         # builds on its own as a usermod: the two headers, the bank's
         # implementation, and a library.json PlatformIO can pick up
-        for h in ("cube_fx_common.h", "cube_fx_bank.h", "cube_fx_bank.cpp"):
+        for h in ("cube_fx_common.h", "cube_fx_bank.h", "cube_fx_bank.cpp", "cube_fx_imu.h"):
             src = os.path.join(ROOT, "usermods", "cube_fx", h)
             if os.path.exists(src):
                 shutil.copyfile(src, os.path.join(um, h))

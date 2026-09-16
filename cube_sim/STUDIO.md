@@ -92,7 +92,7 @@ checked, defaults for unconnected pins — and it goes through the same build
 and reload as a hand-written one. "Open as code" hands the generated file to
 the code pane for anything the nodes cannot reach.
 
-What the library reached by rebuilding ten of the cube_fx effects as
+What the library reached by rebuilding fifteen of the cube_fx effects as
 graphs (`examples/build_examples.py` writes them; `--check` compiles, builds
 and runs them; a new project starts with them in `graphs/`):
 
@@ -114,6 +114,14 @@ and runs them; a new project starts with them in `graphs/`):
 - **Maths.** Floor, Modulo, Cosine, Log, Exp, Band (a soft band around
   every whole number), Dot 3, Rotate, Length, Direction to (a unit vector
   from two angles), Hash (a stable random per cell, column or tile).
+- **Events and things.** Emitters (up to eight things dropped on a
+  trigger - at a point or at random on the surface - each with a tag and an
+  age) and Shells (spherical shells expanding from each through 3-D space:
+  the ripple that crosses every fold). Torus knot (a (p, q) knot seen from
+  the centre: hit, where along it, how near the rim, the tube's normal).
+  Gravity (the IMU's when fitted, else down, tilted by two inputs), Position
+  to uv (any point of the box back to the pixel that shows it), Cube face's
+  outward normal, Loudest bin, Frame count (first frame, count).
 - **The heavy ones.** Mirror fold (a direction reflected into one
   fundamental domain of a finite mirror group - dihedral, tetrahedral,
   octahedral, icosahedral - so a picture is mirrored 6 to 120 times),
@@ -131,8 +139,15 @@ log spiral, with the unwind when the kicks stop), **Kaleidoscope** (spin,
 fold, cut by drifting planes), **Mandelbrot** (stereographic from the
 bottom pole, a breathing zoom at a boundary point), **Watershed** (height
 and water fields, Drain, erosion, storms on the beat) and **Moire** (funnel,
-warp, two lattices). Readings of the originals in nodes, not ports; the
-ones that were particle systems are shader-style.
+warp, two lattices); then **Cube Ripples** (Emitters on the beat, Shells
+through the solid, a fading wake), **Cube Chladni** (the nodal surface of a
+3-D standing wave, its three mode numbers following three bands),
+**Candy Knot** (Torus knot, tumbling, striped, glossy, seamed), **Gyro
+Sand** (a falling-sand automaton on a Field, gravity taken along the
+surface, grains conserved by having both cells agree) and **Breakout**
+(the ball two triangle waves, a paddle that follows it, bricks a Field it
+clears - the ball does not bounce off them). Readings of the originals in
+nodes, not ports; the ones that were particle systems are shader-style.
 
 Sub-graphs: select some nodes and "fold into sub-graph" (toolbar or the
 node's right-click menu) and they become one node. Each wire that crossed the
