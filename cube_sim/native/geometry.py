@@ -47,6 +47,30 @@ class Geometry:
         self.pos = None      # (h*w, 3) float, positions; NaN where unlit
         self.phys = None     # (n_lit,) logical indices in PHYSICAL (wiring) order
         self._build()
+        if self.params.get("map") is not None and self.kind in ("strip", "matrix"):
+            self._apply_map()
+
+    def _apply_map(self):
+        """A device's ledmap, WLED's way round: map[logical] = physical, -1
+        for a logical position with no LED. Unlit positions leave the
+        picture; the wiring order is the map's."""
+        m = [int(v) for v in self.params["map"]][:self.w * self.h]
+        m += [-1] * (self.w * self.h - len(m))
+        arr = np.asarray(m)
+        self.lit = arr >= 0
+        logical = np.nonzero(self.lit)[0]
+        order = np.argsort(arr[logical], kind="stable")
+        self.phys = logical[order]
+        self.phys_ids = arr[logical][order]          # the device's own numbering, gaps and all
+
+    @classmethod
+    def from_ledmap(cls, d, source="ledmap"):
+        """A WLED ledmap.json (with width and height for a matrix)."""
+        m = d.get("map") or []
+        w, h = int(d.get("width") or 0), int(d.get("height") or 0)
+        if w > 0 and h > 0:
+            return cls("matrix", w=w, h=h, map=list(m), source=source)
+        return cls("strip", n=len(m), map=list(m), source=source)
 
     # --- construction -------------------------------------------------------
     # what the engine can hold and the views can show; a project.json edited
@@ -95,7 +119,10 @@ class Geometry:
             self.w = self.h = 3 * B
             pos, lit = _cube_net(B)
             self.pos, self.lit = pos, lit
-            self.phys = np.nonzero(lit)[0]      # face by face, row by row
+            if p.get("faces"):
+                self.phys = self._cube_order(B, p)
+            else:
+                self.phys = np.nonzero(lit)[0]  # the net's raster order, as before any wiring was set
         elif k == "cylinder":
             w, h = self._clamp("w", 32, lo=3), self._clamp("h", 16)
             self.w, self.h = w, h
@@ -168,6 +195,36 @@ class Geometry:
                 out += [y * w + xx for y in ys]
         return np.asarray(out)
 
+    FACES = {"N": (1, 0), "W": (0, 1), "T": (1, 1), "E": (2, 1), "S": (1, 2)}
+
+    @classmethod
+    def _cube_order(cls, B, p):
+        """The cube's wiring: the faces in the order given (N W T E S as the
+        net shows them), each turned by quarter turns and walked as WLED's
+        panel options say (serpentine, vertical, start corner)."""
+        names = cls.FACES
+        order, seen = [], set()
+        for f in str(p.get("faces", "")).upper().replace(" ", "").split(","):
+            if f in names and f not in seen:
+                order.append(f); seen.add(f)
+        order += [f for f in "NWTES" if f not in seen]
+        rots = []
+        for r in str(p.get("rots", "")).split(","):
+            r = r.strip()
+            rots.append(int(r) % 4 if r.lstrip("-").isdigit() else 0)
+        rots += [0] * (5 - len(rots))
+        n = 3 * B
+        walk = cls._matrix_order(B, B, p)
+        grid = np.stack(np.mgrid[0:B, 0:B], axis=-1)           # (y, x) of each local pixel
+        out = []
+        for f, r in zip(order, rots):
+            bx, by = names[f]
+            rv = np.rot90(grid, -r)                              # the face turned r quarter turns
+            for k in walk:
+                oy, ox = rv[k // B, k % B]
+                out.append((by * B + int(oy)) * n + bx * B + int(ox))
+        return np.asarray(out)
+
     # --- queries --------------------------------------------------------------
     @property
     def is2d(self):
@@ -178,10 +235,23 @@ class Geometry:
         return int(self.lit.sum())
 
     def ledmap(self):
-        """WLED ledmap.json: physical index -> logical index, -1 for a gap.
-        For the cube that is the net's compact order; for a matrix it is the
-        wiring order the options describe."""
-        return {"map": [int(i) for i in self.phys]}
+        """WLED's ledmap.json, the way the firmware reads it (FX_fcn.cpp,
+        deserializeMap): one entry per LOGICAL position of the segment, in
+        segment order, giving the PHYSICAL LED there, -1 where there is none
+        - the cube's corner gaps. So a 48x48 cube is 2304 entries, 1280 of
+        them LEDs. `phys` here is the inverse (logical indices in wiring
+        order), which was what used to be written, and which the device
+        would have read backwards."""
+        n = self.w * self.h
+        m = [-1] * n
+        ids = getattr(self, "phys_ids", None)
+        for k, logical in enumerate(self.phys):
+            if 0 <= int(logical) < n:
+                m[int(logical)] = int(ids[k]) if ids is not None else k
+        out = {"map": m}
+        if self.h > 1:
+            out["width"], out["height"] = int(self.w), int(self.h)
+        return out
 
     def describe(self):
         k, p = self.kind, self.params

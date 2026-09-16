@@ -526,9 +526,20 @@ them within each group; ticked when done.
 
 ### Geometry
 
-- [ ] **Ledmap import from a device** (`/json/cfg` or the ledmap file)
-      beside the XYZ import.
-- [ ] **A ledmap editor**: drag pixels, rotate faces, flip strips.
+- [x] **Ledmap import** (File > Project): from the device (`/ledmap.json`,
+      which the firmware serves from its filesystem) or a file - a matrix
+      with its gaps and wiring, or a strip. **The exported ledmap was the
+      wrong way round**: it listed logical indices in wiring order, where
+      the firmware (`deserializeMap`) reads one entry per logical position
+      giving the physical LED, -1 for a gap - 2304 entries for a 48x48
+      cube, 1280 of them LEDs. Export and Send now write that, with width
+      and height; an imported map keeps the device's own LED numbering.
+- [x] **A wiring editor** for the cube, in Geometry: the faces in wiring
+      order, quarter turns per face, and WLED's panel options (serpentine,
+      vertical, start corner) - what the exported ledmap says. "Show the
+      wiring on the net" draws the path through the pixels, first LED
+      amber, last red. Dragging single pixels is not offered: a cube is
+      wired by the panel, and the per-face settings cover that.
 - [ ] **Multiple segments**: the sim runs one; WLED layers several.
 
 ### Polish and workflow

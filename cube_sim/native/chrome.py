@@ -66,6 +66,9 @@ def build_menus(app):
                 dpg.add_separator()
                 dpg.add_menu_item(label="Device address...", callback=lambda: show_device(app))
                 dpg.add_menu_item(label="Send ledmap to device", callback=lambda: app.send_ledmap())
+                dpg.add_menu_item(label="Import ledmap from the device", callback=lambda: app.import_ledmap(
+                    host=app.project.options.get("device", "")) if app.project.options.get("device") else show_device(app))
+                dpg.add_menu_item(label="Import ledmap file...", callback=lambda: dpg.show_item("ledmap_dialog"))
                 dpg.add_menu_item(label="Export usermod (folder + zip)", callback=lambda: app.export_usermod())
                 _mi(app, "Build firmware + flash the device...", "flash", callback=lambda: show_flash(app))
                 _mi(app, "Send the current effect's settings to the device", "push", callback=lambda: app.push_settings())
@@ -252,6 +255,10 @@ def build_dialogs(app):
     with dpg.file_dialog(directory_selector=True, show=False, tag="project_dialog", width=620, height=420,
                          callback=lambda s, a: app.new_project(a.get("file_path_name", ""))):
         pass
+    with dpg.file_dialog(directory_selector=False, show=False, tag="ledmap_dialog", width=620, height=420,
+                         callback=lambda s, a: app.import_ledmap(path=a.get("file_path_name", ""))):
+        dpg.add_file_extension(".json", color=(120, 200, 120))
+        dpg.add_file_extension(".*")
     with dpg.window(tag="keys_win", label="Keyboard shortcuts", show=False, width=640, height=600, no_collapse=True,
                     on_close=lambda: setattr(app, "_capture", None)):
         dpg.add_text("Click a key to change it, then press the new one (Escape keeps the old). "

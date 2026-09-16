@@ -203,6 +203,8 @@ class App:
         self.side = True             # the side panel shown (Ctrl+Shift+H hides it)
         self.focus = None            # the pane last clicked in: it wears the frame
         self.sweep = None            # {"key", "secs", "t0", "loop", "record"} while a slider is swept
+        self.show_wiring = False     # the physical order drawn over the net
+        self._wiring_items = []
         self.frames = None           # (glow.Frames) - set in build()
         self.history_frames = []     # the last seconds of net frames, for scrubbing while paused
         self.scrub = None            # an index into history_frames while paused, or None
@@ -513,7 +515,43 @@ class App:
         key = dpg.get_item_user_data(sender)
         g = self.project.geometry
         params = dict(g.params); params[key] = val
+        if key in ("faces", "rots") and not params.get("faces"):
+            params["faces"] = "N,W,T,E,S"           # a wiring is being set: leave the raster order
         self.apply_geometry(Geometry(g.kind, **params))
+
+    def on_geom_wiring(self, sender, val):
+        """A panel option on the cube: the wiring changes, the picture does not."""
+        key = dpg.get_item_user_data(sender)
+        g = self.project.geometry
+        params = dict(g.params); params[key] = bool(val)
+        if g.kind == "cube" and not params.get("faces"):
+            params["faces"] = "N,W,T,E,S"
+        self.apply_geometry(Geometry(g.kind, **params))
+
+    def import_ledmap(self, path=None, host=None):
+        """A WLED ledmap, from a file or fetched from the device, becomes the
+        geometry: a matrix with its gaps and wiring, or a strip."""
+        import json
+        try:
+            if host:
+                import urllib.request
+                host = host.strip().rstrip("/")
+                if not host.startswith("http"):
+                    host = "http://" + host
+                with urllib.request.urlopen(host + "/ledmap.json", timeout=5) as r:
+                    d = json.loads(r.read().decode("utf-8", "replace"))
+                source = host + "/ledmap.json"
+            else:
+                d = json.load(open(path, encoding="utf-8"))
+                source = os.path.basename(path)
+            g = Geometry.from_ledmap(d, source)
+        except Exception as e:
+            msg = f"could not read the ledmap: {e}"
+            dpg.set_value("geom_desc", msg); self.gp.status(msg); return
+        self.apply_geometry(g)
+        dpg.set_value("geom_kind", g.kind)
+        self.rebuild_geom_fields()
+        self.gp.status(f"geometry from {source}: {g.describe()}")
 
     def on_xyz_file(self, s, app_data):
         path = app_data.get("file_path_name") if isinstance(app_data, dict) else None
@@ -546,6 +584,28 @@ class App:
         if g.kind == "xyz":
             dpg.add_text(f"{g.count} points from {g.params.get('source', 'file')}",
                          parent="geom_fields", color=(139, 147, 163))
+        if g.kind == "cube":
+            # the wiring: which face first, how each is turned, how each is
+            # walked - what the exported ledmap says
+            dpg.add_text("wiring (the ledmap)", parent="geom_fields", color=(139, 147, 163))
+            dpg.add_input_text(label="faces, in wiring order", parent="geom_fields", user_data="faces", width=110,
+                               default_value=str(g.params.get("faces", "")), hint="N,W,T,E,S", on_enter=True,
+                               callback=self.on_geom_field)
+            dpg.add_input_text(label="quarter turns per face", parent="geom_fields", user_data="rots", width=110,
+                               default_value=str(g.params.get("rots", "")), hint="0,0,0,0,0", on_enter=True,
+                               callback=self.on_geom_field)
+            with dpg.group(horizontal=True, parent="geom_fields"):
+                for key, label in (("serpentine", "serpentine"), ("vertical", "vertical"),
+                                   ("start_right", "from right"), ("start_bottom", "from bottom")):
+                    dpg.add_checkbox(label=label, user_data=key, default_value=bool(g.params.get(key, False)),
+                                     callback=self.on_geom_wiring)
+            self._inputs.update(("faces_in",))
+        if g.params.get("map") is not None:
+            dpg.add_text(f"wiring from {g.params.get('source', 'a ledmap')}: {g.count} LEDs, {int((~g.lit).sum())} gaps",
+                         parent="geom_fields", color=(139, 147, 163))
+        if g.kind != "xyz":
+            dpg.add_checkbox(label="show the wiring on the net", parent="geom_fields", default_value=self.show_wiring,
+                             callback=lambda s, v: setattr(self, "show_wiring", bool(v)))
 
     def on_map1d2d(self, s, val):
         self.eng.set_map1d2d(["strip", "bars", "arcs", "corner"].index(val))
@@ -1806,6 +1866,35 @@ class App:
             self.acc -= STEP
             n += 1
 
+    def _draw_wiring(self):
+        """The wiring order as a line through the net's pixels, first LED
+        marked, when asked for and the net is on screen."""
+        if not dpg.does_item_exist("wiring_overlay"):
+            dpg.add_viewport_drawlist(front=True, tag="wiring_overlay")
+        for it in self._wiring_items:
+            if dpg.does_item_exist(it):
+                dpg.delete_item(it)
+        self._wiring_items = []
+        if not (self.show_wiring and self.ui and self.layout in ("both", "net") and dpg.does_item_exist("net_img")):
+            return
+        g = self.eng.geom
+        if g is None or g.phys is None or len(g.phys) < 2:
+            return
+        st = dpg.get_item_state("net_img")
+        if "rect_min" not in st:
+            return
+        x0, y0 = st["rect_min"]
+        sc = self.net_scale
+        w = g.w
+        rows = self.net_image().shape[0]
+        ry = rows / max(1, g.h)                      # a strip is drawn tall
+        pts = [(x0 + (i % w + 0.5) * sc, y0 + ((i // w) * ry + ry / 2) * sc) for i in g.phys]
+        self._wiring_items.append(dpg.draw_polyline(pts, parent="wiring_overlay", color=(90, 169, 230, 150), thickness=1))
+        self._wiring_items.append(dpg.draw_circle(pts[0], max(3, sc / 2), parent="wiring_overlay",
+                                                  color=(255, 184, 70, 255), fill=(255, 184, 70, 200)))
+        self._wiring_items.append(dpg.draw_circle(pts[-1], max(3, sc / 2), parent="wiring_overlay",
+                                                  color=(255, 96, 96, 255), fill=(255, 96, 96, 200)))
+
     SCRUB_FRAMES = 300           # ~10 s at the simulated frame rate
 
     def draw(self):
@@ -1831,6 +1920,7 @@ class App:
                 both[:, :p] = img; both[:, p + 8:] = imgb
                 img = both
             dpg.set_value("cube_tex", self._rgba("cube", img))
+        self._draw_wiring()
         # Records whatever is being SHOWN, so Q, E and W frame the clip too.
         self.rec_frame(big, img)
         if self.rec_msg:
@@ -2142,6 +2232,10 @@ def service_command(app):
                         dpg.set_value(tag, o[k])
             if "gp_call" in c:                          # test hook: [method of the graph panel, args]
                 getattr(app.gp, c["gp_call"][0])(*c["gp_call"][1])
+            if "ledmap_file" in c:
+                app.import_ledmap(path=c["ledmap_file"])
+            if "wiring" in c:
+                app.show_wiring = bool(c["wiring"])
             if "sweep" in c:                            # test hook: [key, secs, loop, record] or null to stop
                 app.start_sweep(*c["sweep"]) if c["sweep"] else app.stop_sweep()
             if "wav" in c:
