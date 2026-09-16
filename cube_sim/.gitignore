@@ -10,3 +10,4 @@ cubefx.lib
 cubefx.exp
 build/
 projects/
+examples/_check/
