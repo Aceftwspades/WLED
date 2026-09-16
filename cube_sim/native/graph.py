@@ -213,6 +213,49 @@ class Graph:
             visit(n)
         return out
 
+    def problems(self):
+        """What would stop, or should worry, a compile: {node id: message}.
+        Errors: a cycle, more than one Output, a missing sub-graph, an
+        unknown type. Warnings: an output that feeds nothing, and no Output
+        at all (reported on every node that could have fed one)."""
+        out = {}
+        defs = {}
+        for nid, n in self.nodes.items():
+            try:
+                defs[nid] = self.node_def(n)
+            except GraphError as e:
+                out[nid] = "error: " + str(e).split(": ", 1)[-1]
+        # cycles: every node still on the stack when one is found
+        deps = {nid: set() for nid in self.nodes}
+        for a, _, b, _ in self.links:
+            if a in deps and b in deps:
+                deps[b].add(a)
+        seen, stack = set(), []
+        def visit(n):
+            if n in seen:
+                return
+            if n in stack:
+                for m in stack[stack.index(n):]:
+                    out[m] = "error: in a cycle - use Previous for feedback"
+                return
+            stack.append(n)
+            for d in sorted(deps[n]):
+                visit(d)
+            stack.pop(); seen.add(n)
+        for n in sorted(self.nodes):
+            visit(n)
+        outs = [nid for nid, n in self.nodes.items() if n["type"] == "Output"]
+        if len(outs) > 1:
+            for nid in outs:
+                out.setdefault(nid, "error: more than one Output")
+        fed = {a for a, _, _, _ in self.links}
+        for nid, d in defs.items():
+            if nid in out or d.get("decor") or not d["outputs"]:
+                continue
+            if nid not in fed and self.nodes[nid]["type"] != "Graph output":
+                out[nid] = "feeds nothing"
+        return out
+
     def flatten(self, depth=0):
         """A copy with every sub-graph node replaced by its contents.
 

@@ -153,11 +153,17 @@ editor. Ticked when done; the order within a group is the order to do them.
       multi-line text. Neither is compiled.
 - [x] **Collapse a node** to its pins (node menu); **node colour** swatches
       in the node menu, ten colours, same set as the wires.
-- [ ] **On-node / pin preview**: "preview this output" builds the graph with
-      the pin routed to Output — one click, not continuous.
-- [ ] **Validation on the node**: unconnected required inputs, cycles and a
-      missing Output highlighted in red, not only in the status line.
-- [ ] **Keyboard**: arrow-nudge, Ctrl+A, Home to centre.
+- [x] **Pin preview**: an output pin's menu → "preview this output" builds
+      the graph with that pin shown instead of the Output (a colour straight,
+      a float or bool as a grey level, 0..1) as a draft named Preview; every
+      compile shows the pin until "stop previewing".
+- [x] **Validation on the node**: a red outline for what stops the compile
+      (a cycle, more than one Output, a missing sub-graph), amber for an
+      output that feeds nothing; the message is in the node's menu and the
+      status line. Every input has a default, so none is "required".
+- [x] **Keyboard**: arrows nudge the selection 10 px (Shift: 1 px); Home
+      brings the graph's top-left to the origin. Ctrl+A and true panning are
+      not possible: the node editor exposes neither.
 - [ ] **Zoom / fit-to-view.** DearPyGui's node editor cannot zoom. The fix is
       a custom-drawn canvas, which would also allow wire styling and
       thumbnails. A structural decision: not now, but before the node UI

@@ -874,6 +874,15 @@ class App:
             return
         if ctrl:
             return
+        if self.layout == "graph":
+            shift = dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift)
+            step = 1 if shift else 10
+            arrows = {dpg.mvKey_Left: (-step, 0), dpg.mvKey_Right: (step, 0),
+                      dpg.mvKey_Up: (0, -step), dpg.mvKey_Down: (0, step)}
+            if app_data in arrows:
+                self.gp.nudge(*arrows[app_data]); return
+            if app_data == dpg.mvKey_Home:
+                self.gp.home(); return
         if app_data == dpg.mvKey_F11:
             dpg.toggle_viewport_fullscreen()
         elif app_data == dpg.mvKey_Spacebar:
@@ -1210,6 +1219,11 @@ def service_command(app):
                 dpg.set_value("new_name", c["rename"]); app.edit_rename()
             if "graph_rename" in c:
                 app.gp.rename(c["graph_rename"])
+            if "graph_preview" in c:
+                if c["graph_preview"]:
+                    nid, name = c["graph_preview"]; app.gp.preview_pin(int(nid), name)
+                else:
+                    app.gp.stop_preview()
             if "graph_collapse" in c:
                 app.gp._collapse(int(c["graph_collapse"]))
             if "graph_colour" in c:

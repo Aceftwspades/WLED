@@ -91,6 +91,9 @@ class GraphPanel:
         self._last_snap = None   # (key, time) of the last snapshot, to coalesce slider drags
         self._widgets = set()    # every value widget on a node, so keys know when one is typed in
         self._node_themes = {}   # (r,g,b) -> a node theme with that title bar
+        self._mark_themes = {}   # "error"/"warn" -> outline theme
+        self.problems = {}       # node id -> message, from the last rebuild
+        self.preview = None      # (node, output) routed to Output instead of the graph's own
         self._frame_last = {}    # frame node -> its position last poll
         self._frame_drag = {}    # frame node -> the nodes moving with it, while it moves
         self.auto = False        # live preview: rebuild after every edit
@@ -180,6 +183,7 @@ class GraphPanel:
         self.file = fname
         self.cur_dir = d
         self._undo.clear(); self._redo.clear(); self._last_snap = None
+        self.preview = None
         self.rebuild()
         dpg.configure_item("graph_file", items=self.files())
         dpg.set_value("graph_file", fname if not sub else "")
@@ -405,6 +409,33 @@ class GraphPanel:
         self._restore(self._redo.pop())
         self.status("redo")
 
+    def nudge(self, dx, dy):
+        """Move the selected nodes by a step - the arrow keys."""
+        sel = self._selected()
+        if not sel:
+            return
+        self.snapshot("nudge")
+        for nid in sel:
+            t = f"gnode_{nid}"
+            x, y = dpg.get_item_pos(t)
+            dpg.set_item_pos(t, [x + dx, y + dy])
+        self._sync_pos()
+
+    def home(self):
+        """Bring the graph back to the origin: the editor cannot be panned
+        from code, so the nodes move instead, their top-left to (20, 20)."""
+        if not self.graph or not self.graph.nodes:
+            return
+        self._sync_pos()
+        self.snapshot()
+        x0 = min(n["pos"][0] for n in self.graph.nodes.values())
+        y0 = min(n["pos"][1] for n in self.graph.nodes.values())
+        for nid, n in self.graph.nodes.items():
+            n["pos"] = [n["pos"][0] - x0 + 20, n["pos"][1] - y0 + 20]
+            if dpg.does_item_exist(f"gnode_{nid}"):
+                dpg.set_item_pos(f"gnode_{nid}", n["pos"])
+        self._frame_last = {nid: tuple(n["pos"]) for nid, n in self.graph.nodes.items() if n["type"] == "Frame"}
+
     def typing(self):
         """True while a value box on a node has the keyboard."""
         return any(dpg.does_item_exist(w) and dpg.is_item_active(w) for w in self._widgets)
@@ -524,6 +555,41 @@ class GraphPanel:
             self.status(f"dropped {len(stale)} wire(s) to pins that no longer exist")
         for a, out, b, inp in self.graph.links:
             self._make_link(a, out, b, inp)
+        self._mark_problems()
+
+    # --- validation ---------------------------------------------------------------------
+    # Problems are painted on the node - a red outline for what stops the
+    # compile, amber for what only looks wrong - and listed in the status
+    # line, so a broken graph says where before a build is tried.
+    def _mark_theme(self, kind):
+        th = self._mark_themes.get(kind)
+        if th is None:
+            col = (235, 80, 70) if kind == "error" else (240, 190, 70)
+            with dpg.theme() as th:
+                with dpg.theme_component(dpg.mvNode):
+                    dpg.add_theme_color(dpg.mvNodeCol_NodeOutline, col, category=dpg.mvThemeCat_Nodes)
+                    dpg.add_theme_style(dpg.mvNodeStyleVar_NodeBorderThickness, 2.5, category=dpg.mvThemeCat_Nodes)
+            self._mark_themes[kind] = th
+        return th
+
+    def _mark_problems(self):
+        if not self.graph:
+            return
+        self.problems = self.graph.problems()
+        errs = []
+        for nid, msg in self.problems.items():
+            tag = f"gnode_{nid}"
+            if not dpg.does_item_exist(tag):
+                continue
+            kind = "error" if msg.startswith("error") else "warn"
+            n = self.graph.nodes[nid]
+            # a coloured or framed node keeps its colour theme; the outline wins on top of it
+            if kind == "error" or not (n.get("color") or n["type"] == "Frame"):
+                dpg.bind_item_theme(tag, self._mark_theme(kind))
+            if kind == "error":
+                errs.append(f"{n['type']} #{nid}: {msg[7:]}")
+        if errs:
+            self.status("; ".join(errs)[:200])
 
     def _make_node(self, nid, n):
         try:
@@ -952,11 +1018,18 @@ class GraphPanel:
                 row(f"disconnect all ({len(outs)})", lambda: self._disconnect_out(nid, name))
                 self._colour_rows(P, [(l[2], l[3]) for l in outs])
             o = next(x for x in d["outputs"] if x["name"] == name)
+            if self.preview == (nid, name):
+                row("stop previewing this output", self.stop_preview)
+            else:
+                row("preview this output", lambda: self.preview_pin(nid, name))
             dpg.add_text("connect to new", parent=P, color=DIM)
             for t in self._consumers(o["type"]):
                 row(f"  {t}", lambda t=t: self._connect_new(nid, name, o["type"], t))
         else:
             dpg.add_text(d.get("label") or n["type"], parent=P, color=DIM)
+            if nid in self.problems:
+                m = self.problems[nid]
+                dpg.add_text(m, parent=P, color=(235, 80, 70) if m.startswith("error") else (240, 190, 70))
             if n["type"].startswith(G.SUB):
                 row("edit sub-graph", lambda: self.enter_sub(nid))
             if dpg.get_selected_nodes("node_editor"):
@@ -1189,19 +1262,67 @@ class GraphPanel:
                 self.links.pop(lid, None)
 
     # --- compile -------------------------------------------------------------------------
+    # --- pin preview ---------------------------------------------------------------------
+    # "Preview this output" builds the graph with that pin shown instead of
+    # the Output: a colour straight, a float or bool as a grey level. The
+    # effect is a draft named Preview; the graph's own file is untouched,
+    # and every compile while the preview is on shows the pin.
+    PREVIEW_FILE = "_preview.cpp"
+
+    def preview_pin(self, nid, name):
+        self.preview = (nid, name)
+        self.status(f"previewing {self.graph.nodes[nid]['type']} . {name}")
+        self.compile()
+
+    def stop_preview(self):
+        self.preview = None
+        p = self.app.project
+        if self.PREVIEW_FILE in p.effect_files():
+            os.remove(p.effect_path(self.PREVIEW_FILE))
+        self.compile()
+
+    def _preview_graph(self):
+        """A copy of the graph with the previewed pin driving a fresh Output."""
+        nid, name = self.preview
+        if nid not in self.graph.nodes:
+            self.preview = None
+            return None
+        g = G.Graph(self.graph.to_json(), lib=self.lib, resolver=self.resolve_sub)
+        for o in [m for m, n in g.nodes.items() if n["type"] == "Output"]:
+            g.remove(o)
+        d = g.node_def(g.nodes[nid])
+        t = next((o["type"] for o in d["outputs"] if o["name"] == name), "float")
+        pos = g.nodes[nid]["pos"]
+        out = g.add("Output", (pos[0] + 400, pos[1]))
+        if t == "color":
+            g.link(nid, name, out, "color")
+        else:
+            hsv = g.add("HSV", (pos[0] + 200, pos[1]))
+            g.nodes[hsv]["inputs"] = {"h": 0.0, "s": 0.0}
+            g.link(nid, name, hsv, "v")
+            g.link(hsv, "color", out, "color")
+        g.name = "Preview"
+        return g
+
     def compile(self, and_build=True):
         """Graph -> effects/<graph>.cpp -> the normal build and reload."""
         if not self.graph:
             return
         self.save()
+        g = self.graph
+        fname = os.path.splitext(self.file)[0] + ".cpp"
+        if self.preview:
+            g = self._preview_graph()
+            if g is not None:
+                fname = self.PREVIEW_FILE
         try:
-            src = self.graph.compile()
+            src = (g or self.graph).compile()
         except G.GraphError as e:
             self.status(f"graph: {e}")
+            self._mark_problems()
             return None
-        fname = os.path.splitext(self.file)[0] + ".cpp"
         self.app.project.write_effect(fname, src)
-        self.status(f"wrote {fname}")
+        self.status(f"wrote {fname}" + (f" (previewing {self.preview[1]} of #{self.preview[0]})" if self.preview else ""))
         if and_build:
             # the code pane follows: edit_build saves what the pane holds, and
             # that must be this file, not whatever was open before
