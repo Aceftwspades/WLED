@@ -164,10 +164,19 @@ editor. Ticked when done; the order within a group is the order to do them.
 - [x] **Keyboard**: arrows nudge the selection 10 px (Shift: 1 px); Home
       brings the graph's top-left to the origin. Ctrl+A and true panning are
       not possible: the node editor exposes neither.
-- [ ] **Zoom / fit-to-view.** DearPyGui's node editor cannot zoom. The fix is
-      a custom-drawn canvas, which would also allow wire styling and
-      thumbnails. A structural decision: not now, but before the node UI
-      accumulates much more that would have to be rewritten.
+- [x] **Zoom** — 50% to 200% in nine steps: the wheel over the editor
+      (about the cursor), Ctrl+= / Ctrl+- / Ctrl+0. DearPyGui's node editor
+      cannot zoom, so the panel does: every size it lays nodes out with is
+      scaled, the editor gets a font and style theme to match (a monospace
+      TTF from the system: Consolas, Menlo, DejaVu Sans Mono), and positions
+      are scaled on the way in and out so the saved graph never changes.
+      The editor's own panning cannot be set from code, only watched, so
+      the picture is shifted instead to keep the point under the cursor
+      still. Remembered across runs. A custom canvas is no longer needed
+      for this; it remains the route to wire styling and thumbnails.
+- [x] **Resizable panes**: a splitter between the left pane and the 3-D
+      view (one split per layout: both / code / graph) and one before the
+      side panel; drag them, remembered across runs in `projects/studio.json`.
 
 ### Code editor
 
@@ -241,7 +250,7 @@ python -m native.app
 
 Keys: **G** node graph, **C** code pane, **Q** logical view, **E** 3-D, **W** both,
 **H** hide the controls, **space** pause. In the graph: **Delete** removes selected nodes,
-**Ctrl+Z / Ctrl+Y** undo / redo, **Ctrl+C / X / V** copy, cut, paste. Projects live in `cube_sim/projects/<name>/`;
+**Ctrl+Z / Ctrl+Y** undo / redo, **Ctrl+C / X / V** copy, cut, paste, **wheel / Ctrl+= / Ctrl+- / Ctrl+0** zoom. Projects live in `cube_sim/projects/<name>/`;
 the default one is created on first run.
 
 ## Compatibility rules for this branch

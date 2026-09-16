@@ -28,13 +28,31 @@ CHAR_W = 7.2            # the default font at 13 px, near enough to right-align 
 
 
 NARROW_W = 46           # a knot: just wide enough for its two pin names
+ZOOMS = (0.5, 0.6, 0.7, 0.85, 1.0, 1.2, 1.4, 1.7, 2.0)
+BASE_FONT = 13          # the size everything above is laid out for
 
 
-def _right(text, width=NODE_W):
+def _right(text, width=NODE_W, char_w=CHAR_W):
     """Indent that puts `text` against the node's right edge, so an output's
     name sits beside its pin on the right the way an input's sits beside its
     pin on the left. Inputs left, outputs right, on every node."""
-    return max(0, int(width - len(text) * CHAR_W))
+    return max(0, int(width - len(text) * char_w))
+
+
+def _font_file():
+    """A monospace TTF the platform is likely to have, for the zoomed
+    fonts; None means text stays at 13 px while the boxes still scale."""
+    import sys
+    cands = {
+        "win32":  [r"C:\Windows\Fonts\consola.ttf", r"C:\Windows\Fonts\cour.ttf", r"C:\Windows\Fonts\segoeui.ttf"],
+        "darwin": ["/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Monaco.ttf", "/Library/Fonts/Courier New.ttf"],
+    }.get(sys.platform, ["/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+                         "/usr/share/fonts/TTF/DejaVuSansMono.ttf", "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+                         "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf"])
+    for c in cands:
+        if os.path.exists(c):
+            return c
+    return None
 
 
 def compatible(a, b):
@@ -90,6 +108,21 @@ class GraphPanel:
         self._redo = []
         self._last_snap = None   # (key, time) of the last snapshot, to coalesce slider drags
         self._widgets = set()    # every value widget on a node, so keys know when one is typed in
+        # --- zoom ---------------------------------------------------------------------
+        # The node editor cannot zoom, so the panel does: every size it lays
+        # nodes out with is multiplied by `zoom`, positions included, and the
+        # editor gets a font and a style theme scaled to match. Stored node
+        # positions never change with zoom; `offset` (graph units) shifts the
+        # whole picture so the point under the cursor stays put, since the
+        # editor's own panning cannot be set from code - only watched, which
+        # `pan` does, through the middle-mouse drags that move it.
+        self.zoom = 1.0
+        self.offset = [0.0, 0.0]
+        self.pan = [0.0, 0.0]
+        self._mid_last = None
+        self._fonts = {}         # px size -> font
+        self._font_file = _font_file()
+        self._zoom_themes = {}   # zoom -> node-editor style theme
         self._node_themes = {}   # (r,g,b) -> a node theme with that title bar
         self._mark_themes = {}   # "error"/"warn" -> outline theme
         self.problems = {}       # node id -> message, from the last rebuild
@@ -178,6 +211,9 @@ class GraphPanel:
         if not fname:
             return
         self.refresh_lib()
+        if self.graph is None:
+            self.zoom = min(ZOOMS[-1], max(ZOOMS[0], float(self.app.prefs.get("zoom", 1.0))))
+        self.offset = [0.0, 0.0]
         d = self.sub_dir if sub else self.dir
         self.graph = G.load(os.path.join(d, fname), lib=self.lib, resolver=self.resolve_sub)
         self.file = fname
@@ -366,13 +402,111 @@ class GraphPanel:
     # share one, so undo steps back over the drag, not each pixel of it.
     UNDO_MAX = 200
 
+    # --- zoom: sizes, coordinates -----------------------------------------------------------
+    def px(self, v):
+        """A layout size at the current zoom."""
+        return int(round(v * self.zoom))
+
+    @property
+    def char_w(self):
+        return CHAR_W * self.zoom if self._font_file else CHAR_W
+
+    def _disp(self, pos):
+        """Graph units -> the editor's grid, where nodes are placed."""
+        return [(pos[0] + self.offset[0]) * self.zoom, (pos[1] + self.offset[1]) * self.zoom]
+
+    def _graph(self, disp):
+        return [disp[0] / self.zoom - self.offset[0], disp[1] / self.zoom - self.offset[1]]
+
+    def _to_graph(self, screen):
+        """A screen point -> graph units, allowing for the editor's panning as
+        far as it has been watched."""
+        ex, ey = dpg.get_item_rect_min("node_editor")
+        return self._graph([screen[0] - ex - self.pan[0], screen[1] - ey - self.pan[1]])
+
+    def _font(self):
+        if not self._font_file:
+            return None
+        size = max(8, self.px(BASE_FONT))
+        f = self._fonts.get(size)
+        if f is None:
+            try:
+                with dpg.font_registry():
+                    f = dpg.add_font(self._font_file, size)
+            except Exception:
+                self._font_file = None
+                return None
+            self._fonts[size] = f
+        return f
+
+    def _zoom_theme(self):
+        z = self.zoom
+        th = self._zoom_themes.get(z)
+        if th is None:
+            with dpg.theme() as th:
+                with dpg.theme_component(dpg.mvNodeEditor):
+                    dpg.add_theme_style(dpg.mvNodeStyleVar_GridSpacing, 24 * z, category=dpg.mvThemeCat_Nodes)
+                with dpg.theme_component(dpg.mvAll):
+                    dpg.add_theme_style(dpg.mvNodeStyleVar_NodePadding, 8 * z, 8 * z, category=dpg.mvThemeCat_Nodes)
+                    dpg.add_theme_style(dpg.mvNodeStyleVar_PinCircleRadius, 4 * z, category=dpg.mvThemeCat_Nodes)
+                    dpg.add_theme_style(dpg.mvNodeStyleVar_PinHoverRadius, 10 * z, category=dpg.mvThemeCat_Nodes)
+                    dpg.add_theme_style(dpg.mvNodeStyleVar_LinkThickness, 3 * z, category=dpg.mvThemeCat_Nodes)
+                    dpg.add_theme_style(dpg.mvNodeStyleVar_NodeCornerRounding, 4 * z, category=dpg.mvThemeCat_Nodes)
+                    dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 4 * z, 3 * z, category=dpg.mvThemeCat_Core)
+                    dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 8 * z, 4 * z, category=dpg.mvThemeCat_Core)
+            self._zoom_themes[z] = th
+        return th
+
+    def set_zoom(self, z, at=None):
+        """Zoom to z, keeping the screen point `at` (or the editor's centre)
+        over the same spot of the graph."""
+        z = min(ZOOMS[-1], max(ZOOMS[0], float(z)))
+        if not self.graph or not dpg.does_item_exist("node_editor"):
+            self.zoom = z
+            return
+        self._sync_pos()
+        ex, ey = dpg.get_item_rect_min("node_editor")
+        if at is None:
+            w, h = dpg.get_item_rect_size("node_editor")
+            at = (ex + w / 2, ey + h / 2)
+        cx, cy = at[0] - ex - self.pan[0], at[1] - ey - self.pan[1]       # the cursor on the grid
+        old = self.zoom
+        self.offset[0] += cx * (1.0 / z - 1.0 / old)
+        self.offset[1] += cy * (1.0 / z - 1.0 / old)
+        self.zoom = z
+        self.rebuild()
+        self.app.prefs["zoom"] = z
+        from native.project import save_prefs
+        save_prefs(self.app.prefs)
+        self.status(f"zoom {int(z * 100)}%")
+
+    def zoom_step(self, direction, at=None):
+        i = min(range(len(ZOOMS)), key=lambda k: abs(ZOOMS[k] - self.zoom))
+        i = max(0, min(len(ZOOMS) - 1, i + (1 if direction > 0 else -1)))
+        if ZOOMS[i] != self.zoom:
+            self.set_zoom(ZOOMS[i], at)
+
+    def on_mid_drag(self, delta):
+        """The editor pans on a middle-mouse drag; keep count so screen
+        points can still be turned into graph points."""
+        if not dpg.does_item_exist("node_editor") or not dpg.is_item_hovered("node_editor"):
+            return
+        if self._mid_last is None:
+            self._mid_last = (0.0, 0.0)
+        self.pan[0] += delta[0] - self._mid_last[0]
+        self.pan[1] += delta[1] - self._mid_last[1]
+        self._mid_last = (delta[0], delta[1])
+
+    def on_mid_release(self):
+        self._mid_last = None
+
     def _sync_pos(self):
         if not self.graph:
             return
         for nid, n in self.graph.nodes.items():
             tag = f"gnode_{nid}"
             if dpg.does_item_exist(tag):
-                n["pos"] = list(dpg.get_item_pos(tag))
+                n["pos"] = self._graph(dpg.get_item_pos(tag))
 
     def snapshot(self, key=None):
         """Call before changing the graph. `key` names a continuous edit."""
@@ -418,7 +552,7 @@ class GraphPanel:
         for nid in sel:
             t = f"gnode_{nid}"
             x, y = dpg.get_item_pos(t)
-            dpg.set_item_pos(t, [x + dx, y + dy])
+            dpg.set_item_pos(t, [x + dx * self.zoom, y + dy * self.zoom])
         self._sync_pos()
 
     def home(self):
@@ -428,13 +562,14 @@ class GraphPanel:
             return
         self._sync_pos()
         self.snapshot()
+        self.offset = [0.0, 0.0]
         x0 = min(n["pos"][0] for n in self.graph.nodes.values())
         y0 = min(n["pos"][1] for n in self.graph.nodes.values())
         for nid, n in self.graph.nodes.items():
             n["pos"] = [n["pos"][0] - x0 + 20, n["pos"][1] - y0 + 20]
             if dpg.does_item_exist(f"gnode_{nid}"):
-                dpg.set_item_pos(f"gnode_{nid}", n["pos"])
-        self._frame_last = {nid: tuple(n["pos"]) for nid, n in self.graph.nodes.items() if n["type"] == "Frame"}
+                dpg.set_item_pos(f"gnode_{nid}", self._disp(n["pos"]))
+        self._frame_last = {nid: tuple(self._disp(n["pos"])) for nid, n in self.graph.nodes.items() if n["type"] == "Frame"}
 
     def typing(self):
         """True while a value box on a node has the keyboard."""
@@ -540,11 +675,15 @@ class GraphPanel:
         self.links.clear(); self._pins.clear(); self._ptype.clear()
         if not self.graph:
             return
+        f = self._font()
+        if f is not None:
+            dpg.bind_item_font("node_editor", f)
+        dpg.bind_item_theme("node_editor", self._zoom_theme())
         # frames first: nodes draw in creation order, so a frame made first
         # sits behind the nodes inside it
         for nid, n in sorted(self.graph.nodes.items(), key=lambda kv: kv[1]["type"] != "Frame"):
             self._make_node(nid, n)
-        self._frame_last = {nid: tuple(n["pos"]) for nid, n in self.graph.nodes.items() if n["type"] == "Frame"}
+        self._frame_last = {nid: tuple(self._disp(n["pos"])) for nid, n in self.graph.nodes.items() if n["type"] == "Frame"}
         self._frame_drag.clear()
         # a wire to a pin that no longer exists - a sub-graph's input was
         # renamed or removed - is dropped rather than kept invisibly
@@ -605,8 +744,8 @@ class GraphPanel:
         if n["type"] == "Frame":
             label = str(n["params"].get("title", "group"))
         collapsed = bool(n.get("collapsed"))
-        width = NARROW_W if d.get("narrow") else NODE_W
-        with dpg.node(label=label, parent="node_editor", pos=n.get("pos", [0, 0]), tag=f"gnode_{nid}",
+        width = self.px(NARROW_W if d.get("narrow") else NODE_W)
+        with dpg.node(label=label, parent="node_editor", pos=self._disp(n.get("pos", [0, 0])), tag=f"gnode_{nid}",
                       user_data=nid):
             if n["type"] == "Frame":
                 self._frame_body(nid, n)
@@ -634,7 +773,7 @@ class GraphPanel:
                 tag = f"gout_{nid}_{o['name']}"
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output, tag=tag,
                                         user_data=(nid, o["name"]), shape=dpg.mvNode_PinShape_CircleFilled):
-                    dpg.add_text(o["name"], indent=_right(o["name"], width))
+                    dpg.add_text(o["name"], indent=_right(o["name"], width, self.char_w))
                 dpg.bind_item_theme(tag, th.pin[o["type"]])
                 self._pins[(nid, "out", o["name"])] = tag
                 self._ptype[tag] = o["type"]
@@ -675,18 +814,18 @@ class GraphPanel:
     def _frame_body(self, nid, n):
         w = int(n["params"].get("w", 400)); h = int(n["params"].get("h", 300))
         with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-            dpg.add_spacer(width=w, height=h - 40)
+            dpg.add_spacer(width=self.px(w), height=max(1, self.px(h - 40)))
             with dpg.group(horizontal=True):
-                w_ = dpg.add_input_int(label="w", width=70, default_value=w, step=0, user_data=(nid, "w"),
+                w_ = dpg.add_input_int(label="w", width=self.px(70), default_value=w, step=0, user_data=(nid, "w"),
                                        callback=self._on_param)
-                h_ = dpg.add_input_int(label="h", width=70, default_value=h, step=0, user_data=(nid, "h"),
+                h_ = dpg.add_input_int(label="h", width=self.px(70), default_value=h, step=0, user_data=(nid, "h"),
                                        callback=self._on_param)
                 self._widgets.update((w_, h_))
 
     def _frame_rect(self, nid, pos=None):
         n = self.graph.nodes[nid]
         x, y = pos if pos is not None else dpg.get_item_pos(f"gnode_{nid}")
-        return x, y, x + int(n["params"].get("w", 400)) + 16, y + int(n["params"].get("h", 300)) + 30
+        return x, y, x + self.px(int(n["params"].get("w", 400)) + 16), y + self.px(int(n["params"].get("h", 300)) + 30)
 
     def _poll_frames(self):
         if not self.graph or not self._frame_last:
@@ -725,14 +864,14 @@ class GraphPanel:
         v = n["inputs"].get(i["name"], i.get("default", 0))
         ud = (nid, i["name"])
         if i["type"] == "float":
-            w = dpg.add_input_float(label=i["name"], tag=tag, width=78, default_value=float(v), step=0,
+            w = dpg.add_input_float(label=i["name"], tag=tag, width=self.px(78), default_value=float(v), step=0,
                                 format="%.3g", user_data=ud, callback=self._on_input, show=show)
         elif i["type"] == "bool":
             w = dpg.add_checkbox(label=i["name"], tag=tag, default_value=bool(v), user_data=ud,
                              callback=self._on_input, show=show)
         else:
             rgb = list(v)[:3] if isinstance(v, (list, tuple)) else [0, 0, 0]
-            w = dpg.add_color_edit([int(c) for c in rgb] + [255], label=i["name"], tag=tag, width=90,
+            w = dpg.add_color_edit([int(c) for c in rgb] + [255], label=i["name"], tag=tag, width=self.px(90),
                                no_alpha=True, no_inputs=True, user_data=ud, callback=self._on_input, show=show)
         self._widgets.add(w)
 
@@ -755,27 +894,27 @@ class GraphPanel:
         ud = (nid, p["name"])
         cb = self._on_param
         if p["type"] == "text" and multiline:
-            w = dpg.add_input_text(width=220, height=90, multiline=True, default_value=str(v), user_data=ud,
+            w = dpg.add_input_text(width=self.px(220), height=self.px(90), multiline=True, default_value=str(v), user_data=ud,
                                    callback=cb)
             self._widgets.add(w)
             return
         if p["type"] == "float":
-            w = dpg.add_input_float(label=p["name"], width=78, default_value=float(v), step=0,
+            w = dpg.add_input_float(label=p["name"], width=self.px(78), default_value=float(v), step=0,
                                 format="%.3f", user_data=ud, callback=cb)
         elif p["type"] == "int":
-            w = dpg.add_input_int(label=p["name"], width=78, default_value=int(v), step=0,
+            w = dpg.add_input_int(label=p["name"], width=self.px(78), default_value=int(v), step=0,
                               min_value=int(p.get("min", -1 << 30)), max_value=int(p.get("max", 1 << 30)),
                               min_clamped="min" in p, max_clamped="max" in p, user_data=ud, callback=cb)
         elif p["type"] == "bool":
             w = dpg.add_checkbox(label=p["name"], default_value=bool(v), user_data=ud, callback=cb)
         elif p["type"] == "choice":
-            w = dpg.add_combo(p["choices"], label=p["name"], width=90, default_value=str(v), user_data=ud, callback=cb)
+            w = dpg.add_combo(p["choices"], label=p["name"], width=self.px(90), default_value=str(v), user_data=ud, callback=cb)
         elif p["type"] == "color":
             rgb = list(v)[:3] if isinstance(v, (list, tuple)) else [255, 255, 255]
-            w = dpg.add_color_edit([int(c) for c in rgb] + [255], label=p["name"], width=110, no_alpha=True,
+            w = dpg.add_color_edit([int(c) for c in rgb] + [255], label=p["name"], width=self.px(110), no_alpha=True,
                                user_data=ud, callback=cb)
         elif p["type"] == "text":
-            w = dpg.add_input_text(label=p["name"], width=100, default_value=str(v), user_data=ud, callback=cb)
+            w = dpg.add_input_text(label=p["name"], width=self.px(100), default_value=str(v), user_data=ud, callback=cb)
         else:
             return
         self._widgets.add(w)
@@ -896,8 +1035,8 @@ class GraphPanel:
         for nid in self.graph.nodes:
             if dpg.does_item_exist(f"gnode_{nid}") and dpg.is_item_hovered(f"gnode_{nid}"):
                 return
-        ex, ey = dpg.get_item_rect_min("node_editor")
-        self._menu_pos = (max(0, mx - ex - 20), max(0, my - ey - 10))
+        gx, gy = self._to_graph((mx, my))
+        self._menu_pos = (gx - 20, gy - 10)
         self._pending = (frm[0], frm[1], t)
         self.show_add_menu((mx, my), only=self._consumers(t, limit=60))
 
@@ -921,8 +1060,8 @@ class GraphPanel:
                 self._fill_ctx_menu()
                 dpg.configure_item("graph_ctx", show=True); dpg.set_item_pos("graph_ctx", [mx, my])
                 return
-        ex, ey = dpg.get_item_rect_min("node_editor")
-        self._menu_pos = (max(0, mx - ex - 20), max(0, my - ey - 10))
+        gx, gy = self._to_graph((mx, my))
+        self._menu_pos = (gx - 20, gy - 10)
         self._pending = None
         self.show_add_menu((mx, my))
 

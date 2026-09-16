@@ -37,7 +37,8 @@ import threading
 from native.engine import Engine, stats
 from native.synth import Synth
 from native.geometry import Geometry, KINDS
-from native.project import default_project, Project, list_projects, project_path, remember_project, PROJECTS
+from native.project import (default_project, Project, list_projects, project_path, remember_project, PROJECTS,
+                            load_prefs, save_prefs)
 from native.graph_ui import GraphPanel, build_panel
 from native import render, gif
 from native.apiref import API
@@ -151,6 +152,12 @@ class App:
         self.edit_dirty = False
         self.build_q = queue.Queue()  # worker -> main thread: BuildReport
         self.building = False
+        # --- pane sizes: dragged on the splitters, remembered across runs ----
+        self.prefs = load_prefs()
+        self.splits = {"both": 0.5, "edit": 0.55, "graph": 0.7}   # the left pane's share of the two-pane width
+        self.splits.update({k: float(v) for k, v in self.prefs.get("splits", {}).items() if k in self.splits})
+        self.side_w = int(self.prefs.get("side_w", SIDE_W))
+        self._split_drag = None      # ("a"|"b", mouse x at press, value at press) while a splitter is held
         self._watch_mtime = None     # the edit file's mtime when last read, for the watcher
         self._watch_at = 0.0
         self.build_msg = ""
@@ -923,27 +930,38 @@ class App:
         show_edit = self.layout == "edit" and self.ui
         show_graph = self.layout == "graph" and self.ui
         nview = (show_net + show_cube + show_edit + show_graph) if self.ui else (show_net + show_cube)
+        # Two panes share the width by a draggable split: the left pane (the
+        # logical view, the code or the graph) takes `split` of it, the 3-D
+        # view the rest. Each view is drawn square, as large as its pane
+        # allows; a code or graph pane simply takes its width.
+        split = self.splits.get(self.layout, 0.5)
         if self.ui:
             pane_h = max(VIEW_MIN, vh - 108)
-            avail  = vw - SIDE_W - (22 * nview + 24)
+            avail  = vw - self.side_w - (22 * nview + 24) - (8 * nview)   # splitter handles
+            if nview == 2:
+                left_w = int(max(VIEW_MIN, min(avail - VIEW_MIN, avail * split)))
+                right_w = max(VIEW_MIN, avail - left_w)
+            else:
+                left_w = right_w = max(VIEW_MIN, avail)
         else:
             # Presenting: no control column, no captions, no borders and no
             # padding, so none of it gets an allowance. The picture takes the
             # whole frame less the gap between two of them.
             pane_h = max(VIEW_MIN, vh)
             avail  = vw - (16 if nview == 2 else 0)
-        per = max(VIEW_MIN, avail // nview)
-        side = max(VIEW_MIN, min(per, pane_h))
-        # In the graph layout the 3-D view gives up room to the nodes: it is
-        # a monitor there, not the subject.
-        if self.layout == "graph":
-            side = max(VIEW_MIN, min(side, 360))
+            left_w = right_w = max(VIEW_MIN, avail // max(1, nview))
+        side_l = max(VIEW_MIN, min(left_w, pane_h))      # the logical view's square
+        side = max(VIEW_MIN, min(right_w, pane_h))        # the 3-D view's square
+        if not self.ui:
+            side_l = side = max(VIEW_MIN, min(left_w, pane_h))
 
         dpg.configure_item("net_win",  show=show_net)
         dpg.configure_item("cube_win", show=show_cube)
         dpg.configure_item("edit_win", show=show_edit)
         dpg.configure_item("graph_win", show=show_graph)
         dpg.configure_item("side_win", show=self.ui)
+        dpg.configure_item("split_a", show=self.ui and nview == 2)
+        dpg.configure_item("split_b", show=self.ui)
 
         th = self._themes.get("present" if not self.ui else "normal")
         if th:
@@ -961,7 +979,7 @@ class App:
         # The net is upscaled by a WHOLE number so the LED grid stays hard;
         # bilinear scaling of a 48-pixel image looks like a photograph of a cube
         # rather than a cube.
-        self.net_scale = max(1, side // max(self.eng.cols, self.net_image().shape[0]))
+        self.net_scale = max(1, side_l // max(self.eng.cols, self.net_image().shape[0]))
         # The cube render is capped whatever the pane size, and the image is
         # scaled up to fill. Measured, the renderer costs 28 ms a frame at 620
         # and 64 ms at 900 - it is quadratic in the size, and it is already the
@@ -976,17 +994,16 @@ class App:
             # Presenting placed the panes by hand; a pane once placed no longer
             # flows in its row, so it would sit where it was left, under
             # whatever now shares the row. Back to flowing before sizing.
-            for tag in ("net_win", "cube_win", "edit_win", "graph_win", "side_win"):
+            for tag in ("net_win", "cube_win", "edit_win", "graph_win", "side_win", "split_a", "split_b"):
                 dpg.reset_pos(tag)
-            for tag in ("net_win", "cube_win"):
-                dpg.configure_item(tag, width=side + 22, height=pane_h + 34)
-            dpg.configure_item("edit_win", width=side + 22, height=pane_h + 34)
-            dpg.configure_item("code", width=side + 4, height=pane_h - 240)
-            # the graph pane takes the room the logical view would - and more,
-            # when the window is wide: nodes want space, the 3-D view does not
-            gw = max(side + 22, vw - SIDE_W - side - 60) if self.layout == "graph" else side + 22
-            dpg.configure_item("graph_win", width=gw, height=pane_h + 34)
-            dpg.configure_item("side_win", height=pane_h + 34)
+            dpg.configure_item("net_win", width=side_l + 22, height=pane_h + 34)
+            dpg.configure_item("cube_win", width=side + 22, height=pane_h + 34)
+            dpg.configure_item("edit_win", width=left_w + 22, height=pane_h + 34)
+            dpg.configure_item("code", width=left_w + 4, height=pane_h - 240)
+            dpg.configure_item("graph_win", width=left_w + 22, height=pane_h + 34)
+            dpg.configure_item("side_win", width=self.side_w - 10, height=pane_h + 34)
+            for tag in ("split_a", "split_b"):
+                dpg.configure_item(tag, height=pane_h + 34)
         # Centre what is left, rather than letting it sit against the corner.
         # In presentation mode the panes are exactly the size of their pictures
         # and are positioned by hand; the black around them is the viewport
@@ -1057,6 +1074,11 @@ class App:
     # moved from where the drag began. A spin control, not a grab, exactly as it
     # felt.
     def on_mouse_click(self, sender, app_data):
+        for tag in ("split_a", "split_b"):
+            if dpg.does_item_exist(tag) and dpg.is_item_shown(tag) and dpg.is_item_hovered(tag):
+                mx = dpg.get_mouse_pos(local=False)[0]
+                self._split_drag = (tag, mx, self.splits.get(self.layout, 0.5) if tag == "split_a" else self.side_w)
+                return
         if dpg.is_item_hovered("cube_img"):
             self._dragging = True
             self._yaw0, self._pitch0 = self.yaw, self.pitch
@@ -1064,6 +1086,10 @@ class App:
             self.gp.on_press()
 
     def on_mouse_release(self, sender, app_data):
+        if self._split_drag:
+            self._split_drag = None
+            self.prefs["splits"] = dict(self.splits); self.prefs["side_w"] = self.side_w
+            save_prefs(self.prefs)
         self._dragging = False
         if self.layout == "graph":
             self.gp.on_release()
@@ -1073,6 +1099,20 @@ class App:
             self.gp.open_menu()
 
     def on_drag(self, sender, app_data):
+        if self._split_drag:
+            tag, x0, v0 = self._split_drag
+            mx = dpg.get_mouse_pos(local=False)[0]
+            vw = max(640, dpg.get_viewport_client_width())
+            if tag == "split_a":
+                avail = max(200, vw - self.side_w - 100)
+                new = max(0.15, min(0.85, v0 + (mx - x0) / avail))
+                if abs(new - self.splits.get(self.layout, 0.5)) * avail >= 6:
+                    self.splits[self.layout] = new; self.request_layout()
+            else:
+                new = int(max(240, min(vw // 2, v0 - (mx - x0))))
+                if abs(new - self.side_w) >= 6:
+                    self.side_w = new; self.request_layout()
+            return
         # Keyed to whether the drag STARTED on the cube, not to what is under
         # the pointer now, so running off the edge mid-turn does not drop it.
         if not self._dragging:
@@ -1086,6 +1126,10 @@ class App:
         self.pitch = max(-1.45, min(1.45, self._pitch0 + dy * k))
 
     def on_wheel(self, sender, app_data):
+        if self.layout == "graph" and dpg.does_item_exist("node_editor") and dpg.is_item_hovered("node_editor") \
+                and not dpg.is_item_hovered("graph_menu") and not dpg.is_item_hovered("graph_ctx"):
+            self.gp.zoom_step(app_data, dpg.get_mouse_pos(local=False))
+            return
         if not dpg.is_item_hovered("cube_img"):
             return
         # Multiplicative, so a notch moves the same proportion at every range.
@@ -1120,6 +1164,12 @@ class App:
                 self.gp.cut()
             elif app_data == dpg.mvKey_V:
                 self.gp.paste()
+            elif app_data in (dpg.mvKey_Plus, dpg.mvKey_Add):
+                self.gp.zoom_step(1)
+            elif app_data in (dpg.mvKey_Minus, dpg.mvKey_Subtract):
+                self.gp.zoom_step(-1)
+            elif app_data in (dpg.mvKey_0, dpg.mvKey_NumPad0):
+                self.gp.set_zoom(1.0)
             return
         if ctrl:
             return
@@ -1227,6 +1277,9 @@ def build(app):
         dpg.add_mouse_release_handler(button=dpg.mvMouseButton_Left, callback=app.on_mouse_release)
         dpg.add_mouse_click_handler(button=dpg.mvMouseButton_Right, callback=app.on_right_click)
         dpg.add_mouse_wheel_handler(callback=app.on_wheel)
+        dpg.add_mouse_drag_handler(button=dpg.mvMouseButton_Middle,
+                                   callback=lambda s, a: app.gp.on_mid_drag((a[1], a[2])))
+        dpg.add_mouse_release_handler(button=dpg.mvMouseButton_Middle, callback=lambda s, a: app.gp.on_mid_release())
         dpg.add_key_press_handler(callback=app.on_key)
 
     with dpg.window(tag="root"):
@@ -1279,10 +1332,13 @@ def build(app):
                 dpg.add_group(tag="edit_errors")
             with dpg.child_window(tag="graph_win", width=420, height=470, show=False):
                 build_panel(app, app.gp)
+            # A splitter is a tall, thin button; dragging it moves the split.
+            dpg.add_button(label="", tag="split_a", width=8, height=470)
             with dpg.child_window(tag="cube_win", width=420, height=470):
                 dpg.add_text("3-D - drag to rotate, wheel to zoom",
                              tag="cube_cap", color=(139, 147, 163))
-            with dpg.child_window(tag="side_win", width=SIDE_W - 10, height=470):
+            dpg.add_button(label="", tag="split_b", width=8, height=470)
+            with dpg.child_window(tag="side_win", width=app.side_w - 10, height=470):
                 with dpg.group(horizontal=True):
                     dpg.add_combo(list_projects(), label="project", tag="project_combo", width=200,
                                   default_value=os.path.basename(app.project.path),
@@ -1475,6 +1531,14 @@ def service_command(app):
             if "effect" in c:
                 app.on_effect(None, c["effect"])
                 dpg.set_value("fx_combo", c["effect"])
+            if "graph_zoom" in c:                       # test hook: zoom level, optionally about a screen point
+                z = c["graph_zoom"]
+                app.gp.set_zoom(z[0], tuple(z[1])) if isinstance(z, list) else app.gp.set_zoom(z)
+            if "split" in c:                            # test hook: [layout, fraction] or ["side", px]
+                k, v = c["split"]
+                if k == "side": app.side_w = int(v)
+                else: app.splits[k] = float(v)
+                app.request_layout()
             if "viewport" in c:                         # test hook: resize the window (fires the resize callback)
                 dpg.set_viewport_width(int(c["viewport"][0])); dpg.set_viewport_height(int(c["viewport"][1]))
             if "ui" in c:                               # test hook: H, the presentation toggle

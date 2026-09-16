@@ -314,17 +314,35 @@ def list_projects():
     return out
 
 
-def last_project():
+def _studio():
     try:
-        return json.load(open(STUDIO_FILE, encoding="utf-8")).get("last")
+        return json.load(open(STUDIO_FILE, encoding="utf-8"))
     except Exception:
-        return None
+        return {}
+
+
+def _studio_save(d):
+    os.makedirs(PROJECTS, exist_ok=True)
+    with open(STUDIO_FILE, "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=1)
+
+
+def last_project():
+    return _studio().get("last")
 
 
 def remember_project(path):
-    os.makedirs(PROJECTS, exist_ok=True)
-    with open(STUDIO_FILE, "w", encoding="utf-8") as f:
-        json.dump({"last": path}, f)
+    d = _studio(); d["last"] = path; _studio_save(d)
+
+
+def load_prefs():
+    """UI preferences that belong to the app, not a project: pane splits,
+    the side panel's width, the node editor's zoom."""
+    return dict(_studio().get("ui", {}))
+
+
+def save_prefs(prefs):
+    d = _studio(); d["ui"] = dict(prefs); _studio_save(d)
 
 
 def project_path(name_or_path):
