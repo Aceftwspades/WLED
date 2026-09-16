@@ -253,5 +253,45 @@ class Project:
         return out
 
 
+STUDIO_FILE = os.path.join(PROJECTS, "studio.json")     # what is not any one project's: the last one opened
+
+
+def list_projects():
+    """Project folder names under projects/, the ones with a project.json
+    or an effects folder."""
+    os.makedirs(PROJECTS, exist_ok=True)
+    out = []
+    for d in sorted(os.listdir(PROJECTS)):
+        p = os.path.join(PROJECTS, d)
+        if os.path.isdir(p) and (os.path.exists(os.path.join(p, "project.json")) or os.path.isdir(os.path.join(p, "effects"))):
+            out.append(d)
+    return out
+
+
+def last_project():
+    try:
+        return json.load(open(STUDIO_FILE, encoding="utf-8")).get("last")
+    except Exception:
+        return None
+
+
+def remember_project(path):
+    os.makedirs(PROJECTS, exist_ok=True)
+    with open(STUDIO_FILE, "w", encoding="utf-8") as f:
+        json.dump({"last": path}, f)
+
+
+def project_path(name_or_path):
+    """A project folder from what was typed: an existing directory as it
+    is, else a name under projects/."""
+    if os.path.isdir(name_or_path) or os.path.isabs(name_or_path):
+        return os.path.abspath(name_or_path)
+    return os.path.join(PROJECTS, _ident(name_or_path) or "default")
+
+
 def default_project():
+    """The project the app opens with: the last one used, else default."""
+    last = last_project()
+    if last and os.path.isdir(last):
+        return Project(last)
     return Project(os.path.join(PROJECTS, "default"))

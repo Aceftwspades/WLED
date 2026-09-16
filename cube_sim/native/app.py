@@ -36,7 +36,7 @@ import threading
 from native.engine import Engine, stats
 from native.synth import Synth
 from native.geometry import Geometry, KINDS
-from native.project import default_project
+from native.project import default_project, Project, list_projects, project_path, remember_project, PROJECTS
 from native.graph_ui import GraphPanel, build_panel
 from native import render, gif
 from native.apiref import API
@@ -449,6 +449,57 @@ class App:
         dpg.set_value("edit_file", fname)
         self.refresh_import_buttons()
 
+    # --- projects ---------------------------------------------------------------------
+    # One folder per project under cube_sim/projects/ (or anywhere, by path).
+    # Switching swaps the project object, applies its geometry, re-lists its
+    # effects and graphs, and rebuilds the engine for its effects list.
+    def switch_project(self, path, create=False):
+        path = project_path(path)
+        if not create and not os.path.isdir(path):
+            dpg.set_value("edit_status", f"no project at {path}"); return
+        if self.edit_dirty:
+            self.edit_save()
+        if self.gp.graph:
+            self.gp.save()
+        self.project = Project(path)
+        remember_project(path)
+        self.edit_file = None
+        self.gp.graph = None; self.gp.file = None; self.gp.stack.clear()
+        self.apply_geometry(self.project.geometry)
+        dpg.set_value("geom_kind", self.project.geometry.kind)
+        self.rebuild_geom_fields()
+        dpg.configure_item("edit_file", items=self.project.effect_files()); dpg.set_value("edit_file", "")
+        dpg.set_value("code", "")
+        self.gp.refresh_lib()
+        dpg.configure_item("graph_file", items=self.gp.files()); dpg.set_value("graph_file", "")
+        self.gp.rebuild()
+        self.refresh_import_buttons()
+        self.refresh_project_list()
+        name = os.path.basename(path)
+        dpg.set_value("edit_status", f"project {name}"); self.gp.status(f"project {name}")
+        # the engine holds the previous project's drafts: build this one's list
+        self.edit_build()
+
+    def new_project(self, name):
+        name = (name or "").strip()
+        if not name:
+            dpg.set_value("edit_status", "type a project name first"); return
+        path = project_path(name)
+        if os.path.isdir(path):
+            self.switch_project(path); return
+        self.switch_project(path, create=True)
+        dpg.set_value("project_name", "")
+
+    def refresh_project_list(self):
+        if dpg.does_item_exist("project_combo"):
+            names = list_projects()
+            cur = os.path.basename(self.project.path)
+            if os.path.dirname(self.project.path) != PROJECTS and cur not in names:
+                names.append(self.project.path)
+                cur = self.project.path
+            dpg.configure_item("project_combo", items=names)
+            dpg.set_value("project_combo", cur)
+
     # --- the external editor and the file watcher -------------------------------------
     # The in-app box is for quick fixes. For real editing the file opens in
     # whatever editor the system has - VS Code if it is on the path, else the
@@ -683,7 +734,7 @@ class App:
                 dpg.add_text(rep.link_output[-600:], parent="edit_errors", color=(235, 120, 110), wrap=0)
             return
         # success: swap the engine, keep everything the user had
-        want = self.project.effect_title(self.edit_file) if self.edit_file else None
+        want = self.project.effect_title(self.edit_file) if self.edit_file else self.project.selected
         self.eng.reload(rep.library)
         dpg.configure_item("fx_combo", items=self.eng.names)
         if want in self.eng.names:
@@ -1145,6 +1196,15 @@ def build(app):
                 dpg.add_text("3-D - drag to rotate, wheel to zoom",
                              tag="cube_cap", color=(139, 147, 163))
             with dpg.child_window(tag="side_win", width=SIDE_W - 10, height=470):
+                with dpg.group(horizontal=True):
+                    dpg.add_combo(list_projects(), label="project", tag="project_combo", width=200,
+                                  default_value=os.path.basename(app.project.path),
+                                  callback=lambda s, v: app.switch_project(v))
+                with dpg.group(horizontal=True):
+                    dpg.add_input_text(tag="project_name", hint="new project name or a folder", width=200,
+                                       on_enter=True, callback=lambda s, v: app.new_project(v))
+                    dpg.add_button(label="new / open", callback=lambda: app.new_project(dpg.get_value("project_name")))
+                dpg.add_separator()
                 dpg.add_combo(app.eng.names, label="effect", tag="fx_combo",
                               default_value=app.eng.names[app.eng.idx], width=200,
                               callback=app.on_effect)
@@ -1354,6 +1414,8 @@ def service_command(app):
                 dpg.set_value("new_name", c["rename"]); app.edit_rename()
             if "graph_rename" in c:
                 app.gp.rename(c["graph_rename"])
+            if "project" in c:
+                app.new_project(c["project"])
             if "find" in c:
                 dpg.set_value("find_text", c["find"]); app.find()
             if "replace" in c:

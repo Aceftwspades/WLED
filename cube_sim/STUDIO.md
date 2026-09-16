@@ -188,7 +188,11 @@ editor. Ticked when done; the order within a group is the order to do them.
 
 ### Project and workflow
 
-- [ ] **Multiple projects**: new / open / recent, not just `projects/default`.
+- [x] **Multiple projects**: a project picker at the top of the side panel
+      lists `projects/`; the box takes a new name or any folder path. The
+      last project opened is remembered (`projects/studio.json`) and opens
+      next time. Switching applies the project's geometry, effects list and
+      graphs and rebuilds the engine for its list.
 - [x] **Palette source node**: the colours the palette-source setting names
       (what the audio-reactive palettes draw from), at an index. One small
       firmware addition, `cfxPaletteSourceColor()` in cube_fx_palettes.cpp,
