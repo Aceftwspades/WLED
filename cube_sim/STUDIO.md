@@ -320,6 +320,80 @@ editor. Ticked when done; the order within a group is the order to do them.
       **screenshot** saves the 3-D view to `export/shots/`. MP4 is not
       offered: it would need ffmpeg on the path for no gain over the GIF.
 
+### Against Blender's node editors
+
+Measured against Blender's shader, geometry and compositor nodes. The order
+within each group is the order to do them.
+
+**Types and maths**
+
+- [ ] **Vector socket type** — three floats on one wire, coercing to and
+      from separate floats and colour. Halves the pin count on Rotate, Dot 3,
+      Length, Direction to, Torus knot, Mirror fold, Emitters, Shells,
+      Position, Direction; the structural change everything below leans on.
+- [ ] **Vector Math** (add, scale, normalize, cross, distance, reflect,
+      project) and **Vector Rotate** about any axis.
+- [ ] **Math node with a mode dropdown** (Blender's design) covering the ops
+      we lack: sqrt, sign, round, ceil, truncate, snap, ping-pong, wrap,
+      compare, atan2, tangent, smooth min/max — one definition instead of
+      nine more nodes.
+- [ ] **Map Range** with easing and stepped modes (Remap is linear only);
+      **Float Curve** (a hand-drawn curve; DPG has no curve widget, so a
+      small point list).
+
+**Generators**
+
+- [ ] **Voronoi / Worley** (nearest-point distance, cell id) on Position or
+      Direction so it is seamless — cells, cracks, stained glass.
+- [ ] **fBm on Noise** (octaves, roughness) — what makes clouds clouds.
+- [ ] **Checker, Gradient (linear / radial / spherical), Brick, Magic**;
+      distortion on Wave.
+
+**Colour**
+
+- [ ] **Color Ramp** — a gradient with editable stops on the node, 0..1 to
+      colour, constant / linear / ease; the most-used Blender node we lack,
+      and the way to author palettes visually.
+- [ ] **Adjust** (hue shift, saturation, value, invert, gamma, contrast).
+- [ ] **Blend modes**: overlay, difference, soft light, hue, saturation,
+      colour, luminosity. **Blackbody** (kelvin to colour).
+- [ ] **Layers** — one node with N colour inputs and a mode per layer, so a
+      stack is not a chain of Blends.
+
+**Simulation and time**
+
+- [ ] More than two **Fields** per graph (a constant).
+- [ ] **Blur / Glow** (a small-radius blur from Previous at; bloom = blur
+      plus add), **Transform** (translate / rotate / scale u, v about a
+      pivot).
+- [ ] **Ease** (tween a value toward a target over N seconds) and
+      **Sequencer** (cycle through timed phases — built by hand for the
+      Question Block).
+- [ ] **Statistics** (min / max / mean of a field over all pixels, once a
+      frame) for normalisation and auto-exposure.
+- [ ] **Particles** — N particles with position, velocity, age and a brush
+      that accumulates them into a field: sparks, rain, fireworks. The one
+      real capability gap; the largest item here.
+- [ ] **Path** (a list of points; distance to it, position along it) to
+      generalise Torus knot.
+
+**Editor**
+
+- [ ] **Mute** a node (its first input passes to its first output).
+- [ ] **Duplicate with links.**
+- [ ] **Arrange** (a layered layout by depth) — worth more here than in
+      Blender, our nodes are wide.
+- [ ] **Hide unwired pins** on a node.
+- [ ] **Live values** on frame-scope pins (sliders, audio, Integrate) when
+      hovered.
+- [ ] Wire-drag from an *input* to an empty spot; Alt-drag to detach a node
+      from its wires; F to connect two selected nodes.
+- [ ] A **properties side panel** for the long params (Bitmap rows,
+      Expression, Image file).
+- [ ] Preview thumbnails on nodes — the compile-to-C++ model does not give
+      continuous per-node taps cheaply; the realistic version is a small
+      image on the node being pin-previewed.
+
 ### Alongside
 
 - Cross-platform audio (done): WASAPI loopback on Windows, and any input
