@@ -193,9 +193,15 @@ class Engine:
         except AttributeError:
             return 1
 
+    BLEND_MODES = ["Top/Default", "Bottom/None", "Add", "Subtract", "Difference", "Average", "Multiply", "Divide",
+                   "Lighten", "Darken", "Screen", "Overlay", "Hard light", "Soft light", "Dodge", "Burn", "Stencil"]
+
     def seg_get(self, k):
-        """(x0, y0, x1, y1, opacity, effect index) of segment k."""
-        return tuple(int(self.lib.simSegGet(int(k), w)) for w in range(6))
+        """(x0, y0, x1, y1, opacity, effect index, blend mode) of segment k."""
+        return tuple(int(self.lib.simSegGet(int(k), w)) for w in range(7))
+
+    def seg_blend(self, k, mode):
+        self.lib.simSegBlendMode(int(k), int(mode))
 
     def seg_config(self, k, x0, y0, x1, y1, opacity=255):
         self.lib.simSegConfig(int(k), int(x0), int(y0), int(x1), int(y1), int(opacity))
@@ -231,10 +237,10 @@ class Engine:
         out = []
         cur = {"idx": self.idx, "fx": dict(self.fx), "pal": self.pal, "colors": self._colors}
         for k in range(self.seg_count()):
-            x0, y0, x1, y1, op, fx = self.seg_get(k)
+            x0, y0, x1, y1, op, fx, bm = self.seg_get(k)
             st = cur if k == self.seg else (self._segstate.get(k) or {"idx": fx, "fx": {}, "pal": self.pal, "colors": self._colors})
             name = self.names[st["idx"]] if 0 <= st["idx"] < len(self.names) else ""
-            out.append({"bounds": [x0, y0, x1, y1], "opacity": op, "effect": name, "params": dict(st["fx"]), "pal": st["pal"]})
+            out.append({"bounds": [x0, y0, x1, y1], "opacity": op, "blend": bm, "effect": name, "params": dict(st["fx"]), "pal": st["pal"]})
         return out
 
     def load_segments(self, segs):
@@ -246,6 +252,7 @@ class Engine:
         for k, sg in enumerate(segs[:8]):
             b = sg.get("bounds") or [0, 0, self.cols, self.rows]
             self.seg_config(k, b[0], b[1], b[2], b[3], sg.get("opacity", 255))
+            self.seg_blend(k, sg.get("blend", 0))
         for k, sg in enumerate(segs[:8]):
             self.seg_select(k) if k != self.seg else None
             if sg.get("effect") in self.names:

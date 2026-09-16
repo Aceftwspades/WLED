@@ -1875,7 +1875,7 @@ class App:
     def seg_labels(self):
         out = []
         for k in range(self.eng.seg_count()):
-            x0, y0, x1, y1, op, fx = self.eng.seg_get(k)
+            x0, y0, x1, y1, op, fx, bm = self.eng.seg_get(k)
             name = self.eng.names[fx] if 0 <= fx < len(self.eng.names) else "?"
             out.append(f"{k}: {x0},{y0} - {x1},{y1}  {name}")
         return out
@@ -1890,18 +1890,26 @@ class App:
         if self.eng.seg_count() < 2:
             dpg.add_text("one segment, the whole strip - + adds another", parent="seg_fields", color=(139, 147, 163))
             return
-        x0, y0, x1, y1, op, fx = self.eng.seg_get(self.eng.seg)
+        x0, y0, x1, y1, op, fx, bm = self.eng.seg_get(self.eng.seg)
         with dpg.group(horizontal=True, parent="seg_fields"):
             for key, val in (("x0", x0), ("y0", y0), ("x1", x1), ("y1", y1)):
                 dpg.add_input_int(label=key, width=60, default_value=val, user_data=key, on_enter=True, step=0,
                                   callback=self.on_seg_field)
         dpg.add_slider_int(label="opacity", parent="seg_fields", width=200, min_value=0, max_value=255, default_value=op,
                            callback=lambda s, v: self.on_seg_field(s, v, "opacity"))
+        # WLED's per-segment blend mode ("bm"): how this segment lands on the ones under it
+        modes = self.eng.BLEND_MODES
+        dpg.add_combo(modes, label="blend mode", parent="seg_fields", width=200, default_value=modes[bm if bm < len(modes) else 0],
+                      callback=lambda s, v: self.on_seg_blend(modes.index(v)))
+
+    def on_seg_blend(self, mode):
+        self.eng.seg_blend(self.eng.seg, mode)
+        self.save_segments()
 
     def on_seg_field(self, sender, val, key=None):
         key = key or dpg.get_item_user_data(sender)
         k = self.eng.seg
-        x0, y0, x1, y1, op, fx = self.eng.seg_get(k)
+        x0, y0, x1, y1, op, fx, bm = self.eng.seg_get(k)
         cur = {"x0": x0, "y0": y0, "x1": x1, "y1": y1, "opacity": op}
         cur[key] = int(val)
         self.eng.seg_config(k, cur["x0"], cur["y0"], cur["x1"], cur["y1"], cur["opacity"])
@@ -1974,7 +1982,7 @@ class App:
         sc = self.net_scale
         ry = self.net_image().shape[0] / max(1, self.eng.rows) * sc
         for k in range(self.eng.seg_count()):
-            x0, y0, x1, y1, op, fx = self.eng.seg_get(k)
+            x0, y0, x1, y1, op, fx, bm = self.eng.seg_get(k)
             col = (90, 169, 230, 255) if k == self.eng.seg else (255, 184, 70, 200)
             self._seg_items.append(dpg.draw_rectangle((ox + x0 * sc, oy + y0 * ry), (ox + x1 * sc, oy + y1 * ry),
                                                       parent="seg_overlay", color=col, thickness=2))
@@ -2045,8 +2053,11 @@ class App:
         f = self.eng.fx
         params = {k: f.get(k) for k in ("sx", "ix", "c1", "c2", "c3")}
         params.update({k: bool(f.get(k)) for k in ("o1", "o2", "o3")})
+        bm, op = 0, 255
+        if self.eng.seg_count() >= 1:
+            g = self.eng.seg_get(self.eng.seg); bm, op = g[6], g[4]
         ok, msg = flash.push_settings(host, self.eng.names[self.eng.idx], params,
-                                      self.palette_name_for(self.eng.pal), self.seg_cols)
+                                      self.palette_name_for(self.eng.pal), self.seg_cols, seg_id=self.eng.seg, blend=bm, opacity=op)
         dpg.set_value("edit_status", msg); self.gp.status(msg)
 
     # --- A/B: two effects side by side ------------------------------------------
@@ -2622,7 +2633,9 @@ def service_command(app):
                 if v == "add": app.seg_add()
                 elif v == "remove": app.seg_remove()
                 elif isinstance(v, dict):
-                    app.eng.seg_config(v["k"], v["x0"], v["y0"], v["x1"], v["y1"], v.get("opacity", 255)); app.save_segments(); app.rebuild_seg_fields()
+                    app.eng.seg_config(v["k"], v["x0"], v["y0"], v["x1"], v["y1"], v.get("opacity", 255))
+                    if "blend" in v: app.eng.seg_blend(v["k"], v["blend"])
+                    app.save_segments(); app.rebuild_seg_fields()
                 else: app.seg_pick(f"{int(v)}:")
             if "ed_key" in c:                           # test hook: [key name, ctrl, shift] into the editor
                 app.code_ed.focus = True

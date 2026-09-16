@@ -236,7 +236,7 @@ def _get_json(host, path, timeout=5):
         return json.loads(r.read().decode("utf-8", "replace"))
 
 
-def push_settings(host, effect, params, palette, colours):
+def push_settings(host, effect, params, palette, colours, seg_id=0, blend=None, opacity=None):
     """The current effect and its settings to the device's first segment
     over /json/state: the effect and palette found by NAME in the device's
     own lists (its ids are its own), the sliders, the checkboxes, the three
@@ -256,10 +256,14 @@ def push_settings(host, effect, params, palette, colours):
     fx = next((i for i, n in enumerate(names) if str(n).split("@")[0].strip().lower() == want), None)
     if fx is None:
         return False, f"the device has no effect called {effect!r} - flash the firmware with it first"
-    seg = {"id": 0, "fx": fx, "sx": int(params.get("sx", 128)), "ix": int(params.get("ix", 128)),
+    seg = {"id": int(seg_id), "fx": fx, "sx": int(params.get("sx", 128)), "ix": int(params.get("ix", 128)),
            "c1": int(params.get("c1", 128)), "c2": int(params.get("c2", 128)), "c3": int(params.get("c3", 16)),
            "o1": bool(params.get("o1")), "o2": bool(params.get("o2")), "o3": bool(params.get("o3")),
            "col": [[(c >> 16) & 255, (c >> 8) & 255, c & 255] for c in colours]}
+    if blend is not None:
+        seg["bm"] = int(blend)                       # the segment's blend mode, as index.js sends it
+    if opacity is not None:
+        seg["bri"] = int(opacity)
     pal = next((i for i, n in enumerate(pals) if str(n).strip().lower() == (palette or "").strip().lower()), None)
     if pal is not None:
         seg["pal"] = pal

@@ -49,6 +49,7 @@ struct SimSeg {
   int x0 = 0, y0 = 0, x1 = 0, y1 = 0;     // bounds in the strip, exclusive end
   int fx = 0;
   uint8_t opacity = 255;
+  uint8_t blend = 0;                       // WLED's segment blend mode ("bm"), 0..16
   uint8_t map1d2d = 0;
   uint32_t *buf = nullptr;
   size_t bufLen = 0;
@@ -316,18 +317,55 @@ SIM_API void simSegEffect(int k, int idx) {
   gSegs[k].fx = idx;
 }
 
-SIM_API int simSegGet(int k, int what) {           // 0 x0, 1 y0, 2 x1, 3 y1, 4 opacity, 5 fx
+SIM_API int simSegGet(int k, int what) {           // 0 x0, 1 y0, 2 x1, 3 y1, 4 opacity, 5 fx, 6 blend
   if (k < 0 || k >= gSegCount) return 0;
   const SimSeg &S = gSegs[k];
   switch (what) { case 0: return S.x0; case 1: return S.y0; case 2: return S.x1; case 3: return S.y1;
-                  case 4: return S.opacity; case 5: return S.fx; }
+                  case 4: return S.opacity; case 5: return S.fx; case 6: return S.blend; }
   return 0;
 }
 
-// Each segment's frame into the strip, in order, later over earlier, faded
-// by its opacity. A segment at full opacity replaces; below it, its pixels
-// blend with what is under them - WLED's default segment blend.
+// --- segment blend modes: a transcription of WS2812FX::blendSegment() ---------
+// (wled00/FX_fcn.cpp). Per channel, t = the segment's pixel, b = what is under
+// it; the result then mixes with what was under by the segment's opacity, as
+// the firmware does: color_blend(under, blend(top, under), opacity). The
+// order and numbering are index.js's "bm" list: top, bottom, add, subtract,
+// difference, average, multiply, divide, lighten, darken, screen, overlay,
+// hard light, soft light, dodge, burn, stencil.
+static inline uint8_t bm_subtract  (uint8_t a, uint8_t b) { return b > a ? (b - a) : 0; }
+static inline uint8_t bm_difference(uint8_t a, uint8_t b) { return b > a ? (b - a) : (a - b); }
+static inline uint8_t bm_average   (uint8_t a, uint8_t b) { return (a + b) >> 1; }
+static inline uint8_t bm_multiply  (uint8_t a, uint8_t b) { return (a * b) / 255; }
+static inline uint8_t bm_divide    (uint8_t a, uint8_t b) { return a > b ? (b * 255) / a : 255; }
+static inline uint8_t bm_lighten   (uint8_t a, uint8_t b) { return a > b ? a : b; }
+static inline uint8_t bm_darken    (uint8_t a, uint8_t b) { return a < b ? a : b; }
+static inline uint8_t bm_screen    (uint8_t a, uint8_t b) { return 255 - bm_multiply((uint8_t)~a, (uint8_t)~b); }
+static inline uint8_t bm_overlay   (uint8_t a, uint8_t b) { return b < 128 ? 2 * bm_multiply(a, b) : (255 - 2 * bm_multiply((uint8_t)~a, (uint8_t)~b)); }
+static inline uint8_t bm_hardlight (uint8_t a, uint8_t b) { return a < 128 ? 2 * bm_multiply(a, b) : (255 - 2 * bm_multiply((uint8_t)~a, (uint8_t)~b)); }
+static inline uint8_t bm_softlight (uint8_t a, uint8_t b) { return (b * b * (255 - 2 * a) + 255 * 2 * a * b) / (255 * 255); }
+static inline uint8_t bm_dodge     (uint8_t a, uint8_t b) { return bm_divide((uint8_t)~a, b); }
+static inline uint8_t bm_burn      (uint8_t a, uint8_t b) { return (uint8_t)~bm_divide(a, (uint8_t)~b); }
+static inline uint8_t bm_top       (uint8_t a, uint8_t b) { return a; }
+
+static uint32_t simSegBlend(uint8_t mode, uint32_t t, uint32_t b) {
+  typedef uint8_t (*Fn)(uint8_t, uint8_t);
+  static const Fn fns[17] = { bm_top, bm_top, bm_top, bm_subtract, bm_difference, bm_average, bm_top, bm_divide,
+                              bm_lighten, bm_darken, bm_screen, bm_overlay, bm_hardlight, bm_softlight, bm_dodge, bm_burn, bm_top };
+  switch (mode) {
+    case 0:  return t;
+    case 1:  return b;
+    case 2:  return color_add(t, b, true);
+    case 6:  return RGBW32(bm_multiply(R(t), R(b)), bm_multiply(G(t), G(b)), bm_multiply(B(t), B(b)), bm_multiply(W(t), W(b)));
+    case 16: return t ? t : b;
+  }
+  const Fn f = fns[mode < 17 ? mode : 0];
+  return RGBW32(f(R(t), R(b)), f(G(t), G(b)), f(B(t), B(b)), f(W(t), W(b)));
+}
+
+// Each segment's frame into the strip, in order, later over earlier, by its
+// blend mode and opacity, as the firmware composites them.
 static void simComposite() {
+  memset(gPixels, 0, sizeof(uint32_t) * (size_t)gStripW * gStripH);
   for (int k = 0; k < gSegCount; k++) {
     const SimSeg &S = gSegs[k];
     if (!S.used || !S.buf) continue;
@@ -336,11 +374,15 @@ static void simComposite() {
       for (int x = S.x0; x < S.x1; x++) {
         const uint32_t c = S.buf[(y - S.y0) * sw + (x - S.x0)];
         uint32_t &dst = gPixels[y * gStripW + x];
-        if (S.opacity == 255 || k == 0) dst = (k == 0 && S.opacity != 255) ? color_fade(c, S.opacity) : c;
-        else dst = color_add(color_fade(dst, 255 - S.opacity), color_fade(c, S.opacity), true);
+        dst = color_blend(dst, simSegBlend(S.blend, c, dst), S.opacity);
       }
     }
   }
+}
+
+SIM_API void simSegBlendMode(int k, int mode) {
+  if (k < 0 || k >= SIM_MAX_SEGS) return;
+  gSegs[k].blend = (uint8_t)(mode < 0 ? 0 : (mode > 16 ? 16 : mode));
 }
 
 // How a 1-D effect is expanded onto a 2-D segment: 0 strip, 1 bars, 2 arcs,

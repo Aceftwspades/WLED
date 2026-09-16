@@ -126,3 +126,24 @@ def test_script_names_the_unscriptable_node():
         assert False, "Field should not be scriptable"
     except ScriptError as e:
         assert "Field" in str(e)
+
+
+def test_segment_blend_modes_follow_the_firmware():
+    """Lighten is max, darken min, subtract bottom minus top; the sim's
+    compositor is a transcription of blendSegment()."""
+    import numpy as np
+    from native.engine import Engine
+    eng = Engine(); eng.set_geometry(Geometry("matrix", w=16, h=8))
+    a = next(i for i, n in enumerate(eng.names) if "Axes" in n)
+    b = eng.names.index("Solid Pattern")
+    eng.seg_config(1, 0, 0, 16, 8, 255); eng.seg_select(1); eng.select(b, params={"sx": 255, "ix": 0})
+    eng.colors(0x4080C0, 0x4080C0, 0x4080C0); eng.seg_select(0); eng.select(a)
+    res = {}
+    for mode in (0, 1, 3, 8, 9):
+        eng.seg_blend(1, mode)
+        for _ in range(2): eng.frame(28)
+        res[mode] = eng.rgb().astype(int)
+    top, bot = res[0], res[1]
+    assert (np.abs(res[8] - np.maximum(top, bot)) <= 1).all()
+    assert (np.abs(res[9] - np.minimum(top, bot)) <= 1).all()
+    assert (np.abs(res[3] - np.clip(bot - top, 0, 255)) <= 1).all()

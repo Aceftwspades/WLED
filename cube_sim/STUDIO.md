@@ -546,7 +546,13 @@ them within each group; ticked when done.
       state and 1-D mapping; each runs as THE segment (the shim's width and
       height are its size for the duration), then the buffers are
       composited into the strip in order, later over earlier, faded by
-      opacity. The single-segment API means the current one; `simSeg*`
+      opacity - and by its **blend mode**: the sim's compositor is a
+      transcription of the firmware's `blendSegment()` (all seventeen: top,
+      bottom, add, subtract, difference, average, multiply, divide,
+      lighten, darken, screen, overlay, hard light, soft light, dodge,
+      burn, stencil), combined with opacity exactly as it does, and the
+      mode is pushed to the device as `bm` with the settings. The
+      single-segment API means the current one; `simSeg*`
       add, bound, select and drop them. The side panel's SEGMENTS section
       lists them (+ / -, bounds, opacity); the effect, sliders, palette and
       colours above it are the current segment's; the net draws every
