@@ -451,6 +451,47 @@ Pixel art you type: one line per row, a digit for a coloured pixel, a dot for an
 **Settings**
 - `rows` *(text)*: the rows: digits and dots, one row per line
 
+### Brick
+
+A brick wall, alternate rows offset by half a brick, with a mortar gap you can size.
+
+**Inputs**
+- `x` *(float)*: across
+- `y` *(float)*: down
+- `scale` *(float)*: rows of bricks per unit
+- `mortar` *(float)*: how wide the gaps are, 0..0.5
+
+**Outputs**
+- `value` *(float)*: 1 on a brick, 0 in the mortar
+- `row` *(float)*: which row this brick is in
+- `column` *(float)*: which brick along the row
+
+### Checker
+
+A chessboard of 1s and 0s.
+
+**Inputs**
+- `x` *(float)*: across
+- `y` *(float)*: down
+- `scale` *(float)*: squares per unit
+
+**Outputs**
+- `value` *(float)*: 1 or 0, alternating
+
+### Gradient
+
+A smooth ramp in the shape you pick: along x, curved, round the centre, from the centre, or diagonal. Feed Coords' cx, cy for the round ones.
+
+**Inputs**
+- `x` *(float)*: across (cx for radial and spherical)
+- `y` *(float)*: down (cy)
+
+**Outputs**
+- `value` *(float)*: 0..1
+
+**Settings**
+- `shape` *(choice)*: linear, quadratic, radial (angle round the centre), spherical (bright at the centre), diagonal
+
 ### Hash
 
 A random number that is always the same for the same inputs. Feed it a cell number and every cell gets its own fixed random - a colour per tile, a speed per column. Change seed to reshuffle them all.
@@ -512,6 +553,10 @@ Smooth random blobs - clouds, plasma, flames. Give it a point (Direction's nx, n
 
 **Outputs**
 - `value` *(float)*: the noise, 0..1
+
+**Settings**
+- `octaves` *(int)*: 1 is smooth blobs; 3-5 adds finer and finer detail on top - clouds, smoke
+- `roughness` *(float)*: how strong each finer layer is, 0..1
 
 ### Reaction diffusion
 
@@ -606,6 +651,21 @@ A looping, twisted tube floating inside the cube, seen from the middle. Feed it 
 - `R` *(float)*: the knot's overall size
 - `r` *(float)*: the loop's size
 
+### Voronoi
+
+Cells. Random points are scattered through space and every pixel belongs to the nearest one - the pattern of a giraffe, dried mud, stained glass. Feed Position (seamless on the cube) and use distance for soft cells, edge for the cracks between them, id to colour each cell.
+
+**Inputs**
+- `pos` *(vector)*: where to sample (Position)
+- `scale` *(float)*: how many cells per unit: bigger = smaller cells
+- `seed` *(float)*: a different seed, different cells
+
+**Outputs**
+- `distance` *(float)*: how far to the nearest point, 0 at it
+- `edge` *(float)*: 0 on a cell's edge, larger toward its middle
+- `id` *(float)*: a random 0..1 that is the same over the whole cell
+- `centre` *(vector)*: where the cell's point is
+
 ### Wave
 
 A repeating wave along its input: sine, triangle, square or saw. Feed a coordinate into x for stripes and a phase (Integrate, or Time times a speed) to scroll them. cycles is how many waves fit in one unit of x.
@@ -614,6 +674,7 @@ A repeating wave along its input: sine, triangle, square or saw. Feed a coordina
 - `x` *(float)*: what to wave along - a coordinate
 - `phase` *(float)*: slides the wave along; a clock scrolls it
 - `cycles` *(float)*: waves per unit of x
+- `distort` *(float)*: bends the wave with noise, 0 = straight
 
 **Outputs**
 - `value` *(float)*: the wave, 0..1
@@ -764,6 +825,25 @@ The natural logarithm. log of a radius makes rings that are evenly spaced when z
 
 **Outputs**
 - `result` *(float)*: ln(x)
+
+### Map range
+
+Remap with everything on pins: what was in_lo..in_hi becomes out_lo..out_hi, with an easing curve if you want it and, with steps above 0, in whole steps. Wire a slider into out_hi and the range itself becomes something the user controls.
+
+**Inputs**
+- `x` *(float)*: the value to remap
+- `in_lo` *(float)*: the input's low end
+- `in_hi` *(float)*: the input's high end
+- `out_lo` *(float)*: what in_lo becomes
+- `out_hi` *(float)*: what in_hi becomes
+- `steps` *(float)*: 0 for smooth, or how many steps
+
+**Outputs**
+- `result` *(float)*: the remapped value
+
+**Settings**
+- `ease` *(choice)*: how it runs between the ends: linear, smooth, ease in, ease out, ease in-out
+- `clamp` *(bool)*: hold the result inside the output range
 
 ### Math
 

@@ -339,17 +339,19 @@ within each group is the order to do them.
 - [x] **Math** — one node, every arithmetic op in a dropdown: the eight we
       had plus sqrt, sign, round, ceil, snap, ping-pong, wrap, compare,
       smooth min/max, the trig set in turns, log, exp.
-- [ ] **Map Range** with easing and stepped modes (Remap is linear only);
-      **Float Curve** (a hand-drawn curve; DPG has no curve widget, so a
+- [x] **Map range** with the ranges on pins, five easings and steps (Remap
+      stays as the small linear one).
+- [ ] **Float Curve** (a hand-drawn curve; DPG has no curve widget, so a
       small point list).
 
 **Generators**
 
-- [ ] **Voronoi / Worley** (nearest-point distance, cell id) on Position or
-      Direction so it is seamless — cells, cracks, stained glass.
-- [ ] **fBm on Noise** (octaves, roughness) — what makes clouds clouds.
-- [ ] **Checker, Gradient (linear / radial / spherical), Brick, Magic**;
-      distortion on Wave.
+- [x] **Voronoi** (distance, edge, cell id, the cell's point) on a vector
+      position - seamless from Position.
+- [x] **Noise** gains octaves and roughness (fBm); one octave is the old node.
+- [x] **Checker, Gradient (linear / quadratic / radial / spherical /
+      diagonal), Brick**; distortion on Wave. Magic is Noise into Wave's
+      distort.
 
 **Colour**
 

@@ -212,13 +212,32 @@ DOCS = {
                "make the blobs drift; raise scale for smaller blobs.",
         "in": {"x": "where to sample", "y": "where to sample", "z": "where to sample - Time makes it move",
                "scale": "how many blobs across: bigger = finer"},
-        "out": {"value": "the noise, 0..1"}},
+        "out": {"value": "the noise, 0..1"},
+        "params": {"octaves": "1 is smooth blobs; 3-5 adds finer and finer detail on top - clouds, smoke",
+                   "roughness": "how strong each finer layer is, 0..1"}},
+    "Voronoi": {
+        "doc": "Cells. Random points are scattered through space and every pixel belongs to the nearest one - the "
+               "pattern of a giraffe, dried mud, stained glass. Feed Position (seamless on the cube) and use "
+               "distance for soft cells, edge for the cracks between them, id to colour each cell.",
+        "in": {"pos": "where to sample (Position)", "scale": "how many cells per unit: bigger = smaller cells",
+               "seed": "a different seed, different cells"},
+        "out": {"distance": "how far to the nearest point, 0 at it", "edge": "0 on a cell's edge, larger toward its middle",
+                "id": "a random 0..1 that is the same over the whole cell", "centre": "where the cell's point is"}},
+    "Checker": {"doc": "A chessboard of 1s and 0s.", "in": {"x": "across", "y": "down", "scale": "squares per unit"},
+                "out": {"value": "1 or 0, alternating"}},
+    "Gradient": {"doc": "A smooth ramp in the shape you pick: along x, curved, round the centre, from the centre, "
+                        "or diagonal. Feed Coords' cx, cy for the round ones.",
+                 "in": {"x": "across (cx for radial and spherical)", "y": "down (cy)"}, "out": {"value": "0..1"},
+                 "params": {"shape": "linear, quadratic, radial (angle round the centre), spherical (bright at the centre), diagonal"}},
+    "Brick": {"doc": "A brick wall, alternate rows offset by half a brick, with a mortar gap you can size.",
+              "in": {"x": "across", "y": "down", "scale": "rows of bricks per unit", "mortar": "how wide the gaps are, 0..0.5"},
+              "out": {"value": "1 on a brick, 0 in the mortar", "row": "which row this brick is in", "column": "which brick along the row"}},
     "Wave": {
         "doc": "A repeating wave along its input: sine, triangle, square or saw. Feed a coordinate into x for stripes "
                "and a phase (Integrate, or Time times a speed) to scroll them. cycles is how many waves fit in one "
                "unit of x.",
         "in": {"x": "what to wave along - a coordinate", "phase": "slides the wave along; a clock scrolls it",
-               "cycles": "waves per unit of x"},
+               "cycles": "waves per unit of x", "distort": "bends the wave with noise, 0 = straight"},
         "out": {"value": "the wave, 0..1"},
         "params": {"shape": "sine (smooth), triangle (linear), square (on/off), saw (ramp)"}},
     "Ripple": {
@@ -316,6 +335,15 @@ DOCS = {
               "in": {"x": "the value to remap"}, "out": {"result": "the remapped value"},
               "params": {"in_lo": "the input's low end", "in_hi": "the input's high end",
                          "out_lo": "what in_lo becomes", "out_hi": "what in_hi becomes"}},
+    "Map range": {
+        "doc": "Remap with everything on pins: what was in_lo..in_hi becomes out_lo..out_hi, with an easing curve if "
+               "you want it and, with steps above 0, in whole steps. Wire a slider into out_hi and the range itself "
+               "becomes something the user controls.",
+        "in": {"x": "the value to remap", "in_lo": "the input's low end", "in_hi": "the input's high end",
+               "out_lo": "what in_lo becomes", "out_hi": "what in_hi becomes", "steps": "0 for smooth, or how many steps"},
+        "out": {"result": "the remapped value"},
+        "params": {"ease": "how it runs between the ends: linear, smooth, ease in, ease out, ease in-out",
+                   "clamp": "hold the result inside the output range"}},
     "Clamp": {"doc": "Keeps a value between lo and hi.", "in": {"x": "the value to limit"}, "out": {"result": "x, held between lo and hi"},
               "params": {"lo": "the lowest allowed", "hi": "the highest allowed"}},
     "Fract": {"doc": "The part after the decimal point: 2.7 becomes 0.7. Turns a growing number into a 0..1 that wraps "

@@ -240,13 +240,36 @@ LIBRARY = [
 
     # ---- generators -------------------------------------------------------------
     _n("Noise", "generate", "pixel", [("x", F, 0.0), ("y", F, 0.0), ("z", F, 0.0), ("scale", F, 4.0)],
-       [("value", F)], [],
-       "$out.value = perlin8((uint16_t)($in.x * $in.scale * 256.0f), (uint16_t)($in.y * $in.scale * 256.0f), (uint16_t)($in.z * $in.scale * 256.0f)) * (1.0f / 255.0f);",
-       "Perlin noise of a point, 0..1 - feed Direction for a seamless field, Time into z to animate"),
-    _n("Wave", "generate", "pixel", [("x", F, 0.0), ("phase", F, 0.0), ("cycles", F, 3.0)], [("value", F)],
+       [("value", F)], [_p("octaves", "int", 1, 1, 6), _p("roughness", "float", 0.5, 0.0, 1.0)],
+       "$out.value = ($p.octaves <= 1) ? perlin8((uint16_t)($in.x * $in.scale * 256.0f), (uint16_t)($in.y * $in.scale * 256.0f), (uint16_t)($in.z * $in.scale * 256.0f)) * (1.0f / 255.0f)\n"
+       "    : gc_fbm($in.x, $in.y, $in.z, $in.scale, $p.octaves, $p.roughness);",
+       "Perlin noise of a point, 0..1 - feed Direction for a seamless field, Time into z to animate; octaves above 1 add finer detail"),
+    _n("Voronoi", "generate", "pixel", [("pos", V, [0.0, 0.0, 0.0]), ("scale", F, 3.0), ("seed", F, 0.0)],
+       [("distance", F), ("edge", F), ("id", F), ("centre", V)], [],
+       "{ float d1_, d2_, id_, cx_, cy_, cz_; gc_voronoi($in.pos.x * $in.scale, $in.pos.y * $in.scale, $in.pos.z * $in.scale, $in.seed, d1_, d2_, id_, cx_, cy_, cz_);\n"
+       "  $out.distance = gc_sat(d1_); $out.edge = gc_sat(d2_ - d1_); $out.id = id_; $out.centre = gc_v3(cx_ / $in.scale, cy_ / $in.scale, cz_ / $in.scale); }",
+       "cells: random points scattered through space, and for each pixel how far the nearest is, how close to a cell's edge it lies, which cell it is in, and where that cell's point is - stained glass, cracks, scales"),
+    _n("Checker", "generate", "pixel", [("x", F, 0.0), ("y", F, 0.0), ("scale", F, 4.0)], [("value", F)], [],
+       "$out.value = ((int)floorf($in.x * $in.scale) + (int)floorf($in.y * $in.scale)) & 1 ? 1.0f : 0.0f;",
+       "a chessboard: 1 and 0 in alternating squares, `scale` squares per unit"),
+    _n("Gradient", "generate", "pixel", [("x", F, 0.0), ("y", F, 0.0)], [("value", F)],
+       [_p("shape", "choice", "linear", choices=["linear", "quadratic", "radial", "spherical", "diagonal"])],
+       "{ const char *g_ = \"$p.shape\"; const float x_ = $in.x, y_ = $in.y;\n"
+       "  if (g_[0] == 'l') $out.value = gc_sat(x_); else if (g_[0] == 'q') $out.value = gc_sat(x_ * x_);\n"
+       "  else if (g_[0] == 'r') $out.value = cfx_atan2f(y_, x_) * (0.5f / 3.14159265f) + 0.5f;\n"
+       "  else if (g_[0] == 's') $out.value = gc_sat(1.0f - sqrtf(x_ * x_ + y_ * y_)); else $out.value = gc_sat((x_ + y_) * 0.5f); }",
+       "a smooth ramp: linear along x, quadratic, radial (round the centre), spherical (bright at the centre), diagonal"),
+    _n("Brick", "generate", "pixel", [("x", F, 0.0), ("y", F, 0.0), ("scale", F, 4.0), ("mortar", F, 0.1)],
+       [("value", F), ("row", F), ("column", F)], [],
+       "{ const float yy_ = $in.y * $in.scale; const float row_ = floorf(yy_); const float off_ = ((int)row_ & 1) ? 0.5f : 0.0f;\n"
+       "  const float xx_ = $in.x * $in.scale * 2.0f + off_; const float col_ = floorf(xx_);\n"
+       "  const float fx_ = xx_ - col_, fy_ = yy_ - row_; const float m_ = $in.mortar;\n"
+       "  $out.value = (fx_ < m_ || fy_ < m_ * 2.0f) ? 0.0f : 1.0f; $out.row = row_; $out.column = col_; }",
+       "a brick wall: 1 on a brick, 0 in the mortar, alternate rows offset; the row and column number each brick"),
+    _n("Wave", "generate", "pixel", [("x", F, 0.0), ("phase", F, 0.0), ("cycles", F, 3.0), ("distort", F, 0.0)], [("value", F)],
        [_p("shape", "choice", "sine", choices=["sine", "triangle", "square", "saw"])],
        """
-{ float f_ = $in.x * $in.cycles + $in.phase; f_ -= floorf(f_);
+{ float f_ = $in.x * $in.cycles + $in.phase + $in.distort * perlin8((uint16_t)($in.x * 512.0f), (uint16_t)($in.phase * 256.0f), 0) * (1.0f / 255.0f); f_ -= floorf(f_);
   const char *s_ = "$p.shape";
   if (s_[1] == 'i') $out.value = 0.5f + 0.5f * cfx_sinf16(f_ * 6.28318531f);
   else if (s_[0] == 't') $out.value = (f_ < 0.5f) ? f_ * 2.0f : 2.0f - f_ * 2.0f;
@@ -347,6 +370,16 @@ LIBRARY = [
     _n("Remap", "maths", "pixel", [("x", F, 0.0)], [("result", F)],
        [_p("in_lo", "float", 0.0), _p("in_hi", "float", 1.0), _p("out_lo", "float", 0.0), _p("out_hi", "float", 1.0)],
        "$out.result = $p.out_lo + ($in.x - $p.in_lo) * (($p.out_hi - $p.out_lo) / (($p.in_hi - $p.in_lo) != 0.0f ? ($p.in_hi - $p.in_lo) : 1.0f));"),
+    _n("Map range", "maths", "pixel", [("x", F, 0.0), ("in_lo", F, 0.0), ("in_hi", F, 1.0), ("out_lo", F, 0.0), ("out_hi", F, 1.0), ("steps", F, 0.0)],
+       [("result", F)],
+       [_p("ease", "choice", "linear", choices=["linear", "smooth", "ease in", "ease out", "ease in-out"]), _p("clamp", "bool", True)],
+       "{ float t_ = ($in.in_hi != $in.in_lo) ? ($in.x - $in.in_lo) / ($in.in_hi - $in.in_lo) : 0.0f;\n"
+       "  if ($p.clamp) t_ = gc_sat(t_);\n"
+       "  const char *e_ = \"$p.ease\"; const int m_ = (e_[0] == 's') ? 1 : (e_[0] == 'e' ? (e_[5] == 'i' ? (e_[7] == '-' ? 4 : 2) : 3) : 0);\n"
+       "  if (m_) t_ = gc_ease(t_, m_);\n"
+       "  if ($in.steps >= 1.0f) t_ = floorf(t_ * $in.steps + 0.5f) / $in.steps;\n"
+       "  $out.result = $in.out_lo + t_ * ($in.out_hi - $in.out_lo); }",
+       "Remap with the ranges as pins, an easing curve, and optional steps: a slider into 2..8 stripes, eased, in whole numbers"),
     _n("Clamp", "maths", "pixel", [("x", F, 0.0)], [("result", F)], [_p("lo", "float", 0.0), _p("hi", "float", 1.0)],
        "$out.result = ($in.x < $p.lo) ? $p.lo : (($in.x > $p.hi) ? $p.hi : $in.x);"),
     _n("Fract", "maths", "pixel", [("x", F, 0.0)], [("result", F)], [], "$out.result = $in.x - floorf($in.x);"),
@@ -608,6 +641,25 @@ static inline GcVec gc_vrot(GcVec v, GcVec axis, float rad) {
   return gc_vadd(gc_vadd(gc_vscale(v, c), gc_vscale(gc_vcross(k, v), s)), gc_vscale(k, gc_vdot(k, v) * (1.0f - c)));
 }
 static inline float gc_rnd() { return (float)hw_random16() * (1.0f / 65535.0f); }
+// Layered noise: octaves of Perlin, each twice as fine and `rough` as strong.
+static inline float gc_fbm(float x, float y, float z, float scale, int oct, float rough) {
+  float sum = 0.0f, amp = 1.0f, norm = 0.0f, f = scale;
+  for (int i = 0; i < oct; i++) {
+    sum += amp * perlin8((uint16_t)(x * f * 256.0f), (uint16_t)(y * f * 256.0f), (uint16_t)(z * f * 256.0f)) * (1.0f / 255.0f);
+    norm += amp; amp *= rough; f *= 2.0f;
+  }
+  return norm > 0.0f ? sum / norm : 0.0f;
+}
+static inline float gc_ease(float t, int mode) {
+  t = gc_sat(t);
+  switch (mode) {
+    case 1:  return t * t * (3.0f - 2.0f * t);                              // smooth
+    case 2:  return t * t;                                                  // ease in
+    case 3:  return 1.0f - (1.0f - t) * (1.0f - t);                         // ease out
+    case 4:  return t < 0.5f ? 2.0f * t * t : 1.0f - 2.0f * (1.0f - t) * (1.0f - t);   // ease in-out
+    default: return t;                                                      // linear
+  }
+}
 // A stable 0..1 from a position and a seed - the same every frame for the same
 // inputs, so cells, tiles and columns can each own a random number.
 static inline float gc_hash(float x, float y, float seed) {
@@ -616,6 +668,20 @@ static inline float gc_hash(float x, float y, float seed) {
              ^ (uint32_t)(int32_t)floorf(seed * 4096.0f) * 2246822519u;
   h ^= h >> 13; h *= 1274126177u; h ^= h >> 16;
   return (float)(h & 0xFFFFFFu) * (1.0f / 16777215.0f);
+}
+// Worley / Voronoi: one random point per unit cell, the nearest and the
+// second nearest to p over the 27 neighbouring cells. Cell id is a hash.
+static inline void gc_voronoi(float x, float y, float z, float seed, float &d1, float &d2, float &id, float &cx, float &cy, float &cz) {
+  const float fx = floorf(x), fy = floorf(y), fz = floorf(z);
+  d1 = 1e9f; d2 = 1e9f; id = 0.0f; cx = cy = cz = 0.0f;
+  for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) for (int k = -1; k <= 1; k++) {
+    const float gx = fx + i, gy = fy + j, gz = fz + k;
+    const float h = gc_hash(gx, gy, gz * 7.0f + seed);
+    const float px = gx + gc_hash(gx + 11.0f, gy, gz + seed), py = gy + gc_hash(gx, gy + 23.0f, gz + seed), pz = gz + gc_hash(gx + 5.0f, gy + 3.0f, gz + seed);
+    const float dx = x - px, dy = y - py, dz = z - pz;
+    const float d = sqrtf(dx * dx + dy * dy + dz * dz);
+    if (d < d1) { d2 = d1; d1 = d; id = h; cx = px; cy = py; cz = pz; } else if (d < d2) d2 = d;
+  }
 }
 // Last frame's colour at a logical position (0..1, 0..1). On a matrix that is
 // a neighbour read for trails and flows; the pixels already written this
