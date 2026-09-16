@@ -177,6 +177,24 @@ LIBRARY = [
             "  $out.slots = (float)(E_ - gc_st); $out.count = (float)n_; }",
             "a list of up to eight events dropped on the trigger - at x, y, z, or at a random point on the surface - each with a tag and an age until `life`; feed `slots` to Shells"),
          state=48),
+    # The one node a wire may loop back through: its output is what its input
+    # was LAST frame, so a value can depend on its own past (a phase that
+    # restarts only when a cycle is over, a gate that stays shut). The write
+    # happens after every other frame-scope node has run.
+    dict(_n("Delay", "signals", "frame", [("x", F, 0.0)], [("value", F)], [],
+            "$out.value = $first ? 0.0f : $st.prev;",
+            "last frame's x - the only way to wire a value back into what feeds it"),
+         state=["prev"], late=True, late_code="$st.prev = $in.x;"),
+    dict(_n("Spring", "signals", "frame", [("target", F, 0.0), ("kick", F, 0.0)], [("value", F), ("velocity", F)],
+            [_p("hz", "float", 1.2), _p("damping", "float", 0.15)],
+            "if ($first) { $st.x = $in.target; $st.v = 0.0f; }\n"
+            "{ const float w_ = 6.2831853f * $p.hz, h_ = (float)dt * 0.001f;\n"
+            "  $st.v += $in.kick;\n"
+            "  $st.v += (-w_ * w_ * ($st.x - $in.target) - 2.0f * $p.damping * w_ * $st.v) * h_;\n"
+            "  $st.x += $st.v * h_; }\n"
+            "$out.value = $st.x; $out.velocity = $st.v;",
+            "a damped oscillator pulled to `target`: a kick (an impulse, on the beat) makes it overshoot, rock back and settle - a slosh, a bounce"),
+         state=["x", "v"]),
     _n("Number", "signals", "frame", [], [("value", F)], [_p("value", "float", 1.0, -1000.0, 1000.0)],
        "$out.value = $p.value;", "a constant"),
     _n("Toggle", "signals", "frame", [], [("on", B)], [_p("on", "bool", True)],
@@ -254,6 +272,43 @@ LIBRARY = [
        "    sum_ += v_; if (v_ > best_) { best_ = v_; tag_ = e_[3]; age_ = e_[4]; } }\n"
        "  $out.value = sum_ > 1.0f ? 1.0f : sum_; $out.tag = tag_; $out.age = age_; }",
        "spherical shells expanding from each Emitter through 3-D space at `speed`, `width` thick, fading with age: the ripple that crosses every fold correctly"),
+    # Reaction-diffusion: real chemistry on a small grid in whatever chart the
+    # graph samples it through (a tunnel's log-polar, a face). Once per frame
+    # the grid steps; per pixel it is read at u (wrapping), v.
+    dict(_n("Reaction diffusion", "generate", "pixel", [("u", F, 0.0), ("v", F, 0.0)], [("v", F), ("u", F)],
+            [_p("feed", "float", 0.037), _p("kill", "float", 0.06), _p("steps", "int", 2, 1, 8), _p("seed", "float", 0.02)],
+            "{ float *S_ = $st; const int gw_ = 48, gh_ = 24; float *G_ = S_ + 2; float *T_ = G_ + gw_ * gh_ * 2;\n"
+            "  if ($first || S_[0] != (float)(SEGENV.call & 0xFFFF)) {\n"
+            "    if ($first) { for (int i_ = 0; i_ < gw_ * gh_; i_++) { G_[i_ * 2] = 1.0f; G_[i_ * 2 + 1] = 0.0f; }\n"
+            "      for (int i_ = 0; i_ < gw_ * gh_; i_++) if (gc_rnd() < $p.seed) G_[i_ * 2 + 1] = 0.9f; }\n"
+            "    for (int k_ = 0; k_ < $p.steps; k_++) gc_gray_scott(G_, gw_, gh_, 0.16f, 0.08f, $p.feed, $p.kill, T_);\n"
+            "    S_[0] = (float)(SEGENV.call & 0xFFFF); }\n"
+            "  float fu_ = $in.u - floorf($in.u); const int gx_ = (int)(fu_ * gw_) % gw_; int gy_ = (int)(gc_sat($in.v) * gh_); if (gy_ >= gh_) gy_ = gh_ - 1;\n"
+            "  $out.u = G_[(gy_ * gw_ + gx_) * 2]; $out.v = G_[(gy_ * gw_ + gx_) * 2 + 1]; }",
+            "Gray-Scott chemistry on a 48 x 24 grid, stepped each frame, read at u (wraps), v: tendrils that branch, merge and drip, with history. feed 0.03-0.06, kill 0.055-0.065"),
+         state=2 + 48 * 24 * 4),
+    # The bifurcation diagram of x -> x^2 + c, kept as a density: each column
+    # a c, its orbit run on a little every frame and binned; read per pixel.
+    dict(_n("Bifurcation", "generate", "pixel", [("u", F, 0.0), ("v", F, 0.0), ("c_lo", F, -1.6), ("c_hi", F, 0.3),
+                                                 ("x_lo", F, -1.5), ("x_hi", F, 1.5)],
+            [("density", F)], [_p("trail", "float", 0.9, 0.0, 0.99), _p("orbits", "int", 6, 1, 32)],
+            "{ float *S_ = $st; const int NC_ = 64, NX_ = 48; float *X_ = S_ + 1; float *D_ = X_ + NC_;\n"
+            "  if ($first || S_[0] != (float)(SEGENV.call & 0xFFFF)) {\n"
+            "    if ($first) for (int i_ = 0; i_ < NC_ * NX_; i_++) D_[i_] = 0.0f;\n"
+            "    for (int j_ = 0; j_ < NC_; j_++) { const float c_ = $in.c_lo + ($in.c_hi - $in.c_lo) * ((float)j_ + 0.5f) / NC_;\n"
+            "      float x_ = X_[j_]; float *col_ = D_ + j_ * NX_; for (int b_ = 0; b_ < NX_; b_++) col_[b_] *= $p.trail;\n"
+            "      for (int k_ = 0; k_ < $p.orbits; k_++) { x_ = x_ * x_ + c_; if (x_ > 4.0f || x_ < -4.0f) x_ = 0.0f;\n"
+            "        const int b_ = (int)(((x_ - $in.x_lo) / ($in.x_hi - $in.x_lo)) * NX_); if (b_ >= 0 && b_ < NX_) col_[b_] += 1.0f / (float)$p.orbits; }\n"
+            "      X_[j_] = x_; }\n"
+            "    S_[0] = (float)(SEGENV.call & 0xFFFF); }\n"
+            "  int j_ = (int)(gc_sat($in.u) * NC_); if (j_ >= NC_) j_ = NC_ - 1; int b_ = (int)(gc_sat($in.v) * NX_); if (b_ >= NX_) b_ = NX_ - 1;\n"
+            "  $out.density = gc_sat(D_[j_ * NX_ + b_]); }",
+            "the fig tree: the bifurcation diagram of x -> x^2 + c between c_lo..c_hi (u) and x_lo..x_hi (v), as orbit density with a trail - zoom the windows toward -1.401155 to fly into it"),
+         state=1 + 64 + 64 * 48),
+    _n("Bitmap", "generate", "pixel", [("u", F, 0.0), ("v", F, 0.0)], [("slot", F), ("on", B)],
+       [_p("rows", "text", "0110/1001/1001/0110")],
+       "{ const int s_ = gc_bitmap(\"$p.rows\", $in.u, $in.v); $out.on = s_ >= 0; $out.slot = (float)(s_ < 0 ? 0 : s_); }",
+       "pixel art: rows of digits separated by '/', '.' transparent, read at u, v - the digit is a colour slot for Colour pick"),
     _n("Hash", "generate", "pixel", [("x", F, 0.0), ("y", F, 0.0), ("seed", F, 0.0)], [("value", F)], [],
        "$out.value = gc_hash($in.x, $in.y, $in.seed);",
        "a random 0..1 that is the same every frame for the same x, y, seed - one per cell or column"),
@@ -343,6 +398,11 @@ LIBRARY = [
        "$out.color = gc_srcpal((uint8_t)(int)($in.index * 255.0f), (uint8_t)(gc_sat($in.brightness) * 255.0f));",
        "the palette-source setting's colours (what the audio palettes draw from) at index 0..1; "
        "the segment's palette where the palettes usermod is absent"),
+    _n("Colour pick", "colour", "pixel", [("index", F, 0.0)], [("color", C)],
+       [_p("c0", "color", [255, 255, 255]), _p("c1", "color", [255, 0, 0]), _p("c2", "color", [0, 255, 0]), _p("c3", "color", [0, 0, 255])],
+       "{ const int i_ = (int)$in.index; $out.color = i_ <= 0 ? RGBW32($p.c0_r, $p.c0_g, $p.c0_b, 0) : i_ == 1 ? RGBW32($p.c1_r, $p.c1_g, $p.c1_b, 0)\n"
+       "    : i_ == 2 ? RGBW32($p.c2_r, $p.c2_g, $p.c2_b, 0) : RGBW32($p.c3_r, $p.c3_g, $p.c3_b, 0); }",
+       "one of four colours by index (0..3) - a bitmap's palette"),
     _n("HSV", "colour", "pixel", [("h", F, 0.0), ("s", F, 1.0), ("v", F, 1.0)], [("color", C)], [],
        "$out.color = gc_hsv($in.h, $in.s, $in.v);", "hue 0..1 round the wheel"),
     _n("Scale", "colour", "pixel", [("color", C, 0), ("by", F, 1.0)], [("color", C)], [],
@@ -606,6 +666,33 @@ static inline bool gc_knot(float nx, float ny, float nz, int P, int Q, float R, 
   #include "cube_fx_imu.h"
   #define GC_HAS_IMU 1
 #endif
+// Gray-Scott reaction-diffusion on a small grid, periodic in x (a tunnel's
+// azimuth), clamped in y. U and V interleaved; one Euler step per call.
+static inline void gc_gray_scott(float *G, int gw, int gh, float Du, float Dv, float F, float k, float *tmp) {
+  for (int y = 0; y < gh; y++) for (int x = 0; x < gw; x++) {
+    const int i = (y * gw + x) * 2;
+    const int xl = (x + gw - 1) % gw, xr = (x + 1) % gw, yu = y > 0 ? y - 1 : y, yd = y < gh - 1 ? y + 1 : y;
+    const float u = G[i], v = G[i + 1];
+    const float lu = G[(y * gw + xl) * 2] + G[(y * gw + xr) * 2] + G[(yu * gw + x) * 2] + G[(yd * gw + x) * 2] - 4.0f * u;
+    const float lv = G[(y * gw + xl) * 2 + 1] + G[(y * gw + xr) * 2 + 1] + G[(yu * gw + x) * 2 + 1] + G[(yd * gw + x) * 2 + 1] - 4.0f * v;
+    const float uvv = u * v * v;
+    tmp[i]     = u + Du * lu - uvv + F * (1.0f - u);
+    tmp[i + 1] = v + Dv * lv + uvv - (F + k) * v;
+  }
+  for (int i = 0; i < gw * gh * 2; i++) G[i] = tmp[i] < 0.0f ? 0.0f : (tmp[i] > 1.0f ? 1.0f : tmp[i]);
+}
+// One row of a text bitmap: rows separated by '/', '.' transparent, a digit
+// its colour slot. Returns the slot at (u, v) or -1.
+static inline int gc_bitmap(const char *bm, float u, float v) {
+  int rows = 1; for (const char *p = bm; *p; p++) if (*p == '/') rows++;
+  int r = (int)floorf(gc_sat(v) * (float)rows); if (r >= rows) r = rows - 1;
+  const char *p = bm; for (int i = 0; i < r; i++) { while (*p && *p != '/') p++; if (*p) p++; }
+  int cols = 0; for (const char *q = p; *q && *q != '/'; q++) cols++;
+  if (cols == 0) return -1;
+  int c = (int)floorf(gc_sat(u) * (float)cols); if (c >= cols) c = cols - 1;
+  const char ch = p[c];
+  return (ch >= '0' && ch <= '9') ? (ch - '0') : -1;
+}
 static inline uint32_t gc_prev_at(float u, float v, int W, int H, bool is2d) {
   int x = (int)floorf(gc_sat(u) * (float)(W - 1) + 0.5f), y = (int)floorf(gc_sat(v) * (float)(H - 1) + 0.5f);
   return is2d ? SEGMENT.getPixelColorXY(x, y) : SEGMENT.getPixelColor(x);

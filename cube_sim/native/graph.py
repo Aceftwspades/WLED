@@ -193,10 +193,16 @@ class Graph:
                 "links": links}
 
     # --- compile -------------------------------------------------------------
+    def _late(self, nid):
+        try:
+            return bool(self.node_def(self.nodes[nid]).get("late"))
+        except GraphError:
+            return False
+
     def _order(self):
         deps = {nid: set() for nid in self.nodes}
         for a, _, b, _ in self.links:
-            if a in deps and b in deps:
+            if a in deps and b in deps and not self._late(b):
                 deps[b].add(a)
         out, seen, temp = [], set(), set()
 
@@ -204,7 +210,7 @@ class Graph:
             if n in seen:
                 return
             if n in temp:
-                raise GraphError(f"cycle through node {n} ({self.nodes[n]['type']}) - use Previous for feedback")
+                raise GraphError(f"cycle through node {n} ({self.nodes[n]['type']}) - loop a value back through a Delay node (or Previous, for colour)")
             temp.add(n)
             for d in sorted(deps[n]):
                 visit(d)
@@ -228,7 +234,7 @@ class Graph:
         # cycles: every node still on the stack when one is found
         deps = {nid: set() for nid in self.nodes}
         for a, _, b, _ in self.links:
-            if a in deps and b in deps:
+            if a in deps and b in deps and not self._late(b):
                 deps[b].add(a)
         seen, stack = set(), []
         def visit(n):
@@ -372,6 +378,9 @@ class Graph:
             d = defs[nid]
             ups = [src_of[(nid, i["name"])][0] for i in d["inputs"] if (nid, i["name"]) in src_of]
             per_pixel_in = any(scope.get(u) == "pixel" for u in ups)
+            if d.get("late") and per_pixel_in:
+                raise GraphError(f"{d['name']} #{nid} remembers one value for the next frame, so its input "
+                                 f"cannot come from a per-pixel node")
             if d["scope"] == "frame":
                 # a frame node fed a per-pixel value follows it down, unless it
                 # keeps state - one value for the whole effect cannot be per pixel
@@ -403,9 +412,9 @@ class Graph:
             for pn in names:
                 nfields = max(nfields, int(self.nodes[nid]["params"].get(pn, 0)) + 1)
 
-        def expand(nid):
+        def expand(nid, late=False):
             n = self.nodes[nid]; d = defs[nid]
-            code = d["code"]
+            code = d["late_code"] if late else d["code"]
             otypes = {o["name"]: o["type"] for o in d["outputs"]}
             # inputs
             for i in d["inputs"]:
@@ -448,10 +457,12 @@ class Graph:
                 m = re.search(r"\$(in|out|p|st)\.\w+", code)
                 raise GraphError(f"node {n['type']}: template refers to unknown {m.group(0)}")
             code = code.replace("$$", "$")
-            decl = "".join(f"{TYPES[o['type']]} {var(nid, o['name'])} = 0; " for o in d["outputs"])
-            return f"      // {n['type']} #{nid}\n      {decl}\n      " + code.replace("\n", "\n      ") + "\n"
+            decl = "" if late else "".join(f"{TYPES[o['type']]} {var(nid, o['name'])} = 0; " for o in d["outputs"])
+            tag = f"{n['type']} #{nid}" + (" (for next frame)" if late else "")
+            return f"      // {tag}\n      {decl}\n      " + code.replace("\n", "\n      ") + "\n"
 
         frame = "".join(expand(nid) for nid in order if scope[nid] == "frame")
+        frame += "".join(expand(nid, late=True) for nid in order if defs[nid].get("late"))
         pixel = "".join(expand(nid) for nid in order if scope[nid] == "pixel")
 
         # metadata: slider labels from the control nodes that are present

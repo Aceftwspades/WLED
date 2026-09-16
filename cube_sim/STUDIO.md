@@ -92,7 +92,7 @@ checked, defaults for unconnected pins — and it goes through the same build
 and reload as a hand-written one. "Open as code" hands the generated file to
 the code pane for anything the nodes cannot reach.
 
-What the library reached by rebuilding fifteen of the cube_fx effects as
+What the library reached by rebuilding twenty of the cube_fx effects as
 graphs (`examples/build_examples.py` writes them; `--check` compiles, builds
 and runs them; a new project starts with them in `graphs/`):
 
@@ -122,6 +122,16 @@ and runs them; a new project starts with them in `graphs/`):
   Gravity (the IMU's when fitted, else down, tilted by two inputs), Position
   to uv (any point of the box back to the pixel that shows it), Cube face's
   outward normal, Loudest bin, Frame count (first frame, count).
+- **Loops.** Delay is the one node a wire may loop back through: its
+  output is last frame's input, written after every other frame-scope node
+  has run, so a value can depend on its own past (a cycle that restarts
+  only when it is over). Any other loop is refused with a message.
+- **Simulations in a chart.** Reaction diffusion (Gray-Scott chemistry on
+  a 48 x 24 grid, stepped each frame, read at u, v - tendrils with
+  history), Bifurcation (the fig tree of x -> x^2 + c as an orbit density
+  over a c window and an x window), Spring (a damped oscillator kicked by
+  the beat - slosh, bounce), Bitmap (pixel art as rows of digits, read at
+  u, v) and Colour pick (its palette).
 - **The heavy ones.** Mirror fold (a direction reflected into one
   fundamental domain of a finite mirror group - dihedral, tetrahedral,
   octahedral, icosahedral - so a picture is mirrored 6 to 120 times),
@@ -146,8 +156,17 @@ through the solid, a fading wake), **Cube Chladni** (the nodal surface of a
 Sand** (a falling-sand automaton on a Field, gravity taken along the
 surface, grains conserved by having both cells agree) and **Breakout**
 (the ball two triangle waves, a paddle that follows it, bricks a Field it
-clears - the ball does not bounce off them). Readings of the originals in
-nodes, not ports; the ones that were particle systems are shader-style.
+clears - the ball does not bounce off them); then **Cube Axes** (position
+as colour - the calibration effect), **Liquid Tunnel** (ln r down the
+stereographic radius, a Gray-Scott medium in that chart, a dihedral fold,
+a fake-normal light and a Fresnel rim), **Question Block** (the sprites on
+every face; beat, bump, a decelerating reel into three items, a hold - the
+cycle gated on idle through a Delay), **Feigenbaum** (the bifurcation
+density on the stereographic plane, both windows shrinking toward the
+Myrberg-Feigenbaum point at delta and alpha) and **Liquid** (a plane through
+the solid on two Springs the beat kicks; wet below, a meniscus, ripples,
+the lid a pool). Readings of the originals in nodes, not ports; the ones
+that were particle systems are shader-style.
 
 Sub-graphs: select some nodes and "fold into sub-graph" (toolbar or the
 node's right-click menu) and they become one node. Each wire that crossed the

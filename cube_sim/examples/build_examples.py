@@ -959,8 +959,300 @@ def breakout():
     return b.save("breakout.json")
 
 
+# ---------------------------------------------------------------------------
+# The fourth five: Cube Axes, Liquid Tunnel, Question Block, Feigenbaum, Liquid.
+# ---------------------------------------------------------------------------
+def cube_axes():
+    """Cube Axes: the position as colour - red is x, green y, blue z. The
+    calibration effect: if a face comes out the wrong way round, this shows it."""
+    b = GB("Cube Axes")
+    b.n("Effect settings", 0, 0, {"palette": 11, "dimensions": "2-D"})
+    pos = b.n("Position", 0, 1)
+    r = b.n("Remap", 1, 0, {"in_lo": -1.0, "in_hi": 1.0}); b.l(pos, "x", r, "x")
+    g = b.n("Remap", 1, 1, {"in_lo": -1.0, "in_hi": 1.0}); b.l(pos, "y", g, "x")
+    bl = b.n("Remap", 1, 2, {"in_lo": -1.0, "in_hi": 1.0}); b.l(pos, "z", bl, "x")
+    c = b.n("Combine", 2, 1); b.l(r, "result", c, "r"); b.l(g, "result", c, "g"); b.l(bl, "result", c, "b")
+    out = b.n("Output", 3, 1); b.l(c, "color", out, "color")
+    return b.save("cube_axes.json")
+
+
+def liquid_tunnel():
+    """Liquid Tunnel: stereographic radius about the lid gives ln(r), the
+    Mercator coordinate, so a scroll along it is a zoom down a tunnel; a
+    Gray-Scott medium grows tendrils in that chart, folded by a dihedral
+    symmetry, and lit as a height field with a Fresnel rim."""
+    b = GB("Liquid Tunnel")
+    sp = b.n("Speed", 0, 0, {"label": "Flow", "default": 80})
+    it = b.n("Intensity", 0, 1, {"label": "Fill", "default": 128})
+    c1 = b.n("Custom 1", 0, 2, {"label": "Medium", "default": 100})
+    c2 = b.n("Custom 2", 0, 3, {"label": "Gloss", "default": 150})
+    c3 = b.n("Custom 3", 0, 4, {"label": "Symmetry", "default": 2})
+    k1 = b.n("Check 1", 0, 5, {"label": "Beat surge", "default": True})
+    k2 = b.n("Check 2", 0, 6, {"label": "Fresnel", "default": True})
+    au = b.n("Audio", 0, 7)
+    b.n("Effect settings", 0, 8, {"palette": 11, "audio": "frequency"})
+    d = b.n("Direction", 1, 6)
+    # stereographic from the bottom pole: r = sqrt(u^2 + v^2) with u = x/(1+z)
+    den = b.n("Add", 2, 7, inputs={"a": 1.02}); b.l(d, "nz", den, "b")
+    u = b.n("Divide", 3, 6); b.l(d, "nx", u, "a"); b.l(den, "result", u, "b")
+    v = b.n("Divide", 3, 7); b.l(d, "ny", v, "a"); b.l(den, "result", v, "b")
+    r = b.n("Length", 4, 6); b.l(u, "result", r, "x"); b.l(v, "result", r, "y")
+    rc = b.n("Clamp", 5, 6, {"lo": 0.06, "hi": 3.0}); b.l(r, "result", rc, "x")      # the vanishing point is clamped
+    lr = b.n("Log", 6, 6); b.l(rc, "result", lr, "x")
+    # the azimuth, folded: symmetry n mirrors the tunnel n times round
+    ang = b.n("Coords", 1, 8)
+    sym = b.n("Remap", 1, 3, {"out_lo": 1.0, "out_hi": 6.99}); b.l(c3, "value", sym, "x")
+    nsym = b.n("Floor", 2, 3); b.l(sym, "result", nsym, "x")
+    az = b.n("Multiply", 4, 8); b.l(d, "nx", az, "a")      # placeholder replaced below
+    # azimuth from u, v directly
+    b.g.remove(az)
+    atan_ = b.n("Rotate", 4, 8, inputs={"turns": 0.0}); b.l(u, "result", atan_, "x"); b.l(v, "result", atan_, "y")
+    # a turn count from the direction: use Cube ring's around (same azimuth)
+    ring = b.n("Cube ring", 1, 9)
+    ta = b.n("Multiply", 5, 8); b.l(ring, "around", ta, "a"); b.l(nsym, "result", ta, "b")
+    tf = b.n("Fract", 6, 8); b.l(ta, "result", tf, "x")
+    tri = b.n("Wave", 7, 8, {"shape": "triangle"}, inputs={"cycles": 1.0, "phase": 0.0}); b.l(tf, "result", tri, "x")   # the mirror
+    # the medium, scrolled down the tunnel at Flow (a kick surges it)
+    fl = b.n("Remap", 1, 0, {"out_lo": 0.02, "out_hi": 0.5}); b.l(sp, "value", fl, "x")
+    kick = b.n("Envelope", 1, 7, {"attack": 10.0, "release": 350.0}); b.l(au, "hit", kick, "x")
+    ks = b.n("Select", 2, 5, inputs={"a": 0.0}); b.l(k1, "on", ks, "on"); b.l(kick, "value", ks, "b")
+    sg = b.n("Add", 3, 5, inputs={"a": 1.0}); b.l(ks, "result", sg, "b")
+    fr = b.n("Multiply", 4, 5); b.l(fl, "result", fr, "a"); b.l(sg, "result", fr, "b")
+    scroll = b.n("Integrate", 5, 5, {"wrap": 1.0}); b.l(fr, "result", scroll, "rate")
+    lscaled = b.n("Multiply", 7, 6, inputs={"b": 0.35}); b.l(lr, "result", lscaled, "a")      # ln r spans ~ -2.8..1.1
+    lv = b.n("Add", 8, 6); b.l(lscaled, "result", lv, "a"); b.l(scroll, "value", lv, "b")
+    lvf = b.n("Fract", 9, 6); b.l(lv, "result", lvf, "x")
+    feed = b.n("Remap", 1, 2, {"out_lo": 0.03, "out_hi": 0.055}); b.l(c1, "value", feed, "x")
+    med = b.n("Reaction diffusion", 10, 7, {"feed": 0.037, "kill": 0.06, "steps": 2, "seed": 0.02})
+    b.l(tri, "value", med, "u"); b.l(lvf, "result", med, "v")
+    # a height field lit by a fake normal: the medium's V, its slope along the tunnel (a second read a step on)
+    lv2 = b.n("Add", 8, 7, inputs={"b": 0.03}); b.l(lv, "result", lv2, "a")
+    lvf2 = b.n("Fract", 9, 7); b.l(lv2, "result", lvf2, "x")
+    med2 = b.n("Reaction diffusion", 10, 9, {"feed": 0.037, "kill": 0.06, "steps": 2, "seed": 0.02})
+    b.l(tri, "value", med2, "u"); b.l(lvf2, "result", med2, "v")
+    slope = b.n("Subtract", 11, 8); b.l(med2, "v", slope, "a"); b.l(med, "v", slope, "b")
+    gl = b.n("Remap", 1, 4, {"out_lo": 0.0, "out_hi": 14.0}); b.l(c2, "value", gl, "x")
+    shade = b.n("Multiply", 12, 8); b.l(slope, "result", shade, "a"); b.l(gl, "result", shade, "b")
+    lit = b.n("Add", 13, 8, inputs={"a": 0.5}); b.l(shade, "result", lit, "b")
+    litc = b.n("Clamp", 14, 8, {"lo": 0.0, "hi": 1.0}); b.l(lit, "result", litc, "x")
+    # fresnel: the rim of the tunnel (large r) glows
+    fres = b.n("Smoothstep", 6, 9, {"e0": 1.2, "e1": 2.6}); b.l(rc, "result", fres, "x")
+    fs = b.n("Select", 7, 9, inputs={"a": 0.0}); b.l(k2, "on", fs, "on"); b.l(fres, "result", fs, "b")
+    fs2 = b.n("Multiply", 8, 9, inputs={"b": 0.35}); b.l(fs, "result", fs2, "a")
+    # brightness: the medium's V, shaded, plus the rim; hue from position down the tunnel
+    fill = b.n("Remap", 1, 1, {"out_lo": 0.4, "out_hi": 1.6}); b.l(it, "value", fill, "x")
+    vlift = b.n("Smoothstep", 11, 7, {"e0": 0.03, "e1": 0.3}); b.l(med, "v", vlift, "x")
+    body = b.n("Multiply", 12, 7); b.l(vlift, "result", body, "a"); b.l(litc, "result", body, "b")
+    body2 = b.n("Multiply", 13, 7); b.l(body, "result", body2, "a"); b.l(fill, "result", body2, "b")
+    bri = b.n("Add", 14, 7); b.l(body2, "result", bri, "a"); b.l(fs2, "result", bri, "b")
+    hue = b.n("Integrate", 12, 6, {"wrap": 1.0}, inputs={"rate": 0.03})
+    hi = b.n("Add", 13, 6); b.l(lvf, "result", hi, "a"); b.l(hue, "value", hi, "b")
+    hi2 = b.n("Multiply", 14, 6, inputs={"b": 0.5}); b.l(hi, "result", hi2, "a")
+    pal = b.n("Palette", 15, 7); b.l(hi2, "result", pal, "index"); b.l(bri, "result", pal, "brightness")
+    out = b.n("Output", 16, 7); b.l(pal, "color", out, "color")
+    return b.save("liquid_tunnel.json")
+
+
+def question_block():
+    """Question Block: every face wears the 16 x 16 sprite. A beat bumps the
+    block, then the item reel spins and slows, then the item shows for a hold,
+    then the block is back. The cycle is one clock reset by the beat; the reel
+    is a decelerating count into three items."""
+    b = GB("Question Block")
+    sp = b.n("Speed", 0, 0, {"label": "Reel speed", "default": 140})
+    it = b.n("Intensity", 0, 1, {"label": "Brightness", "default": 140})
+    c1 = b.n("Custom 1", 0, 2, {"label": "Hold time", "default": 110})
+    k1 = b.n("Check 1", 0, 3, {"label": "Hit on beat", "default": True})
+    au = b.n("Audio", 0, 4)
+    b.n("Effect settings", 0, 5, {"palette": 11, "audio": "volume", "dimensions": "2-D"})
+    face = b.n("Cube face", 1, 4)
+    # the clock since the last hit - a hit counts only when the block is idle,
+    # which needs last frame's clock: the one loop, through a Delay
+    spin_t = b.n("Remap", 1, 0, {"out_lo": 3.0, "out_hi": 0.8}); b.l(sp, "value", spin_t, "x")
+    hold = b.n("Remap", 1, 2, {"out_lo": 0.8, "out_hi": 4.0}); b.l(c1, "value", hold, "x")
+    endr = b.n("Add", 2, 2); b.l(spin_t, "result", endr, "a"); b.l(hold, "result", endr, "b")
+    hit = b.n("Select", 1, 3, inputs={"a": False, "b": True}); b.l(k1, "on", hit, "on")
+    beat_on = b.n("Multiply", 2, 3); b.l(au, "beat", beat_on, "a"); b.l(hit, "result", beat_on, "b")
+    last = b.n("Delay", 2, 4)
+    idle = b.n("Threshold", 3, 4); b.l(last, "value", idle, "x"); b.l(endr, "result", idle, "at")     # on = the cycle is over
+    go = b.n("Multiply", 3, 2); b.l(beat_on, "result", go, "a"); b.l(idle, "value", go, "b")
+    since = b.n("Integrate", 3, 3, {"wrap": 0.0}, inputs={"rate": 1.0}); b.l(go, "result", since, "reset")
+    b.l(since, "value", last, "x")
+    # phases: bump 0..0.25 s, spin to `spin`, result to `spin + hold`, then idle
+    bump = b.n("Threshold", 4, 2, inputs={"at": 0.25}); b.l(since, "value", bump, "x")           # on = past the bump
+    spinning = b.n("Threshold", 4, 3); b.l(spin_t, "result", spinning, "x"); b.l(since, "value", spinning, "at")   # on = still spinning
+    showing = b.n("Threshold", 4, 4); b.l(endr, "result", showing, "x"); b.l(since, "value", showing, "at")        # on = still within the show
+    # the reel: a decelerating count, frozen after spin_t
+    prog = b.n("Divide", 5, 3); b.l(since, "value", prog, "a"); b.l(spin_t, "result", prog, "b")
+    pc = b.n("Clamp", 6, 3, {"lo": 0.0, "hi": 1.0}); b.l(prog, "result", pc, "x")
+    ease = b.n("Smoothstep", 7, 3, {"e0": 0.0, "e1": 1.0}); b.l(pc, "result", ease, "x")
+    steps = b.n("Multiply", 8, 3, inputs={"b": 7.0}); b.l(ease, "result", steps, "a")
+    stepi = b.n("Floor", 9, 3); b.l(steps, "result", stepi, "x")
+    item = b.n("Modulo", 10, 3, inputs={"m": 3.0}); b.l(stepi, "result", item, "x")
+    # the bump lifts the sprite; the sprite's own row/column from the face
+    lift = b.n("Select", 5, 2, inputs={"a": 0.12, "b": 0.0}); b.l(bump, "on", lift, "on")
+    vb = b.n("Add", 6, 2); b.l(face, "b", vb, "a"); b.l(lift, "result", vb, "b")
+    vflip = b.n("Subtract", 7, 2, inputs={"a": 1.0}); b.l(vb, "result", vflip, "b")      # rows run top-down
+    # the sprites: the block, and three items the reel lands on
+    block = b.n("Bitmap", 8, 5, {"rows": "0000000000000000/0111111111111110/0102222222222010/0122223333222210/0122233223322210/0122233223322210/0122222233222210/0122222332222210/0122223322222210/0122223322222210/0122222222222210/0122222332222210/0122222332222210/0102222222222010/0111111111111110/0000000000000000"})
+    mush = b.n("Bitmap", 8, 6, {"rows": "................/................/.....000000...../...0000000000.../..002220022200../..002220022200../.000222002220000/.00000000000000./.00000000000000./..000000000000../...1111111111.../...1222222221.../...1222222221.../...1111111111.../................/................"})
+    star = b.n("Bitmap", 8, 7, {"rows": "................/.......00......./......0000....../......0000....../0000000000000000/.00000000000000./..000000000000../...0000000000.../...0000000000.../..00000..00000../..0000....0000../.000........000./.00..........00./................/................/................"})
+    coin = b.n("Bitmap", 8, 8, {"rows": "................/................/......0000....../....00000000..../...0000000000.../...0000220000.../...0000220000.../...0000220000.../...0000220000.../...0000220000.../...0000000000.../....00000000..../......0000....../................/................/................"})
+    for bm in (block, mush, star, coin):
+        b.l(face, "a", bm, "u"); b.l(vflip, "result", bm, "v")
+    cblock = b.n("Colour pick", 9, 5, {"c0": [70, 35, 0], "c1": [255, 185, 70], "c2": [230, 140, 20], "c3": [255, 250, 225]}); b.l(block, "slot", cblock, "index")
+    cmush = b.n("Colour pick", 9, 6, {"c0": [225, 40, 25], "c1": [235, 195, 150], "c2": [255, 255, 255], "c3": [0, 0, 0]}); b.l(mush, "slot", cmush, "index")
+    cstar = b.n("Colour pick", 9, 7, {"c0": [255, 220, 0], "c1": [255, 255, 255], "c2": [255, 150, 0], "c3": [0, 0, 0]}); b.l(star, "slot", cstar, "index")
+    ccoin = b.n("Colour pick", 9, 8, {"c0": [255, 195, 0], "c1": [165, 110, 0], "c2": [255, 255, 200], "c3": [0, 0, 0]}); b.l(coin, "slot", ccoin, "index")
+    # which item: 0 mushroom, 1 star, 2 coin; masked by its own transparency
+    is1 = b.n("Threshold", 10, 6, inputs={"at": 0.5}); b.l(item, "result", is1, "x")
+    is2 = b.n("Threshold", 10, 7, inputs={"at": 1.5}); b.l(item, "result", is2, "x")
+    m_m = b.n("Mask", 10, 5); b.l(cmush, "color", m_m, "color"); b.l(mush, "on", m_m, "mask")
+    m_s = b.n("Mask", 10, 8); b.l(cstar, "color", m_s, "color"); b.l(star, "on", m_s, "mask")
+    m_c = b.n("Mask", 10, 9); b.l(ccoin, "color", m_c, "color"); b.l(coin, "on", m_c, "mask")
+    pick1 = b.n("Blend", 11, 6, {"mode": "over"}); b.l(m_m, "color", pick1, "under"); b.l(m_s, "color", pick1, "over"); b.l(is1, "value", pick1, "amount")
+    pick2 = b.n("Blend", 12, 7, {"mode": "over"}); b.l(pick1, "color", pick2, "under"); b.l(m_c, "color", pick2, "over"); b.l(is2, "value", pick2, "amount")
+    # the block shows when idle or bumping; the item while spinning or showing
+    m_b = b.n("Mask", 10, 4); b.l(cblock, "color", m_b, "color"); b.l(block, "on", m_b, "mask")
+    active = b.n("Multiply", 11, 3); b.l(bump, "value", active, "a"); b.l(showing, "value", active, "b")   # past the bump and still within the show
+    shown = b.n("Blend", 13, 5, {"mode": "over"}); b.l(m_b, "color", shown, "under"); b.l(pick2, "color", shown, "over"); b.l(active, "result", shown, "amount")
+    bri = b.n("Remap", 1, 1, {"out_lo": 0.25, "out_hi": 1.0}); b.l(it, "value", bri, "x")
+    lit = b.n("Scale", 14, 5); b.l(shown, "color", lit, "color"); b.l(bri, "result", lit, "by")
+    out = b.n("Output", 15, 5); b.l(lit, "color", out, "color")
+    return b.save("question_block.json")
+
+
+def feigenbaum():
+    """Feigenbaum: the bifurcation diagram of x -> x^2 + c, drawn on the
+    stereographic plane about the lid, its parameter window shrinking toward
+    the Myrberg-Feigenbaum point at -1.401155 and its orbit window with it,
+    at the two ratios that make the picture map onto itself one doubling
+    later - the endless zoom into the fig tree."""
+    b = GB("Feigenbaum")
+    sp = b.n("Speed", 0, 0, {"label": "Zoom speed", "default": 90})
+    it = b.n("Intensity", 0, 1, {"label": "Brightness", "default": 210})
+    c1 = b.n("Custom 1", 0, 2, {"label": "Spread", "default": 120})
+    c2 = b.n("Custom 2", 0, 3, {"label": "Trail", "default": 170})
+    k1 = b.n("Check 1", 0, 4, {"label": "Beat surge", "default": True})
+    au = b.n("Audio", 0, 5)
+    b.n("Effect settings", 0, 6, {"palette": 11, "audio": "frequency"})
+    d = b.n("Direction", 1, 5)
+    den = b.n("Add", 2, 6, inputs={"a": 1.05}); b.l(d, "nz", den, "b")
+    u = b.n("Divide", 3, 5); b.l(d, "nx", u, "a"); b.l(den, "result", u, "b")
+    v = b.n("Divide", 3, 6); b.l(d, "ny", v, "a"); b.l(den, "result", v, "b")
+    uu = b.n("Remap", 4, 5, {"in_lo": -2.4, "in_hi": 2.4}); b.l(u, "result", uu, "x")
+    vv = b.n("Remap", 4, 6, {"in_lo": -2.4, "in_hi": 2.4}); b.l(v, "result", vv, "x")
+    # the zoom phase, wrapping: one doubling per wrap
+    zr = b.n("Remap", 1, 0, {"out_lo": 0.03, "out_hi": 0.3}); b.l(sp, "value", zr, "x")
+    kick = b.n("Envelope", 1, 6, {"attack": 10.0, "release": 400.0}); b.l(au, "hit", kick, "x")
+    ks = b.n("Select", 2, 4, inputs={"a": 0.0}); b.l(k1, "on", ks, "on"); b.l(kick, "value", ks, "b")
+    sg = b.n("Add", 3, 4, inputs={"a": 1.0}); b.l(ks, "result", sg, "b")
+    zr2 = b.n("Multiply", 4, 4); b.l(zr, "result", zr2, "a"); b.l(sg, "result", zr2, "b")
+    t = b.n("Integrate", 5, 4, {"wrap": 1.0}); b.l(zr2, "result", t, "rate")
+    # the windows: c about -1.401155, width W0 * delta^-t; x about 0, width X0 * alpha^-t
+    sc = b.n("Remap", 1, 2, {"out_lo": 0.4, "out_hi": 2.6}); b.l(c1, "value", sc, "x")
+    ld = b.n("Multiply", 6, 3, inputs={"b": -1.5411}); b.l(t, "value", ld, "a")        # ln(4.6692)
+    wd = b.n("Exp", 7, 3); b.l(ld, "result", wd, "x")
+    wc = b.n("Multiply", 8, 3, inputs={"b": 0.06}); b.l(wd, "result", wc, "a")
+    wc2 = b.n("Multiply", 9, 3); b.l(wc, "result", wc2, "a"); b.l(sc, "result", wc2, "b")
+    la = b.n("Multiply", 6, 4, inputs={"b": -0.9175}); b.l(t, "value", la, "a")        # ln(2.5029)
+    wa = b.n("Exp", 7, 4); b.l(la, "result", wa, "x")
+    wx = b.n("Multiply", 8, 4, inputs={"b": 1.2}); b.l(wa, "result", wx, "a")
+    clo = b.n("Subtract", 10, 2, inputs={"a": -1.401155}); b.l(wc2, "result", clo, "b")
+    chi = b.n("Add", 10, 3, inputs={"a": -1.401155}); b.l(wc2, "result", chi, "b")
+    xlo = b.n("Multiply", 10, 4, inputs={"b": -1.0}); b.l(wx, "result", xlo, "a")
+    bif = b.n("Bifurcation", 11, 5, {"trail": 0.93, "orbits": 10})
+    b.l(uu, "result", bif, "u"); b.l(vv, "result", bif, "v")
+    b.l(clo, "result", bif, "c_lo"); b.l(chi, "result", bif, "c_hi"); b.l(xlo, "result", bif, "x_lo"); b.l(wx, "result", bif, "x_hi")
+    tr = b.n("Remap", 1, 3, {"out_lo": 0.6, "out_hi": 0.97}); b.l(c2, "value", tr, "x")
+    # (the trail is a param; the slider is shown for parity and drives the glow instead)
+    gain = b.n("Remap", 1, 1, {"out_lo": 0.4, "out_hi": 3.0}); b.l(it, "value", gain, "x")
+    g2 = b.n("Multiply", 12, 5); b.l(bif, "density", g2, "a"); b.l(gain, "result", g2, "b")
+    g3 = b.n("Multiply", 13, 5); b.l(g2, "result", g3, "a"); b.l(tr, "result", g3, "b")
+    bri = b.n("Smoothstep", 14, 5, {"e0": 0.0, "e1": 0.25}); b.l(g3, "result", bri, "x")
+    hue = b.n("Integrate", 12, 6, {"wrap": 1.0}, inputs={"rate": 0.02})
+    hi = b.n("Add", 13, 6); b.l(vv, "result", hi, "a"); b.l(hue, "value", hi, "b")
+    pal = b.n("Palette", 15, 5); b.l(hi, "result", pal, "index"); b.l(bri, "result", pal, "brightness")
+    out = b.n("Output", 16, 5); b.l(pal, "color", out, "color")
+    return b.save("feigenbaum.json")
+
+
+def liquid():
+    """Liquid: a plane cuts the solid and everything below it is wet. The
+    plane's tilt is a spring that a beat kicks, so it sloshes and settles;
+    ripples ride the surface; the lid becomes a pool when the level sits
+    below it. One dot product per pixel is the whole trick."""
+    b = GB("Liquid")
+    sp = b.n("Speed", 0, 0, {"label": "Ripple speed", "default": 130})
+    it = b.n("Intensity", 0, 1, {"label": "Surface", "default": 140})
+    c1 = b.n("Custom 1", 0, 2, {"label": "Fill", "default": 130})
+    c2 = b.n("Custom 2", 0, 3, {"label": "Slosh", "default": 120})
+    c3 = b.n("Custom 3", 0, 4, {"label": "Ripple size", "default": 14})
+    k1 = b.n("Check 1", 0, 5, {"label": "Bass fills", "default": True})
+    k2 = b.n("Check 2", 0, 6, {"label": "Splash on beat", "default": True})
+    au = b.n("Audio", 0, 7)
+    tm = b.n("Time", 0, 8)
+    b.n("Effect settings", 0, 9, {"palette": 9, "audio": "frequency"})
+    pos = b.n("Position", 1, 6)
+    # the tilt: two springs kicked by the beat, alternating sides
+    sl = b.n("Remap", 1, 3, {"out_lo": 0.0, "out_hi": 1.4}); b.l(c2, "value", sl, "x")
+    ks = b.n("Select", 1, 7, inputs={"a": 0.0}); b.l(k2, "on", ks, "on"); b.l(au, "hit", ks, "b")
+    kk = b.n("Multiply", 2, 7); b.l(ks, "result", kk, "a"); b.l(sl, "result", kk, "b")
+    side = b.n("Random hold", 2, 8); b.l(au, "beat", side, "trigger")
+    sgn = b.n("Remap", 3, 8, {"out_lo": -1.0, "out_hi": 1.0}); b.l(side, "value", sgn, "x")
+    kx = b.n("Multiply", 3, 7); b.l(kk, "result", kx, "a"); b.l(sgn, "result", kx, "b")
+    ky = b.n("Multiply", 4, 8, inputs={"b": 0.6}); b.l(kk, "result", ky, "a")
+    tx = b.n("Spring", 4, 6, {"hz": 0.9, "damping": 0.12}, inputs={"target": 0.0}); b.l(kx, "result", tx, "kick")
+    ty = b.n("Spring", 5, 7, {"hz": 1.1, "damping": 0.12}, inputs={"target": 0.0}); b.l(ky, "result", ty, "kick")
+    # height above the plane: n = (tx, ty, 1) . pos, normalised
+    ln = b.n("Length", 6, 7, inputs={"z": 1.0}); b.l(tx, "value", ln, "x"); b.l(ty, "value", ln, "y")
+    h0 = b.n("Dot 3", 6, 5, inputs={"bz": 1.0}); b.l(pos, "x", h0, "ax"); b.l(pos, "y", h0, "ay"); b.l(pos, "z", h0, "az"); b.l(tx, "value", h0, "bx"); b.l(ty, "value", h0, "by")
+    h = b.n("Divide", 7, 5); b.l(h0, "result", h, "a"); b.l(ln, "result", h, "b")
+    # the level: Fill, plus bass when asked
+    lev0 = b.n("Remap", 1, 2, {"out_lo": -1.0, "out_hi": 1.1}); b.l(c1, "value", lev0, "x")
+    bass = b.n("Envelope", 1, 5, {"attack": 30.0, "release": 400.0}); b.l(au, "bass", bass, "x")
+    bs = b.n("Select", 2, 5, inputs={"a": 0.0}); b.l(k1, "on", bs, "on"); b.l(bass, "value", bs, "b")
+    bs2 = b.n("Multiply", 3, 5, inputs={"b": 0.5}); b.l(bs, "result", bs2, "a")
+    lev = b.n("Add", 4, 4); b.l(lev0, "result", lev, "a"); b.l(bs2, "result", lev, "b")
+    # ripples on the surface
+    rs = b.n("Remap", 1, 0, {"out_lo": 0.2, "out_hi": 2.0}); b.l(sp, "value", rs, "x")
+    ph = b.n("Integrate", 2, 0, {"wrap": 1.0}); b.l(rs, "result", ph, "rate")
+    rsz = b.n("Remap", 1, 4, {"out_lo": 0.02, "out_hi": 0.14}); b.l(c3, "value", rsz, "x")
+    w1 = b.n("Multiply", 2, 1, inputs={"b": 1.7}); b.l(pos, "x", w1, "a")
+    w1p = b.n("Add", 3, 1); b.l(w1, "result", w1p, "a"); b.l(ph, "value", w1p, "b")
+    s1 = b.n("Sine", 4, 1); b.l(w1p, "result", s1, "x")
+    w2 = b.n("Multiply", 2, 2, inputs={"b": 2.3}); b.l(pos, "y", w2, "a")
+    w2p = b.n("Subtract", 3, 2); b.l(w2, "result", w2p, "a"); b.l(ph, "value", w2p, "b")
+    s2 = b.n("Sine", 4, 2); b.l(w2p, "result", s2, "x")
+    rip0 = b.n("Add", 5, 1); b.l(s1, "result", rip0, "a"); b.l(s2, "result", rip0, "b")
+    rip = b.n("Multiply", 6, 1); b.l(rip0, "result", rip, "a"); b.l(rsz, "result", rip, "b")
+    # sgn > 0 dry, < 0 wet; the meniscus a bright band around 0
+    sg0 = b.n("Subtract", 8, 5); b.l(h, "result", sg0, "a"); b.l(lev, "result", sg0, "b")
+    sgn_ = b.n("Subtract", 9, 5); b.l(sg0, "result", sgn_, "a"); b.l(rip, "result", sgn_, "b")
+    sw = b.n("Remap", 1, 1, {"out_lo": 0.02, "out_hi": 0.12}); b.l(it, "value", sw, "x")
+    wet = b.n("Threshold", 10, 4); b.l(sw, "result", wet, "x"); b.l(sgn_, "result", wet, "at")      # on = surface width >= sgn (wet or meniscus)
+    depth = b.n("Multiply", 10, 6, inputs={"b": -1.0}); b.l(sgn_, "result", depth, "a")
+    dsat = b.n("Clamp", 11, 6, {"lo": 0.0, "hi": 1.5}); b.l(depth, "result", dsat, "x")
+    body_b = b.n("Remap", 12, 6, {"in_lo": 0.0, "in_hi": 1.5, "out_lo": 0.85, "out_hi": 0.35}); b.l(dsat, "result", body_b, "x")
+    body_i = b.n("Remap", 12, 7, {"in_lo": 0.0, "in_hi": 1.5, "out_lo": 0.45, "out_hi": 0.75}); b.l(dsat, "result", body_i, "x")
+    ripi = b.n("Multiply", 11, 8, inputs={"b": 0.6}); b.l(rip, "result", ripi, "a")
+    idx = b.n("Add", 13, 7); b.l(body_i, "result", idx, "a"); b.l(ripi, "result", idx, "b")
+    body = b.n("Palette", 14, 6); b.l(idx, "result", body, "index"); b.l(body_b, "result", body, "brightness")
+    men_d = b.n("Abs", 11, 4); b.l(sgn_, "result", men_d, "x")
+    men_n = b.n("Divide", 12, 4); b.l(men_d, "result", men_n, "a"); b.l(sw, "result", men_n, "b")
+    men = b.n("Smoothstep", 13, 4, {"e0": 1.0, "e1": 0.0}); b.l(men_n, "result", men, "x")
+    white = b.n("Colour", 13, 5, {"rgb": [210, 245, 255]})
+    surf = b.n("Blend", 15, 5, {"mode": "over"}); b.l(body, "color", surf, "under"); b.l(white, "color", surf, "over"); b.l(men, "result", surf, "amount")
+    vis = b.n("Mask", 16, 5); b.l(surf, "color", vis, "color"); b.l(wet, "value", vis, "mask")
+    out = b.n("Output", 17, 5); b.l(vis, "color", out, "color")
+    return b.save("liquid.json")
+
+
 ALL = [slab_cut, cell_weave, truchet, ring_rain, box_fire, maelstrom, kaleidoscope, mandelbrot, watershed, moire,
-       ripples, chladni, candy_knot, gyro_sand, breakout]
+       ripples, chladni, candy_knot, gyro_sand, breakout, cube_axes, liquid_tunnel, question_block, feigenbaum, liquid]
+
+
+STATIC = {"Cube Axes"}          # still by design
 
 
 def check():
@@ -999,7 +1291,7 @@ def check():
             e.frame(); frames.append(np.asarray(e.rgb()).copy())
         lit = float((frames[-1].max(axis=2) > 8).mean())
         motion = float(np.abs(frames[-1].astype(int) - frames[-20].astype(int)).mean())
-        good = lit > 0.03 and motion > 0.2
+        good = lit > 0.03 and (motion > 0.2 or name in STATIC)
         ok &= good
         print(f"  {name:14s} lit {lit*100:5.1f}%  motion {motion:6.2f}  {'ok' if good else 'FLAT'}")
     return ok
