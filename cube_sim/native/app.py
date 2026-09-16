@@ -185,6 +185,7 @@ class App:
         self.rec_next = 0.0         # wall-clock time of the next frame
         self.rec_left = 0.0         # seconds still to capture
         self.rec_msg = ""           # what to show under the button
+        self.shot_req = False       # a PNG of the 3-D view into the project, next frame
         self._bufs = {}
         self._inputs = set()
         self._dragging = False
@@ -296,6 +297,20 @@ class App:
 
     def rec_frame(self, net_img, cube_img):
         """Offered every drawn frame; takes one only when the clock says so."""
+        if self.shot_req:
+            self.shot_req = False
+            img = cube_img if cube_img is not None else net_img
+            if img is not None:
+                try:
+                    from PIL import Image
+                    d = os.path.join(self.project.path, "export", "shots")
+                    os.makedirs(d, exist_ok=True)
+                    name = "".join(c if c.isalnum() else "_" for c in self.eng.names[self.eng.idx])
+                    path = os.path.join(d, f"{name}_{int(time.time())}.png")
+                    Image.fromarray(np.ascontiguousarray(img)).save(path)
+                    self.rec_msg = f"saved {os.path.relpath(path, self.project.path)}"
+                except Exception as e:
+                    self.rec_msg = f"screenshot failed: {e}"
         if self.rec is None:
             return
         now = time.perf_counter()
@@ -478,10 +493,18 @@ class App:
         self.gp.rebuild()
         self.refresh_import_buttons()
         self.refresh_project_list()
+        dpg.set_value("device_host", self.project.options.get("device", ""))
         name = os.path.basename(path)
         dpg.set_value("edit_status", f"project {name}"); self.gp.status(f"project {name}")
         # the engine holds the previous project's drafts: build this one's list
         self.edit_build()
+
+    def send_ledmap(self):
+        host = dpg.get_value("device_host")
+        self.project.options["device"] = host
+        self.project.save()
+        msg = self.project.send_ledmap(host)
+        dpg.set_value("edit_status", msg); self.gp.status(msg)
 
     def new_project(self, name):
         name = (name or "").strip()
@@ -915,7 +938,7 @@ class App:
         # The captions, the readout and the key hints are UI too - a clean
         # picture means nothing left over the top of it.
         for tag in ("net_cap", "cube_cap", "stat_txt", "hint1", "hint2",
-                    "rec_btn", "rec_msg"):
+                    "rec_btn", "shot_btn", "rec_msg"):
             dpg.configure_item(tag, show=self.ui)
 
         # The net is upscaled by a WHOLE number so the LED grid stays hard;
@@ -1055,7 +1078,7 @@ class App:
         if any(dpg.does_item_exist(t) and dpg.is_item_active(t) for t in self._inputs):
             return
         if any(dpg.does_item_exist(t) and dpg.is_item_active(t)
-               for t in ("find_text", "replace_text", "project_name") + self.META_FIELDS):
+               for t in ("find_text", "replace_text", "project_name", "device_host") + self.META_FIELDS):
             return
         if self.layout == "graph" and self.gp.typing():
             if app_data == dpg.mvKey_Return and dpg.does_item_exist("graph_search") and dpg.is_item_active("graph_search"):
@@ -1246,6 +1269,10 @@ def build(app):
                     dpg.add_input_text(tag="project_name", hint="new project name or a folder", width=200,
                                        on_enter=True, callback=lambda s, v: app.new_project(v))
                     dpg.add_button(label="new / open", callback=lambda: app.new_project(dpg.get_value("project_name")))
+                with dpg.group(horizontal=True):
+                    dpg.add_input_text(tag="device_host", hint="device address, e.g. 192.168.1.50", width=200,
+                                       default_value=app.project.options.get("device", ""))
+                    dpg.add_button(label="send ledmap", callback=lambda: app.send_ledmap())
                 dpg.add_separator()
                 dpg.add_combo(app.eng.names, label="effect", tag="fx_combo",
                               default_value=app.eng.names[app.eng.idx], width=200,
@@ -1348,6 +1375,7 @@ def build(app):
         with dpg.group(horizontal=True):
             dpg.add_button(label="record 15 s GIF", tag="rec_btn",
                            callback=lambda: app.start_rec(15.0))
+            dpg.add_button(label="screenshot", tag="shot_btn", callback=lambda: setattr(app, "shot_req", True))
             dpg.add_text("", tag="rec_msg", color=(139, 147, 163))
         dpg.add_text("", tag="stat_txt")
         dpg.add_text("Q net    E 3-D    W both    C code    G graph    H hide UI", tag="hint1",
@@ -1458,6 +1486,12 @@ def service_command(app):
                 app.gp.rename(c["graph_rename"])
             if "project" in c:
                 app.new_project(c["project"])
+            if c.get("screenshot"):
+                app.shot_req = True
+            if "graph_export" in c:
+                app.gp.export_bundle()
+            if "graph_import" in c:
+                app.gp.import_bundle(c["graph_import"])
             if "meta" in c:
                 for k, v in c["meta"].items():
                     dpg.set_value(k, v)

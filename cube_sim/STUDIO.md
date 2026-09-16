@@ -205,11 +205,19 @@ editor. Ticked when done; the order within a group is the order to do them.
       colour-slot labels; the compiler writes the whole string. Code: a
       Metadata form under the code pane reads the string out of the file by
       field and writes it back.
-- [ ] **Graph import / export** as one JSON carrying the sub-graphs it uses,
-      so graphs can be traded.
-- [ ] **Export as a deliverable**: zip of the usermod folder, ledmap and a
-      README of build flags; **send ledmap to device** over the JSON API.
-- [ ] **Record GIF / MP4** from the graph pane; screenshot to the project.
+- [x] **Graph import / export**: "export graph" writes
+      `export/<graph>.graph.json` with every sub-graph it reaches and any
+      user nodes it uses; "import graph" (file dialog) unpacks one into the
+      project, keeping existing sub-graphs of the same name.
+- [x] **Export as a deliverable**: `export/` holds `ledmap.json`, a
+      `usermod_studio/` folder that builds on its own (effects, the two
+      headers, the bank's .cpp, a library.json, a README with the build
+      steps), and `studio_export.zip` of the lot. **send ledmap** uploads
+      ledmap.json to a device over `/upload` from the address in the side
+      panel (remembered per project).
+- [x] **Record GIF** works in every layout (the button under the views);
+      **screenshot** saves the 3-D view to `export/shots/`. MP4 is not
+      offered: it would need ffmpeg on the path for no gain over the GIF.
 
 ### Alongside
 

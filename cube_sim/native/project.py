@@ -240,17 +240,63 @@ class Project:
         os.makedirs(um, exist_ok=True)
         for fname in self.build_files():
             shutil.copyfile(self.effect_path(fname), os.path.join(um, fname))
-        # the two headers the effects include, so the folder builds on its own
-        for h in ("cube_fx_common.h", "cube_fx_bank.h"):
+        # what the effects include and register through, so the folder
+        # builds on its own as a usermod: the two headers, the bank's
+        # implementation, and a library.json PlatformIO can pick up
+        for h in ("cube_fx_common.h", "cube_fx_bank.h", "cube_fx_bank.cpp"):
             src = os.path.join(ROOT, "usermods", "cube_fx", h)
             if os.path.exists(src):
                 shutil.copyfile(src, os.path.join(um, h))
+        with open(os.path.join(um, "library.json"), "w", encoding="utf-8") as f:
+            json.dump({"name": "usermod_studio", "version": "1.0.0",
+                       "description": "Effects written in the WLED Effect Studio",
+                       "build": {"libArchive": False}}, f, indent=2)
+        titles = [self.effect_title(f) for f in self.build_files()]
+        g = self.geometry
         with open(os.path.join(um, "README.md"), "w", encoding="utf-8") as f:
-            f.write("# Studio export\n\nEffects written in the WLED Effect Studio for: "
-                    f"{self.geometry.describe()}.\n\n"
-                    "Copy this folder into `usermods/`, add it to your build's usermod list, "
-                    "and upload `ledmap.json` to the device.\n")
+            f.write("# Studio export\n\n"
+                    f"Effects written in the WLED Effect Studio for: {g.describe()}.\n\n"
+                    "## Effects\n\n" + "".join(f"- {t}\n" for t in titles) + "\n"
+                    "## Building\n\n"
+                    "1. Copy this folder into `usermods/` of a WLED source tree (0.15 / 16.x).\n"
+                    "2. Add it to the build: in `platformio_override.ini`, under your environment,\n"
+                    "   `custom_usermods = usermod_studio` (append to the list if there is one).\n"
+                    "   The effects register through `cube_fx_bank.h`, which is included here.\n"
+                    "3. Build and upload the firmware.\n"
+                    "4. Upload `ledmap.json` to the device: LED Preferences, or\n"
+                    "   `curl -F \"data=@ledmap.json;filename=/ledmap.json\" http://<device>/upload`\n"
+                    "   then enable it under LED Preferences.\n\n"
+                    f"The segment should be {g.w} x {g.h}" + (" (a 2-D matrix)" if g.is2d else " (1-D)") + ".\n")
+        # one file to hand over
+        zip_path = os.path.join(out, "studio_export.zip")
+        import zipfile
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+            z.write(os.path.join(out, "ledmap.json"), "ledmap.json")
+            for fn in os.listdir(um):
+                z.write(os.path.join(um, fn), f"usermod_studio/{fn}")
         return out
+
+    def send_ledmap(self, host):
+        """Upload ledmap.json to a device over WLED's /upload form, as the
+        web UI does. Returns a message for the status line."""
+        host = (host or "").strip().rstrip("/")
+        if not host:
+            return "type the device's address first"
+        if not host.startswith("http"):
+            host = "http://" + host
+        import urllib.request
+        body = json.dumps(self.geometry.ledmap()).encode()
+        boundary = "----studio" + str(int(time.time()))
+        data = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"data\"; filename=\"/ledmap.json\"\r\n"
+                "Content-Type: application/json\r\n\r\n").encode() + body + f"\r\n--{boundary}--\r\n".encode()
+        req = urllib.request.Request(host + "/upload", data=data,
+                                     headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                r.read()
+            return f"ledmap.json ({len(body)} bytes) sent to {host} - enable it under LED Preferences"
+        except Exception as e:
+            return f"upload failed: {e}"
 
 
 STUDIO_FILE = os.path.join(PROJECTS, "studio.json")     # what is not any one project's: the last one opened

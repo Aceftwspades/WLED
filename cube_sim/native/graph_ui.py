@@ -1262,6 +1262,72 @@ class GraphPanel:
                 self.links.pop(lid, None)
 
     # --- compile -------------------------------------------------------------------------
+    # --- sharing a graph -----------------------------------------------------------------
+    # One JSON with the graph and every sub-graph it reaches (and user nodes
+    # it uses), so a graph can be handed to someone else's project.
+    def export_bundle(self):
+        if not self.graph:
+            return
+        self.save()
+        subs = {}
+        def collect(g):
+            for n in g.nodes.values():
+                if n["type"].startswith(G.SUB):
+                    ident = n["type"][len(G.SUB):]
+                    if ident not in subs:
+                        sub = self.resolve_sub(ident)
+                        if sub is not None:
+                            subs[ident] = sub.to_json()
+                            collect(sub)
+        collect(self.graph)
+        user = {}
+        udir = os.path.join(self.app.project.path, "nodes")
+        for g in [self.graph] + [G.Graph(d, lib=self.lib) for d in subs.values()]:
+            for n in g.nodes.values():
+                p = os.path.join(udir, G._ident(n["type"]) + ".json")
+                if os.path.exists(p) and n["type"] not in user:
+                    user[n["type"]] = json.load(open(p, encoding="utf-8"))
+        bundle = {"studio_graph": 1, "graph": self.graph.to_json(), "subgraphs": subs, "nodes": user}
+        out = os.path.join(self.app.project.path, "export")
+        os.makedirs(out, exist_ok=True)
+        path = os.path.join(out, os.path.splitext(self.file)[0] + ".graph.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(bundle, f, indent=1)
+        self.status(f"exported {os.path.basename(path)} ({len(subs)} sub-graph(s), {len(user)} user node(s))")
+        return path
+
+    def import_bundle(self, path):
+        try:
+            b = json.load(open(path, encoding="utf-8"))
+        except Exception as e:
+            self.status(f"cannot read {path}: {e}"); return
+        if not isinstance(b, dict) or "graph" not in b:
+            # a plain graph file is fine too
+            b = {"graph": b, "subgraphs": {}, "nodes": {}} if isinstance(b, dict) and "nodes" in b else None
+            if b is None:
+                self.status("not a graph file"); return
+        udir = os.path.join(self.app.project.path, "nodes")
+        for name, d in b.get("nodes", {}).items():
+            os.makedirs(udir, exist_ok=True)
+            p = os.path.join(udir, G._ident(name) + ".json")
+            if not os.path.exists(p):
+                json.dump(d, open(p, "w", encoding="utf-8"), indent=1)
+        for ident, d in b.get("subgraphs", {}).items():
+            p = os.path.join(self.sub_dir, ident + ".json")
+            if not os.path.exists(p):
+                json.dump(d, open(p, "w", encoding="utf-8"), indent=1)
+            # an existing one of the same name is kept: the import uses it
+        g = b["graph"]
+        name = g.get("name") or os.path.splitext(os.path.basename(path))[0]
+        fname = G._ident(name) + ".json"
+        n = 2
+        while os.path.exists(os.path.join(self.dir, fname)):
+            fname = f"{G._ident(name)}_{n}.json"; n += 1
+        json.dump(g, open(os.path.join(self.dir, fname), "w", encoding="utf-8"), indent=1)
+        self.refresh_lib()
+        self.open(fname)
+        self.status(f"imported {name} as {fname}")
+
     # --- pin preview ---------------------------------------------------------------------
     # "Preview this output" builds the graph with that pin shown instead of
     # the Output: a colour straight, a float or bool as a grey level. The
@@ -1379,6 +1445,12 @@ def build_panel(app, panel):
         dpg.add_button(label="delete selected", callback=lambda: panel.delete_selected())
         dpg.add_button(label="fold into sub-graph",
                        callback=lambda: panel.make_sub_from_selection(dpg.get_value("graph_new_name")))
+        dpg.add_button(label="export graph", callback=lambda: panel.export_bundle())
+        dpg.add_button(label="import graph", callback=lambda: dpg.show_item("graph_import_dialog"))
+    with dpg.file_dialog(directory_selector=False, show=False, tag="graph_import_dialog", width=620, height=420,
+                         callback=lambda s, a: panel.import_bundle(a.get("file_path_name", ""))):
+        dpg.add_file_extension(".json", color=(120, 200, 120))
+        dpg.add_file_extension(".*")
     dpg.add_text("", tag="graph_status", color=DIM)
     with dpg.node_editor(tag="node_editor", callback=panel.on_link, delink_callback=panel.on_delink,
                          minimap=True, minimap_location=dpg.mvNodeMiniMap_Location_BottomRight,
