@@ -132,6 +132,14 @@ and runs them; a new project starts with them in `graphs/`):
   over a c window and an x window), Spring (a damped oscillator kicked by
   the beat - slosh, bounce), Bitmap (pixel art as rows of digits, read at
   u, v) and Colour pick (its palette).
+- **Images.** Image bakes a picture file into the effect at compile time
+  - resized to the node's size, quantised to its number of colours, stored
+  as an index table and a palette in the generated C++, so the device needs
+  no files; a "..." button picks the file, relative to the project. Its
+  menu offers "convert to Bitmap + Colour pick": the picture as rows of
+  digits (edited as lines on the node) and its palette as eight colours,
+  wired the same, so it can be drawn on. Node definitions may name a
+  `codegen` function for C++ that a template cannot hold.
 - **The heavy ones.** Mirror fold (a direction reflected into one
   fundamental domain of a finite mirror group - dihedral, tetrahedral,
   octahedral, icosahedral - so a picture is mirrored 6 to 120 times),
