@@ -29,7 +29,9 @@ CHAR_W = 7.2            # the default font at 13 px, near enough to right-align 
 
 
 NARROW_W = 46           # a knot: just wide enough for its two pin names
-ZOOMS = (0.5, 0.6, 0.7, 0.85, 1.0, 1.2, 1.4, 1.7, 2.0)
+ZOOMS = (0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.85, 1.0, 1.2, 1.4, 1.7, 2.0)
+OVERVIEW_ZOOM = 0.5     # below this the nodes are stand-ins (Settings > Simplified nodes below)
+OVERVIEW_CHOICES = ((0.7, "70%"), (0.5, "50%"), (0.4, "40%"), (0.3, "30%"), (0.0, "never"))
 BASE_FONT = 13          # the size everything above is laid out for
 HELP_H = 46             # the description box, px: two lines
 THUMB = 96              # the preview thumbnail on a node, layout px
@@ -536,14 +538,30 @@ class GraphPanel:
         ex, ey = dpg.get_item_rect_min("node_editor")
         return self._graph([screen[0] - ex - self.pan[0], screen[1] - ey - self.pan[1]])
 
+    def _font_px(self):
+        return max(8 if (self.overview() and self.zoom >= 0.3) else 6, int(BASE_FONT * self.zoom)) if self._font_file else BASE_FONT
+
+    def overview(self):
+        """Zoomed out past the setting: the nodes are stand-ins - a title
+        and the wired pins, no values - for finding your way, not editing."""
+        return self.zoom < float(self.app.prefs.get("overview_zoom", OVERVIEW_ZOOM))
+
+    def set_overview_zoom(self, z):
+        self.app.prefs["overview_zoom"] = float(z)
+        from native.project import save_prefs
+        save_prefs(self.app.prefs)
+        if self.graph:
+            self._sync_pos(); self.rebuild()
+        self.status("simplified nodes below " + (f"{int(z * 100)}%" if z else "- never"))
+
     def _font(self):
         if not self._font_file:
             return None
         # Never larger than the zoom asks for: text that outgrows the boxes
         # widens every node, so 50% came out a little bigger than 50%. A
         # 6 px font at the far end is for seeing the shape of a graph, not
-        # reading it.
-        size = max(6, int(BASE_FONT * self.zoom))
+        # reading it; stand-ins keep 8 px so their titles still can be.
+        size = max(8 if (self.overview() and self.zoom >= 0.3) else 6, int(BASE_FONT * self.zoom))
         f = self._fonts.get(size)
         if f is None:
             try:
@@ -1115,6 +1133,9 @@ class GraphPanel:
         if n.get("muted"):
             label = f"{label} (muted)"
         width = self.px(NARROW_W if d.get("narrow") else NODE_W)
+        if self.overview() and n["type"] != "Frame":
+            self._make_standin(nid, n, d, label, width)
+            return
         with dpg.node(label=label, parent="node_editor", pos=self._disp(n.get("pos", [0, 0])), tag=f"gnode_{nid}",
                       user_data=nid):
             if n["type"] == "Frame":
@@ -1157,6 +1178,39 @@ class GraphPanel:
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output, tag=tag,
                                         user_data=(nid, o["name"]), shape=dpg.mvNode_PinShape_CircleFilled):
                     dpg.add_text(o["name"], indent=_right(o["name"], width, self.char_w))
+                dpg.bind_item_theme(tag, th.pin[o["type"]])
+                self._pins[(nid, "out", o["name"])] = tag
+                self._ptype[tag] = o["type"]
+        self._bind_node_theme(nid, n)
+
+    def _make_standin(self, nid, n, d, label, width):
+        """The node zoomed far out: its title over one short row per wired
+        pin (so the wires still have ends), nothing to edit. Shrinks with
+        the zoom; the title's font stops at 8 px."""
+        th = self.themes()
+        linked = {(b, inp) for _, _, b, inp in self.graph.links}
+        fed_out = {(a, o) for a, o, _, _ in self.graph.links}
+        with dpg.node(label=label, parent="node_editor", pos=self._disp(n.get("pos", [0, 0])), tag=f"gnode_{nid}",
+                      user_data=nid):
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                dpg.add_spacer(width=width, height=1)
+            for i in d["inputs"]:
+                if (nid, i["name"]) not in linked:
+                    continue
+                tag = f"gin_{nid}_{i['name']}"
+                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input, tag=tag,
+                                        user_data=(nid, i["name"]), shape=dpg.mvNode_PinShape_CircleFilled):
+                    dpg.add_spacer(width=width, height=max(1, self.px(10)), tag=tag + "_t")
+                dpg.bind_item_theme(tag, th.pin[i["type"]])
+                self._pins[(nid, "in", i["name"])] = tag
+                self._ptype[tag] = i["type"]
+            for o in d["outputs"]:
+                if (nid, o["name"]) not in fed_out:
+                    continue
+                tag = f"gout_{nid}_{o['name']}"
+                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output, tag=tag,
+                                        user_data=(nid, o["name"]), shape=dpg.mvNode_PinShape_CircleFilled):
+                    dpg.add_spacer(width=width, height=max(1, self.px(10)))
                 dpg.bind_item_theme(tag, th.pin[o["type"]])
                 self._pins[(nid, "out", o["name"])] = tag
                 self._ptype[tag] = o["type"]
@@ -1307,9 +1361,17 @@ class GraphPanel:
             return None
         st = dpg.get_item_state(kids[0])
         nd = dpg.get_item_state(f"gnode_{nid}")
-        if "rect_min" not in st or "rect_min" not in nd:
+        if "rect_min" not in nd:
             return None
-        y = (st["rect_min"][1] + st["rect_max"][1]) / 2
+        if "rect_min" not in st or "rect_max" not in st:
+            # a stand-in's spacer reports no rectangle: the pin's row is
+            # counted down from the node's title
+            rows = [k for k, (pn, kd, nm) in enumerate(self._pins) if pn == nid]
+            row = next((r for r, (pn, kd, nm) in enumerate([k for k in self._pins if k[0] == nid]) if kd == kind and nm == name), 0)
+            top = nd["rect_min"][1] + self.px(8) * 2 + self._font_px() + self.px(4)
+            y = top + row * (max(1, self.px(10)) + self.px(4)) + max(1, self.px(10)) / 2
+        else:
+            y = (st["rect_min"][1] + st["rect_max"][1]) / 2
         pad = self.px(8)
         x = nd["rect_max"][0] + pad if kind == "out" else nd["rect_min"][0] - pad
         return (x, y)
@@ -1526,6 +1588,7 @@ class GraphPanel:
         tag = f"gin_{b}_{inp}"
         if dpg.does_item_exist(tag + "_t"):
             dpg.configure_item(tag + "_t", show=linked)
+        if dpg.does_item_exist(tag + "_w"):                 # a stand-in has no value box
             dpg.configure_item(tag + "_w", show=not linked)
 
     def _hovered_field(self):

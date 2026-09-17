@@ -48,7 +48,9 @@ down the wires, Shift+Home frames it, Ctrl+Delete deletes a node and
 joins the wires across it, a node dropped on a wire is spliced in, a
 Ctrl+right-drag cuts wires, Alt while editing a value edits every
 selected node of that type, Backspace over a value resets it, Ctrl+P is
-the command palette and Ctrl+Alt+Z the undo history. Settings > Keyboard
+the command palette and Ctrl+Alt+Z the undo history. Zoomed out past
+50% (Settings > Simplified nodes below) the nodes become small stand-ins
+- a title and its wires - for getting about a big graph. Settings > Keyboard
 shortcuts lists the rest.
 
 **As code.** Ctrl+N in the code pane makes a `.cpp` from the effect

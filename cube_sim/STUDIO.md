@@ -499,6 +499,11 @@ order is the order they were done.
       method that took it.
 - [x] **Ctrl+Shift+click** previews a node's output; again, the next one.
 - [x] **Repeat last** (Shift+R).
+- [x] **Zoom out to 10%**, and past a setting (Settings > Simplified
+      nodes below: 70 / 50 / 40 / 30% / never; 50% by default) every node
+      is a stand-in - its title over one short row per wired pin, nothing
+      to edit - that shrinks with the zoom, for finding your way round a
+      big graph (`GraphPanel.overview`, `_make_standin`).
 - [ ] Numeric expressions in fields ("2*pi") - deferred: the number boxes
       are Dear PyGui's and parse their own text.
 - Not applicable: per-node timings (one compiled function, no per-node

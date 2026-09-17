@@ -195,6 +195,12 @@ def build_menus(app):
                               callback=lambda s, a: app.set_gpu_cube(bool(a)))
             dpg.add_menu_item(label="Scale the net on the GPU (softer LED edges, faster)", check=True, default_value=app.gpu_net,
                               tag="menu_gpu_net", callback=lambda s, a: app.set_gpu_net(bool(a)))
+            with dpg.menu(label="Simplified nodes below"):
+                from native.graph_ui import OVERVIEW_CHOICES
+                for z, lbl in OVERVIEW_CHOICES:
+                    dpg.add_menu_item(label=lbl, check=True, tag=f"menu_ov_{int(z * 100)}", user_data=z,
+                                      callback=lambda s, a, u: app.gp.set_overview_zoom(u))
+                dpg.add_text("zoomed out past this, nodes are a title and their wires", color=DIM)
             dpg.add_menu_item(label="Device speed factor...", callback=lambda: ask(
                 app, "Device speed", "how many times slower than this PC the device is (the fps estimate in the footer)",
                 str(app.prefs.get("device_factor", 60)), lambda v: app.set_device_factor(v)))
@@ -1102,6 +1108,11 @@ def refresh(app):
             dpg.set_value(f"menu_pop_{v}", app.popouts.is_out(v))
     if dpg.does_item_exist("menu_snap"):
         dpg.set_value("menu_snap", bool(app.prefs.get("snap")))
+    from native.graph_ui import OVERVIEW_CHOICES, OVERVIEW_ZOOM
+    ov = float(app.prefs.get("overview_zoom", OVERVIEW_ZOOM))
+    for z, _ in OVERVIEW_CHOICES:
+        if dpg.does_item_exist(f"menu_ov_{int(z * 100)}"):
+            dpg.set_value(f"menu_ov_{int(z * 100)}", abs(z - ov) < 1e-6)
     for key, _, _ in LAYOUTS:
         on = app.layout == key and app.ui
         dpg.set_value(f"menu_view_{key}", on)
