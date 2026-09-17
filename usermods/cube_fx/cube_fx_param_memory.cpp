@@ -1,3 +1,7 @@
+#ifndef CFX_WITH_PARAM_MEMORY
+#define CFX_WITH_PARAM_MEMORY 1     // per-effect slider memory: the studio's feature picker sets -D CFX_WITH_PARAM_MEMORY=0 to leave it out
+#endif
+#if CFX_WITH_PARAM_MEMORY
 #include "wled.h"
 #include <vector>
 
@@ -308,3 +312,4 @@ class CubeFx_ParamMemoryUsermod : public Usermod {
 
 static CubeFx_ParamMemoryUsermod cube_fx_param_memory;
 REGISTER_USERMOD(cube_fx_param_memory);
+#endif  // CFX_WITH_PARAM_MEMORY

@@ -1,3 +1,7 @@
+#ifndef CFX_WITH_UI
+#define CFX_WITH_UI 1     // the rotary encoder: the studio's feature picker sets -D CFX_WITH_UI=0 for a build without the on-device menu
+#endif
+#if CFX_WITH_UI
 #include "wled.h"
 #include <Wire.h>
 #include "ace_ui_bus.h"
@@ -925,3 +929,4 @@ REGISTER_USERMOD(ace_ui_encoder);
 // a build without this file still links and the screen simply does not get the
 // early poll.
 extern "C" void aceUiEncoderPoll() { ace_ui_encoder.pollNow(); }
+#endif  // CFX_WITH_UI

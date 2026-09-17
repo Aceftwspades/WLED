@@ -1,3 +1,7 @@
+#ifndef CFX_WITH_UI
+#define CFX_WITH_UI 1     // the on-device menu: the studio's feature picker sets -D CFX_WITH_UI=0 for a build without it
+#endif
+#if CFX_WITH_UI
 #include "wled.h"
 #include "ace_ui_bus.h"
 
@@ -1543,3 +1547,4 @@ void aceUiMenuService() {
   else if (p != seenPal || bri != seenBri) { seenPal = p; seenBri = bri; auiRefresh(); }
   seenPal = p; seenBri = bri;
 }
+#endif  // CFX_WITH_UI

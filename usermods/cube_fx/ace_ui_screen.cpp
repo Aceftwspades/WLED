@@ -1,3 +1,7 @@
+#ifndef CFX_WITH_UI
+#define CFX_WITH_UI 1     // the OLED: the studio's feature picker sets -D CFX_WITH_UI=0 for a build without the on-device menu (U8g2 is then left unlinked)
+#endif
+#if CFX_WITH_UI
 #include "wled.h"
 #include "ace_ui_bus.h"
 
@@ -1816,3 +1820,4 @@ static AceUiScreenUsermod ace_ui_screen;
 REGISTER_USERMOD(ace_ui_screen);
 
 #endif  // __has_include(<U8g2lib.h>)
+#endif  // CFX_WITH_UI

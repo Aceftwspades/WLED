@@ -60,6 +60,15 @@ bottom-right corner block** (under EAST, right of SOUTH) and the net stays the s
           five faces                      six faces
 ```
 
+**Optional parts.** The IMU driver, the encoder + OLED menu and the per-effect
+slider memory each compile only while their flag is 1 - `CFX_WITH_IMU`,
+`CFX_WITH_UI`, `CFX_WITH_PARAM_MEMORY`, all 1 by default - and audioreactive's
+PCM slot only while `CFX_PCM` is 1. Pass `-D CFX_WITH_IMU=0` (etc.) in
+`build_flags` for a device without that hardware; the studio's flash dialog
+has a picker that does exactly this. Everything degrades: no IMU means gravity
+settles to top-face-up, no PCM means Warp and Scope rebuild a waveform from the
+FFT bins.
+
 Six faces is a setting, not a different net: tick **six_faces** on the CubeFXBank
 usermod's settings page (or build with `-D CFX_SIX_FACES=1`, which the studio does
 for a project whose cube has six). Every effect that reads pixel positions through

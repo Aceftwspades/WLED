@@ -1,3 +1,7 @@
+#ifndef CFX_WITH_IMU
+#define CFX_WITH_IMU 1     // the MPU6050 driver: the studio's feature picker sets -D CFX_WITH_IMU=0 for a build without a sensor
+#endif
+#if CFX_WITH_IMU
 #include "wled.h"
 #include <Wire.h>
 
@@ -836,3 +840,4 @@ REGISTER_USERMOD(ace_imu_mpu6050);
 // now / Clear level trim. Without this file in the build those three entries
 // report "no IMU driver" and the menu still compiles.
 extern "C" void aceImuAction(int8_t a) { ace_imu_mpu6050.requestAction(a); }
+#endif  // CFX_WITH_IMU
