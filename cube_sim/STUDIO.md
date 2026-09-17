@@ -274,7 +274,7 @@ editor. Ticked when done; the order within a group is the order to do them.
 - [x] **Movable panes**: the three slots - the main pane (net, code or
       graph, whichever the layout mode shows), the 3-D view and the panel
       - sit in columns of rows (`App.arrangement`). Drag a pane by the
-      `:::` at its top left onto another: near an edge it snaps beside or
+      `:::` at its top right onto another: near an edge it snaps beside or
       above that pane, in the middle the two swap; the target lights up
       as you go. View > Layout has six presets; the arrangement is
       remembered.

@@ -137,7 +137,7 @@ def build_menus(app):
                     dpg.add_menu_item(label=label, check=True, tag=f"menu_arr_{k}", user_data=arr,
                                       callback=lambda s, a, u: app.set_arrangement(u))
                 dpg.add_separator()
-                dpg.add_text("drag a pane by its ::: onto another to move it", color=DIM)
+                dpg.add_text("drag a pane by the ::: at its top right onto another to move it", color=DIM)
                 dpg.add_menu_item(label="Reset pane sizes", callback=lambda: app.reset_layout())
             with dpg.menu(label="Pop out (a window of its own, for another monitor)"):
                 dpg.add_menu_item(label="The logical net", check=True, tag="menu_pop_net",
@@ -876,9 +876,10 @@ def show_appearance(app):
 
 
 def grip(pane):
-    """The handle a pane is dragged by: ::: at its top left. The app's click
+    """The handle a pane is dragged by: ::: at its top right (placed by the
+    layout; an item with a position is out of the flow). The app's click
     handler looks for the pointer on it (app.on_mouse_click)."""
-    dpg.add_button(label=":::", tag=f"grip_{pane}", width=24, height=19)
+    dpg.add_button(label=":::", tag=f"grip_{pane}", width=24, height=19, pos=(400, 8))
     with dpg.tooltip(f"grip_{pane}"):
         dpg.add_text("drag onto another pane to move this one there")
 

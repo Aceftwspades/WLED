@@ -1331,7 +1331,7 @@ class App(Features):
     # Three slots - "main" (the net, the code or the graph, whichever the
     # layout mode shows), "cube" (the 3-D view) and "side" (the panel) - in
     # columns of rows, left to right, top to bottom. A pane moves by its grip
-    # (the ::: at its top left) dragged onto another pane: near an edge it
+    # (the ::: at its top right) dragged onto another pane: near an edge it
     # goes beside or above that pane, in the middle the two swap.
     PRESETS = (("Classic: main pane, 3-D, panel", [["main"], ["cube"], ["side"]]),
                ("Panel on the left", [["side"], ["main"], ["cube"]]),
@@ -1654,6 +1654,9 @@ class App(Features):
                 tag = self.pane_of(slot)
                 dpg.configure_item(tag, width=w, height=h)
                 dpg.set_item_pos(tag, [x, y])
+                # the grip at the pane's top right, clear of the scrollbar
+                if dpg.does_item_exist(f"grip_{tag}"):
+                    dpg.set_item_pos(f"grip_{tag}", [w - 34 - (14 if slot == "side" else 0), 8])
             app_ed = getattr(self, "code_ed", None)
             if app_ed and show_edit and "main" in rects:
                 x, y, w, h = rects["main"]
@@ -1689,6 +1692,12 @@ class App(Features):
             self.remake_net_texture()
         if show_cube:
             self.remake_cube_texture()
+        # a narrow pane's caption would run under the grip: the short form
+        if self.ui:
+            if "main" in rects and show_net:
+                dpg.set_value("net_cap", "Logical view - what the effect draws" if rects["main"][2] >= 340 else "Logical view")
+            if "cube" in rects and not self.ab and rects["cube"][2] < 340:
+                dpg.set_value("cube_cap", "3-D view")
         self.centre_views()
 
     def centre_views(self):
@@ -2327,12 +2336,12 @@ def build(app):
         chrome.build_toolbar(app)
         with dpg.group(horizontal=True):
             with dpg.child_window(tag="net_win", width=420, height=470):
+                chrome.grip("net_win")
                 with dpg.group(horizontal=True):
-                    chrome.grip("net_win")
                     dpg.add_text("Logical view - what the effect draws", tag="net_cap", color=(139, 147, 163))
             with dpg.child_window(tag="edit_win", width=420, height=470, show=False):
+                chrome.grip("edit_win")
                 with dpg.group(horizontal=True):
-                    chrome.grip("edit_win")
                     dpg.add_combo(app.project.effect_files(), tag="edit_file", width=220,
                                   default_value=app.edit_file or "",
                                   callback=lambda s, v: (app.edit_open(v), app.ensure_built()))
@@ -2372,13 +2381,13 @@ def build(app):
                                   no_scrollbar=True, no_scroll_with_mouse=True):
                 build_panel(app, app.gp)
             with dpg.child_window(tag="cube_win", width=420, height=470):
+                chrome.grip("cube_win")
                 with dpg.group(horizontal=True):
-                    chrome.grip("cube_win")
                     dpg.add_text("3-D - drag to rotate, wheel to zoom",
                                  tag="cube_cap", color=(139, 147, 163))
             with dpg.child_window(tag="side_win", width=app.side_w - 10, height=470):
+                chrome.grip("side_win")
                 with dpg.group(horizontal=True):
-                    chrome.grip("side_win")
                     dpg.add_combo(list_projects(), label="project", tag="project_combo", width=200,
                                   default_value=os.path.basename(app.project.path),
                                   callback=lambda s, v: app.switch_project(v))
