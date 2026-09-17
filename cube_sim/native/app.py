@@ -1656,7 +1656,7 @@ class App(Features):
                 dpg.set_item_pos(tag, [x, y])
                 # the grip at the pane's top right, clear of the scrollbar
                 if dpg.does_item_exist(f"grip_{tag}"):
-                    dpg.set_item_pos(f"grip_{tag}", [w - 34 - (14 if slot == "side" else 0), 8])
+                    dpg.set_item_pos(f"grip_{tag}", [w - 40 - (14 if slot == "side" else 0), 8])
             app_ed = getattr(self, "code_ed", None)
             if app_ed and show_edit and "main" in rects:
                 x, y, w, h = rects["main"]

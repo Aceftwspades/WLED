@@ -879,7 +879,13 @@ def grip(pane):
     """The handle a pane is dragged by: ::: at its top right (placed by the
     layout; an item with a position is out of the flow). The app's click
     handler looks for the pointer on it (app.on_mouse_click)."""
-    dpg.add_button(label=":::", tag=f"grip_{pane}", width=24, height=19, pos=(400, 8))
+    dpg.add_button(label=":::", tag=f"grip_{pane}", width=30, height=19, pos=(400, 8))
+    if not dpg.does_item_exist("grip_theme"):
+        # the default frame padding hides a third of the label
+        with dpg.theme(tag="grip_theme"):
+            with dpg.theme_component(dpg.mvButton):
+                dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 3, 2)
+    dpg.bind_item_theme(f"grip_{pane}", "grip_theme")
     with dpg.tooltip(f"grip_{pane}"):
         dpg.add_text("drag onto another pane to move this one there")
 
