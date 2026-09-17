@@ -920,6 +920,10 @@ def build_pane_menus(app):
         ("Screenshot", lambda: setattr(app, "shot_req", True)),
         ("Full frame (Q)", lambda: app.set_layout("net")),
         ("Pop out to its own window", lambda: app.set_popout("net", True))])
+    _pane_menu(app, "side_win", [
+        ("Expand every section", lambda: app.sec_all(True)),
+        ("Collapse every section", lambda: app.sec_all(False)),
+        ("Sections back in their original order", lambda: app.sec_reset())])
     _pane_menu(app, "edit_win", [
         ("Save", lambda: app.save_current()),
         ("Compile + reload", lambda: app.build_current()),

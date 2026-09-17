@@ -204,6 +204,48 @@ def present_theme():
 PALETTES = []
 
 
+class Section:
+    """A section of the side panel: a header row (an arrow that folds it,
+    the title, a grip that moves it) over a body. The whole thing is one
+    group, so moving the group moves the section; see App.sec_*.
+
+        with Section(app, "geometry", "GEOMETRY"):
+            ...the body...
+    """
+
+    def __init__(self, app, key, title, extras=None):
+        self.app, self.key, self.title, self.extras = app, key, title, extras
+
+    def __enter__(self):
+        app, key = self.app, self.key
+        dpg.add_group(tag=f"sec_{key}")
+        dpg.push_container_stack(f"sec_{key}")
+        shut = key in app.sec_closed
+        with dpg.group(horizontal=True, tag=f"sec_{key}_hdr"):
+            dpg.add_button(arrow=True, direction=dpg.mvDir_Right if shut else dpg.mvDir_Down, tag=f"sec_{key}_arrow",
+                           callback=lambda: app.sec_toggle(key))
+            dpg.add_text(self.title, color=SECTION, tag=f"sec_{key}_title")
+            dpg.add_button(label=":::", tag=f"sec_{key}_grip", width=30, height=19)
+            if dpg.does_item_exist("grip_theme"):
+                dpg.bind_item_theme(f"sec_{key}_grip", "grip_theme")
+            with dpg.tooltip(f"sec_{key}_grip"):
+                dpg.add_text("drag onto another section to move this one above or below it")
+            if self.extras:
+                self.extras()
+        # the title folds the section too
+        with dpg.item_handler_registry(tag=f"sec_{key}_h"):
+            dpg.add_item_clicked_handler(callback=lambda: app.sec_toggle(key))
+        dpg.bind_item_handler_registry(f"sec_{key}_title", f"sec_{key}_h")
+        dpg.add_group(tag=f"sec_{key}_body", show=not shut)
+        dpg.push_container_stack(f"sec_{key}_body")
+        return self
+
+    def __exit__(self, *a):
+        dpg.pop_container_stack()                     # the body
+        dpg.add_separator()
+        dpg.pop_container_stack()                     # the section
+
+
 class App(Features):
     def __init__(self):
         self.project = default_project()
@@ -230,6 +272,13 @@ class App(Features):
         self._pane_drag = None       # the slot whose grip is being dragged
         self._pane_target = None     # (slot, zone) under the pointer while dragging
         self.popouts = Popouts()     # views in windows of their own
+        # the side panel's sections: their order, and which are folded
+        secs = self.prefs.get("sections") or {}
+        self.sec_order = [k for k in (secs.get("order") or []) if k in self.SECTIONS]
+        self.sec_order += [k for k in self.SECTIONS if k not in self.sec_order]
+        self.sec_closed = set(k for k in (secs.get("closed") or []) if k in self.SECTIONS)
+        self._sec_drag = None        # the section whose grip is being dragged
+        self._sec_target = None      # (section, "above" | "below") under the pointer
         self.side = True             # the side panel shown (Ctrl+Shift+H hides it)
         self.focus = None            # the pane last clicked in: it wears the frame
         self.sweep = None            # {"key", "secs", "t0", "loop", "record"} while a slider is swept
@@ -1531,6 +1580,70 @@ class App(Features):
         if self.popouts.jobs and self.popouts.poll():
             self.request_layout()
 
+    # --- the side panel's sections: folded, and in any order -----------------------
+    SECTIONS = ("effect", "segments", "geometry", "colours", "parameters", "audio", "live")
+
+    def sec_save(self):
+        self.prefs["sections"] = {"order": list(self.sec_order), "closed": sorted(self.sec_closed)}
+        save_prefs(self.prefs)
+
+    def sec_toggle(self, key):
+        self.sec_set(key, key in self.sec_closed)
+
+    def sec_set(self, key, open_):
+        if open_:
+            self.sec_closed.discard(key)
+        else:
+            self.sec_closed.add(key)
+        if dpg.does_item_exist(f"sec_{key}_body"):
+            dpg.configure_item(f"sec_{key}_body", show=open_)
+            dpg.configure_item(f"sec_{key}_arrow", direction=dpg.mvDir_Down if open_ else dpg.mvDir_Right)
+        self.sec_save()
+
+    def sec_all(self, open_):
+        for key in self.SECTIONS:
+            self.sec_set(key, open_)
+
+    def sec_apply_order(self):
+        """The sections into self.sec_order: each moved to the end in turn."""
+        for key in self.sec_order:
+            if dpg.does_item_exist(f"sec_{key}"):
+                dpg.move_item(f"sec_{key}", parent="side_win")
+        self.sec_save()
+
+    def sec_move(self, key, target, zone):
+        """`key` dropped above or below `target`."""
+        if key == target or key not in self.SECTIONS or target not in self.SECTIONS:
+            return
+        order = [k for k in self.sec_order if k != key]
+        i = order.index(target) + (1 if zone == "below" else 0)
+        order.insert(i, key)
+        self.sec_order = order
+        self.sec_apply_order()
+
+    def sec_reset(self):
+        self.sec_order = list(self.SECTIONS)
+        self.sec_closed = set()
+        self.sec_all(True)
+        self.sec_apply_order()
+
+    def sec_zone(self, mx, my):
+        """The section under the pointer and which half of it: (key, "above" | "below")."""
+        if not (dpg.does_item_exist("side_win") and dpg.is_item_hovered("side_win")):
+            return None
+        for key in self.sec_order:
+            st = dpg.get_item_state(f"sec_{key}")
+            (x, y), (w, h) = st.get("rect_min", (0, 0)), st.get("rect_size", (0, 0))
+            if w > 0 and h > 0 and x <= mx < x + w and y <= my < y + h:
+                return key, ("above" if my < y + h / 2 else "below")
+        return None
+
+    def _sec_zone_rect(self, key, zone):
+        st = dpg.get_item_state(f"sec_{key}")
+        (x, y), (w, h) = st["rect_min"], st["rect_size"]
+        yy = y if zone == "above" else y + h - 4
+        return x, yy - 2, x + w, yy + 4
+
     @staticmethod
     def build_dir():
         return os.path.join(os.path.dirname(PROJECTS), "build", "latest")
@@ -1810,6 +1923,13 @@ class App(Features):
                 self._pane_drag = slot
                 self._pane_target = None
                 return
+        if self.side and self.ui:
+            for key in self.SECTIONS:
+                grip = f"sec_{key}_grip"
+                if dpg.does_item_exist(grip) and dpg.is_item_hovered(grip):
+                    self._sec_drag = key
+                    self._sec_target = None
+                    return
         mp = dpg.get_mouse_pos(local=False)
         for tag, (kind, i, j) in self._splitters.items():
             if not (dpg.is_item_shown(tag) and dpg.is_item_hovered(tag)):
@@ -1837,6 +1957,14 @@ class App(Features):
             self.gp.on_press()
 
     def on_mouse_release(self, sender, app_data):
+        if self._sec_drag:
+            key, target = self._sec_drag, self._sec_target
+            self._sec_drag = self._sec_target = None
+            if dpg.does_item_exist("snap_rect"):
+                dpg.configure_item("snap_rect", show=False)
+            if target:
+                self.sec_move(key, *target)
+            return
         if self._pane_drag:
             slot, target = self._pane_drag, self._pane_target
             self._pane_drag = self._pane_target = None
@@ -1857,6 +1985,9 @@ class App(Features):
 
     def on_right_click(self, sender, app_data):
         for pane, tag in getattr(self, "pane_menus", {}).items():
+            if pane == "side_win" and not any(dpg.is_item_hovered(f"sec_{k}_hdr") for k in self.SECTIONS
+                                              if dpg.does_item_exist(f"sec_{k}_hdr")):
+                continue                              # the panel's menu is its section headers'
             if dpg.does_item_exist(pane) and dpg.is_item_shown(pane) and dpg.is_item_hovered(pane) and self.ui:
                 x, y = dpg.get_mouse_pos(local=False)
                 dpg.configure_item(tag, show=True)
@@ -1866,6 +1997,20 @@ class App(Features):
             self.gp.open_menu()
 
     def on_drag(self, sender, app_data):
+        if self._sec_drag:
+            mx, my = dpg.get_mouse_pos(local=False)
+            target = self.sec_zone(mx, my)
+            if target and target[0] == self._sec_drag:
+                target = None
+            if target != self._sec_target:
+                self._sec_target = target
+                if dpg.does_item_exist("snap_rect"):
+                    if target:
+                        x0, y0, x1, y1 = self._sec_zone_rect(*target)
+                        dpg.configure_item("snap_rect", pmin=(x0, y0), pmax=(x1, y1), show=True)
+                    else:
+                        dpg.configure_item("snap_rect", show=False)
+            return
         if self._pane_drag:
             # the pane under the pointer lights up where the drop would go
             mx, my = dpg.get_mouse_pos(local=False)
@@ -2387,49 +2532,46 @@ def build(app):
                                  tag="cube_cap", color=(139, 147, 163))
             with dpg.child_window(tag="side_win", width=app.side_w - 10, height=470):
                 chrome.grip("side_win")
-                with dpg.group(horizontal=True):
+                with Section(app, "effect", "EFFECT"):
                     dpg.add_combo(list_projects(), label="project", tag="project_combo", width=200,
                                   default_value=os.path.basename(app.project.path),
                                   callback=lambda s, v: app.switch_project(v))
-                dpg.add_combo(app.eng.names, label="effect", tag="fx_combo",
-                              default_value=app.eng.names[app.eng.idx], width=200,
-                              callback=app.on_effect)
-                dpg.add_combo([p[0] for p in PALETTES], label="palette",
-                              default_value=app.palette_name_for(app.eng.pal),
-                              width=200, tag="pal_combo",
-                              callback=app.on_palette)
-                # Only meaningful while a CubeFX audio palette is selected -
-                # it is where those four take their colours from.
-                dpg.add_combo([p[0] for p in PALETTES if p[1] < 201],
-                              label="pal source", width=200, tag="pal_src",
-                              default_value=app.palette_name_for(app.eng.pal_source),
-                              callback=app.on_pal_source)
-                dpg.add_separator()
-                with dpg.group(horizontal=True):
-                    dpg.add_text("SEGMENTS", color=SECTION)
+                    dpg.add_combo(app.eng.names, label="effect", tag="fx_combo",
+                                  default_value=app.eng.names[app.eng.idx], width=200,
+                                  callback=app.on_effect)
+                    dpg.add_combo([p[0] for p in PALETTES], label="palette",
+                                  default_value=app.palette_name_for(app.eng.pal),
+                                  width=200, tag="pal_combo",
+                                  callback=app.on_palette)
+                    # Only meaningful while a CubeFX audio palette is selected -
+                    # it is where those four take their colours from.
+                    dpg.add_combo([p[0] for p in PALETTES if p[1] < 201],
+                                  label="pal source", width=200, tag="pal_src",
+                                  default_value=app.palette_name_for(app.eng.pal_source),
+                                  callback=app.on_pal_source)
+
+                def _seg_extras():
                     dpg.add_button(label="+", small=True, callback=lambda: app.seg_add())
                     dpg.add_button(label="-", small=True, callback=lambda: app.seg_remove())
-                    dpg.add_text("the effect and sliders above are this segment's", color=(139, 147, 163))
-                dpg.add_combo([], tag="seg_combo", width=200, callback=lambda s, v: app.seg_pick(v))
-                dpg.add_group(tag="seg_fields")
-                dpg.add_separator()
-                dpg.add_text("GEOMETRY", color=SECTION)
-                dpg.add_combo(list(KINDS), label="shape", tag="geom_kind", width=120,
-                              default_value=app.project.geometry.kind, callback=app.on_geom_kind)
-                dpg.add_group(tag="geom_fields")
-                dpg.add_combo(["strip", "bars", "arcs", "corner"], label="1-D effects as",
-                              tag="map1d2d", width=100, default_value="strip",
-                              show=app.project.geometry.is2d, callback=app.on_map1d2d)
-                dpg.add_text(app.project.geometry.describe(), tag="geom_desc",
-                             color=(139, 147, 163), wrap=300)
-                with dpg.file_dialog(directory_selector=False, show=False, tag="xyz_dialog",
-                                     width=620, height=420, callback=app.on_xyz_file,
-                                     cancel_callback=lambda s, a: dpg.set_value("geom_kind", app.project.geometry.kind)):
-                    dpg.add_file_extension(".csv", color=(120, 200, 120))
-                    dpg.add_file_extension(".txt", color=(120, 200, 120))
-                    dpg.add_file_extension(".json", color=(120, 200, 120))
-                    dpg.add_file_extension(".*")
-                dpg.add_separator()
+                with Section(app, "segments", "SEGMENTS", _seg_extras):
+                    dpg.add_combo([], tag="seg_combo", width=200, callback=lambda s, v: app.seg_pick(v))
+                    dpg.add_group(tag="seg_fields")
+                with Section(app, "geometry", "GEOMETRY"):
+                    dpg.add_combo(list(KINDS), label="shape", tag="geom_kind", width=120,
+                                  default_value=app.project.geometry.kind, callback=app.on_geom_kind)
+                    dpg.add_group(tag="geom_fields")
+                    dpg.add_combo(["strip", "bars", "arcs", "corner"], label="1-D effects as",
+                                  tag="map1d2d", width=100, default_value="strip",
+                                  show=app.project.geometry.is2d, callback=app.on_map1d2d)
+                    dpg.add_text(app.project.geometry.describe(), tag="geom_desc",
+                                 color=(139, 147, 163), wrap=300)
+                    with dpg.file_dialog(directory_selector=False, show=False, tag="xyz_dialog",
+                                         width=620, height=420, callback=app.on_xyz_file,
+                                         cancel_callback=lambda s, a: dpg.set_value("geom_kind", app.project.geometry.kind)):
+                        dpg.add_file_extension(".csv", color=(120, 200, 120))
+                        dpg.add_file_extension(".txt", color=(120, 200, 120))
+                        dpg.add_file_extension(".json", color=(120, 200, 120))
+                        dpg.add_file_extension(".*")
                 # Several effects paint with SEGCOLOR(0), and the CubeFX audio
                 # palettes read all THREE when their source is one of WLED's
                 # segment-colour palettes - "* Color 1" takes the primary,
@@ -2438,68 +2580,68 @@ def build(app):
                 # choose the colours those palettes draw from was to edit them
                 # in code. WLED's DEFAULT_COLOR is amber; 2 and 3 start black,
                 # as they do on the device.
-                for _ci, (_lbl, _rgb) in enumerate((("primary",   (255, 160, 0, 255)),
-                                                    ("secondary", (0, 0, 0, 255)),
-                                                    ("tertiary",  (0, 0, 0, 255)))):
-                    dpg.add_color_edit(_rgb, label=_lbl, width=170, no_alpha=True,
-                                       user_data=_ci, callback=app.on_color)
-                dpg.add_separator()
-                with dpg.group(tag="scrub_row", show=False):
-                    dpg.add_text("paused - scrub the last seconds", color=SECTION)
-                    dpg.add_slider_int(tag="scrub", width=280, min_value=0, max_value=1, default_value=0, format="frame %d",
-                                       callback=lambda s, v: setattr(self_app[0], "scrub", int(v)))
-                dpg.add_text("PARAMETERS", color=SECTION)
-                dpg.add_group(tag="params")
-                dpg.add_separator()
-                dpg.add_text("AUDIO", color=SECTION)
-                dpg.add_group(tag="audio_rows")
-                for key, lab, val, lo, hi, attr in (
-                        ("vol",  "volume", 90,  0,  255, "vol"),
-                        ("bass", "bass",   45,  0,  255, "bass"),
-                        ("mid",  "mid",    50,  0,  255, "mid"),
-                        ("treb", "treble", 35,  0,  255, "treb"),
-                        ("bpm",  "bpm",    120, 30, 200, "bpm")):
-                    app.pair("audio_rows", key, lab, val, lo, hi,
-                             lambda v, a=attr: setattr(app.syn, a, int(v)))
-                dpg.add_checkbox(label="auto beat", default_value=True,
-                                 callback=lambda s, v: setattr(app.syn, "auto_beat", v))
-                # Gate a band and it goes silent between beats, jumping to its
-                # slider level on one. Only the bass ever had a transient
-                # otherwise, so mid and treble could not be judged on how an
-                # effect answers a hit.
-                dpg.add_text("gate to beat", color=(139, 147, 163))
-                with dpg.group(horizontal=True):
-                    for attr, lab in (("gate_bass", "bass"), ("gate_mid", "mid"),
-                                      ("gate_treb", "treble")):
-                        dpg.add_checkbox(label=lab, tag=f"chk_{attr}",
-                                         callback=lambda s, v, a=attr:
-                                             setattr(app.syn, a, bool(v)))
-                dpg.add_checkbox(label="silence (mute all bands)",
-                                 callback=lambda s, v: setattr(app.syn, "muted", v))
-                dpg.add_color_button(tag="beat_led", default_value=(42, 47, 58, 255),
-                                     width=280, height=6, no_border=True)
-                dpg.add_separator()
-                try:
-                    from native.audio import list_inputs
-                    _devs = ["system output"] + [n for _, n in list_inputs()]
-                except Exception:
-                    _devs = ["system output"]
-                dpg.add_combo(_devs, label="source", tag="live_dev", width=200,
-                              default_value=_devs[0])
-                with dpg.group(horizontal=True):
-                    dpg.add_button(label="use live audio", tag="live_btn",
-                                   callback=lambda: app.toggle_live())
-                    dpg.add_button(label="play a WAV file...", callback=lambda: dpg.show_item("wav_dialog"))
-                with dpg.file_dialog(directory_selector=False, show=False, tag="wav_dialog", width=620, height=420,
-                                     callback=lambda s, a: app.start_file_audio(a.get("file_path_name", ""))):
-                    dpg.add_file_extension(".wav", color=(120, 200, 120))
-                    dpg.add_file_extension(".*")
-                dpg.add_group(tag="gain_row")
-                app.pair("gain_row", "live_gain", "live gain", 3.0, 0.2, 12.0,
-                         lambda v: setattr(app.live, "gain", float(v)) if app.live else None,
-                         is_float=True)
-                dpg.add_progress_bar(tag="lvl_bar", default_value=0.0, width=280)
-                dpg.add_text("", tag="live_msg", wrap=300)
+                with Section(app, "colours", "COLOURS"):
+                    for _ci, (_lbl, _rgb) in enumerate((("primary",   (255, 160, 0, 255)),
+                                                        ("secondary", (0, 0, 0, 255)),
+                                                        ("tertiary",  (0, 0, 0, 255)))):
+                        dpg.add_color_edit(_rgb, label=_lbl, width=170, no_alpha=True,
+                                           user_data=_ci, callback=app.on_color)
+                with Section(app, "parameters", "PARAMETERS"):
+                    with dpg.group(tag="scrub_row", show=False):
+                        dpg.add_text("paused - scrub the last seconds", color=SECTION)
+                        dpg.add_slider_int(tag="scrub", width=280, min_value=0, max_value=1, default_value=0, format="frame %d",
+                                           callback=lambda s, v: setattr(self_app[0], "scrub", int(v)))
+                    dpg.add_group(tag="params")
+                with Section(app, "audio", "AUDIO"):
+                    dpg.add_group(tag="audio_rows")
+                    for key, lab, val, lo, hi, attr in (
+                            ("vol",  "volume", 90,  0,  255, "vol"),
+                            ("bass", "bass",   45,  0,  255, "bass"),
+                            ("mid",  "mid",    50,  0,  255, "mid"),
+                            ("treb", "treble", 35,  0,  255, "treb"),
+                            ("bpm",  "bpm",    120, 30, 200, "bpm")):
+                        app.pair("audio_rows", key, lab, val, lo, hi,
+                                 lambda v, a=attr: setattr(app.syn, a, int(v)))
+                    dpg.add_checkbox(label="auto beat", default_value=True,
+                                     callback=lambda s, v: setattr(app.syn, "auto_beat", v))
+                    # Gate a band and it goes silent between beats, jumping to its
+                    # slider level on one. Only the bass ever had a transient
+                    # otherwise, so mid and treble could not be judged on how an
+                    # effect answers a hit.
+                    dpg.add_text("gate to beat", color=(139, 147, 163))
+                    with dpg.group(horizontal=True):
+                        for attr, lab in (("gate_bass", "bass"), ("gate_mid", "mid"),
+                                          ("gate_treb", "treble")):
+                            dpg.add_checkbox(label=lab, tag=f"chk_{attr}",
+                                             callback=lambda s, v, a=attr:
+                                                 setattr(app.syn, a, bool(v)))
+                    dpg.add_checkbox(label="silence (mute all bands)",
+                                     callback=lambda s, v: setattr(app.syn, "muted", v))
+                    dpg.add_color_button(tag="beat_led", default_value=(42, 47, 58, 255),
+                                         width=280, height=6, no_border=True)
+                with Section(app, "live", "LIVE AUDIO"):
+                    try:
+                        from native.audio import list_inputs
+                        _devs = ["system output"] + [n for _, n in list_inputs()]
+                    except Exception:
+                        _devs = ["system output"]
+                    dpg.add_combo(_devs, label="source", tag="live_dev", width=200,
+                                  default_value=_devs[0])
+                    with dpg.group(horizontal=True):
+                        dpg.add_button(label="use live audio", tag="live_btn",
+                                       callback=lambda: app.toggle_live())
+                        dpg.add_button(label="play a WAV file...", callback=lambda: dpg.show_item("wav_dialog"))
+                    with dpg.file_dialog(directory_selector=False, show=False, tag="wav_dialog", width=620, height=420,
+                                         callback=lambda s, a: app.start_file_audio(a.get("file_path_name", ""))):
+                        dpg.add_file_extension(".wav", color=(120, 200, 120))
+                        dpg.add_file_extension(".*")
+                    dpg.add_group(tag="gain_row")
+                    app.pair("gain_row", "live_gain", "live gain", 3.0, 0.2, 12.0,
+                             lambda v: setattr(app.live, "gain", float(v)) if app.live else None,
+                             is_float=True)
+                    dpg.add_progress_bar(tag="lvl_bar", default_value=0.0, width=280)
+                    dpg.add_text("", tag="live_msg", wrap=300)
+                app.sec_apply_order()
         with dpg.group(tag="footer"):
           dpg.add_text("", tag="stat_txt")
           dpg.add_text("Q net    E 3-D    W both    C code    G graph    H presentation    space play/pause    "
@@ -2696,6 +2838,14 @@ def service_command(app):
                 app.set_arrangement(c["arrangement"])
             if "pane_move" in c:                        # test hook: a grip drop, [slot, target, zone]
                 app.move_slot(*c["pane_move"])
+            if "section" in c:                          # test hook: [key, open] | [key, target, zone] | "reset"
+                v = c["section"]
+                if v == "reset":
+                    app.sec_reset()
+                elif len(v) == 2:
+                    app.sec_set(*v)
+                else:
+                    app.sec_move(*v)
             if "popout" in c:                           # test hook: [view, on]
                 app.set_popout(*c["popout"])
             if "layout" in c:

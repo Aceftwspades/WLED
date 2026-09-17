@@ -28,7 +28,10 @@ middle the two swap - or pick a preset under View > Layout; the splitters
 between panes resize them. A view can leave for a second monitor: View >
 Pop out (or right-click the view) opens it in a window of its own, which
 orbits and zooms on its own and remembers where it was; close it and the
-pane comes back.
+pane comes back. The side panel's sections fold on their arrow or title
+and move by their own `:::` (drop one on another section to put it above
+or below); right-click a section header to expand, collapse or restore
+them all.
 
 ## Making an effect
 

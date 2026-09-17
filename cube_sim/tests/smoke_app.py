@@ -47,6 +47,8 @@ STEPS = [
     ([{"layout": "both"}, {"popout": ["cube", True]}, {"layout": "graph"}], 5.0),
     ([{"popout": ["net", True]}, {"layout": "both"}], 4.0),
     ([{"popout": ["cube", False]}, {"popout": ["net", False]}], 2.0),
+    ([{"section": ["geometry", False]}, {"section": ["audio", "effect", "above"]}, {"section": ["parameters", "live", "below"]},
+      {"section": ["geometry", True]}, {"section": "reset"}], 1.5),
 ]
 
 

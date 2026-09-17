@@ -278,6 +278,11 @@ editor. Ticked when done; the order within a group is the order to do them.
       above that pane, in the middle the two swap; the target lights up
       as you go. View > Layout has six presets; the arrangement is
       remembered.
+- [x] **Panel sections fold and move** (`Section`, `App.sec_*`): every
+      section of the side panel has an arrow, a title that folds it and a
+      grip that drags it above or below another; order and folded state
+      are remembered. A section header's right-click menu expands,
+      collapses or restores them all.
 - [x] **Pop-out views** (`native/popout.py`): the net or the 3-D view in
       a window of its own, for a second monitor (View > Pop out, or the
       pane's right-click menu). Dear PyGui has one viewport a process, so
