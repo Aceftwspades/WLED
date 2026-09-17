@@ -1183,37 +1183,43 @@ class GraphPanel:
                 self._ptype[tag] = o["type"]
         self._bind_node_theme(nid, n)
 
-    def _make_standin(self, nid, n, d, label, width):
-        """The node zoomed far out: its title over one short row per wired
-        pin (so the wires still have ends), nothing to edit. Shrinks with
-        the zoom; the title's font stops at 8 px."""
-        th = self.themes()
+    def _standin_rows(self, nid):
+        """A stand-in's pin rows and their height: the node keeps the
+        footprint its full self would have at this zoom (the height
+        estimate arrange uses), so the graph's spacing survives zooming
+        out - a stand-in is the full node scaled, not a label dropped on
+        its corner."""
+        n = self.graph.nodes[nid]
+        d = self.graph.node_def(n)
+        rows = len(d["inputs"]) + len(d["outputs"]) + (0 if n.get("collapsed") else len(d["params"]))
+        est = 56 + 27 * max(1, rows)
         linked = {(b, inp) for _, _, b, inp in self.graph.links}
         fed_out = {(a, o) for a, o, _, _ in self.graph.links}
+        pins = [("in", i) for i in d["inputs"] if (nid, i["name"]) in linked] +                [("out", o) for o in d["outputs"] if (nid, o["name"]) in fed_out]
+        body = self.px(est) - self._font_px() - 4 * self.px(8) - self.px(4) * (len(pins) + 1)
+        row_h = max(1, int(body / max(1, len(pins))))
+        return pins, row_h, max(1, body - row_h * len(pins))
+
+    def _make_standin(self, nid, n, d, label, width):
+        """The node zoomed far out: its title over one row per wired pin (so
+        the wires still have ends), nothing to edit; as tall as the full
+        node would be at this zoom. The title's font stops at 8 px."""
+        th = self.themes()
+        pins, row_h, rest = self._standin_rows(nid)
         with dpg.node(label=label, parent="node_editor", pos=self._disp(n.get("pos", [0, 0])), tag=f"gnode_{nid}",
                       user_data=nid):
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 dpg.add_spacer(width=width, height=1)
-            for i in d["inputs"]:
-                if (nid, i["name"]) not in linked:
-                    continue
-                tag = f"gin_{nid}_{i['name']}"
-                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input, tag=tag,
-                                        user_data=(nid, i["name"]), shape=dpg.mvNode_PinShape_CircleFilled):
-                    dpg.add_spacer(width=width, height=max(1, self.px(10)), tag=tag + "_t")
-                dpg.bind_item_theme(tag, th.pin[i["type"]])
-                self._pins[(nid, "in", i["name"])] = tag
-                self._ptype[tag] = i["type"]
-            for o in d["outputs"]:
-                if (nid, o["name"]) not in fed_out:
-                    continue
-                tag = f"gout_{nid}_{o['name']}"
-                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Output, tag=tag,
-                                        user_data=(nid, o["name"]), shape=dpg.mvNode_PinShape_CircleFilled):
-                    dpg.add_spacer(width=width, height=max(1, self.px(10)))
-                dpg.bind_item_theme(tag, th.pin[o["type"]])
-                self._pins[(nid, "out", o["name"])] = tag
-                self._ptype[tag] = o["type"]
+            for kind, p in pins:
+                tag = f"g{kind}_{nid}_{p['name']}"
+                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Input if kind == "in" else dpg.mvNode_Attr_Output,
+                                        tag=tag, user_data=(nid, p["name"]), shape=dpg.mvNode_PinShape_CircleFilled):
+                    dpg.add_spacer(width=width, height=row_h, tag=tag + "_t" if kind == "in" else 0)
+                dpg.bind_item_theme(tag, th.pin[p["type"]])
+                self._pins[(nid, kind, p["name"])] = tag
+                self._ptype[tag] = p["type"]
+            with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                dpg.add_spacer(width=width, height=rest)
         self._bind_node_theme(nid, n)
 
     def _bind_node_theme(self, nid, n):
@@ -1366,10 +1372,10 @@ class GraphPanel:
         if "rect_min" not in st or "rect_max" not in st:
             # a stand-in's spacer reports no rectangle: the pin's row is
             # counted down from the node's title
-            rows = [k for k, (pn, kd, nm) in enumerate(self._pins) if pn == nid]
-            row = next((r for r, (pn, kd, nm) in enumerate([k for k in self._pins if k[0] == nid]) if kd == kind and nm == name), 0)
+            pins, row_h, _ = self._standin_rows(nid)
+            row = next((r for r, (kd, p) in enumerate(pins) if kd == kind and p["name"] == name), 0)
             top = nd["rect_min"][1] + self.px(8) * 2 + self._font_px() + self.px(4)
-            y = top + row * (max(1, self.px(10)) + self.px(4)) + max(1, self.px(10)) / 2
+            y = top + row * (row_h + self.px(4)) + row_h / 2
         else:
             y = (st["rect_min"][1] + st["rect_max"][1]) / 2
         pad = self.px(8)

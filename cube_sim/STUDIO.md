@@ -501,9 +501,11 @@ order is the order they were done.
 - [x] **Repeat last** (Shift+R).
 - [x] **Zoom out to 10%**, and past a setting (Settings > Simplified
       nodes below: 70 / 50 / 40 / 30% / never; 50% by default) every node
-      is a stand-in - its title over one short row per wired pin, nothing
-      to edit - that shrinks with the zoom, for finding your way round a
-      big graph (`GraphPanel.overview`, `_make_standin`).
+      is a stand-in - its title over one row per wired pin, nothing to
+      edit - with the footprint its full self would have at that zoom
+      (arrange's height estimate), so the graph's spacing survives
+      zooming out; for finding your way round a big graph
+      (`GraphPanel.overview`, `_make_standin`, `_standin_rows`).
 - [ ] Numeric expressions in fields ("2*pi") - deferred: the number boxes
       are Dear PyGui's and parse their own text.
 - Not applicable: per-node timings (one compiled function, no per-node
