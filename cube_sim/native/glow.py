@@ -29,7 +29,7 @@ DEFAULT_STOPS = [[0.0, 90, 169, 230], [0.2, 150, 120, 255], [0.4, 255, 110, 170]
 SIZE = 128
 BORDER = 2
 GLOW = 5
-RADIUS = 9                                   # the corners' rounding
+RADIUS = 5                                   # the corners' rounding, unless the rect says (a pane's is 5)
 ARC_N = 5                                    # quads per rounded corner, per ring
 PER_RECT = 8 + 4 * ARC_N * 2                 # strips and corner pieces a rectangle takes
 TURNS_PER_S = 0.1
@@ -94,14 +94,14 @@ class Frames:
             dpg.set_value(self.tex[kind], conic(stops, mirror))
 
     @staticmethod
-    def _radius(x0, y0, x1, y1):
-        return max(0.0, min(RADIUS, (x1 - x0) / 2.0, (y1 - y0) / 2.0))
+    def _radius(x0, y0, x1, y1, r=RADIUS):
+        return max(0.0, min(r, (x1 - x0) / 2.0, (y1 - y0) / 2.0))
 
     @classmethod
-    def _strips(cls, x0, y0, x1, y1):
+    def _strips(cls, x0, y0, x1, y1, radius=RADIUS):
         """The straight parts, stopping short of the corners by the radius."""
         b, g = BORDER, GLOW
-        r = cls._radius(x0, y0, x1, y1)
+        r = cls._radius(x0, y0, x1, y1, radius)
         yield (x0 + r, y0 - b, x1 - r, y0, 255)
         yield (x0 + r, y1, x1 - r, y1 + b, 255)
         yield (x0 - b, y0 + r, x0, y1 - r, 255)
@@ -113,11 +113,13 @@ class Frames:
         yield (x1 + b, y0 + r, x1 + o, y1 - r, 70)
 
     @classmethod
-    def _corners(cls, x0, y0, x1, y1):
+    def _corners(cls, x0, y0, x1, y1, radius=RADIUS):
         """The rounded corners: for each, ARC_N quads round the border ring
-        and ARC_N round the glow ring, as (p1, p2, p3, p4, alpha)."""
+        and ARC_N round the glow ring, as (p1, p2, p3, p4, alpha). The
+        radius is the framed thing's own corner radius, so the border ring
+        wraps its corner concentrically."""
         b, g = BORDER, GLOW
-        r = cls._radius(x0, y0, x1, y1)
+        r = cls._radius(x0, y0, x1, y1, radius)
         centres = ((x0 + r, y0 + r, math.pi), (x1 - r, y0 + r, 1.5 * math.pi),
                    (x1 - r, y1 - r, 0.0), (x0 + r, y1 - r, 0.5 * math.pi))
         for cx, cy, a0 in centres:
@@ -152,13 +154,16 @@ class Frames:
         return out
 
     def update(self, rects, holes=()):
-        """rects: (x0, y0, x1, y1, clip, alpha, kind) - clip a rect to keep
-        the strips inside (or None), alpha 0..1 scaling the frame. holes:
-        rectangles (windows over the top) the strips are cut around."""
+        """rects: (x0, y0, x1, y1, clip, alpha, kind[, radius]) - clip a rect
+        to keep the strips inside (or None), alpha 0..1 scaling the frame,
+        radius the framed thing's corner rounding. holes: rectangles
+        (windows over the top) the strips are cut around."""
         th = (time.perf_counter() * TURNS_PER_S * 2 * math.pi) % (2 * math.pi)
         c, s = math.cos(th), math.sin(th)
         used = {k: 0 for k in self.quads}
-        for (x0, y0, x1, y1, clip, alpha, kind) in rects:
+        for rect in rects:
+            x0, y0, x1, y1, clip, alpha, kind = rect[:7]
+            radius = rect[7] if len(rect) > 7 else RADIUS
             quads = self.quads.get(kind)
             if quads is None:
                 continue
@@ -169,7 +174,7 @@ class Frames:
                 dx, dy = (px - cx) / size, (py - cy) / size
                 return (0.5 + 0.3 * (dx * c - dy * s), 0.5 + 0.3 * (dx * s + dy * c))
 
-            for (sx0, sy0, sx1, sy1, a) in self._strips(x0, y0, x1, y1):
+            for (sx0, sy0, sx1, sy1, a) in self._strips(x0, y0, x1, y1, radius):
                 if clip:
                     sx0, sy0 = max(sx0, clip[0]), max(sy0, clip[1])
                     sx1, sy1 = min(sx1, clip[2]), min(sy1, clip[3])
@@ -185,7 +190,7 @@ class Frames:
                     used[kind] = k + 1
             # the corners: a piece is drawn whole or not at all - one outside
             # the clip, or under a window, is left out
-            for (p1, p2, p3, p4, a) in self._corners(x0, y0, x1, y1):
+            for (p1, p2, p3, p4, a) in self._corners(x0, y0, x1, y1, radius):
                 bx0 = min(p[0] for p in (p1, p2, p3, p4)); bx1 = max(p[0] for p in (p1, p2, p3, p4))
                 by0 = min(p[1] for p in (p1, p2, p3, p4)); by1 = max(p[1] for p in (p1, p2, p3, p4))
                 if clip and (bx0 < clip[0] or by0 < clip[1] or bx1 > clip[2] or by1 > clip[3]):

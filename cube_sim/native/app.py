@@ -2354,7 +2354,8 @@ class App(Features):
                 for x0, y0, x1, y1 in boxes:
                     if any(not (ox1 <= x0 or ox0 >= x1 or oy1 <= y0 or oy0 >= y1) for ox0, oy0, ox1, oy1 in others):
                         continue
-                    rects.append((x0, y0, x1, y1, clip, 1.0, "sel"))
+                    # the node's corners are rounded 4 at this zoom; the frame's hug them
+                    rects.append((x0, y0, x1, y1, clip, 1.0, "sel", self.gp.px(4) if len(boxes) == 1 and len(sel) == 1 else glow.RADIUS))
         # Every window that floats over the panes is a hole in the frames.
         holes = []
         for tag in self.FLOATING:
