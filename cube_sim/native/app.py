@@ -2578,7 +2578,10 @@ def service_command(app):
         if not os.path.exists(CMD_FILE):
             return
         import json
-        cmds = json.load(open(CMD_FILE, encoding="utf-8"))
+        text = open(CMD_FILE, encoding="utf-8").read()
+        if not text.strip():
+            return                                    # still being written: next frame
+        cmds = json.loads(text)
         os.remove(CMD_FILE)
     except Exception as e:
         print(f"command file: {e}")
