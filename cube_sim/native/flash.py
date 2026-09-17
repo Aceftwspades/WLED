@@ -222,6 +222,36 @@ def send_script(host, prog, log=lambda m: None):
     return True, f"{len(prog)} bytes of script sent to {host} as /studio.bin"
 
 
+def device_info(host, timeout=4):
+    """The device's /json/info as a dict, or None."""
+    host = (host or "").strip().rstrip("/")
+    if not host.startswith("http"):
+        host = "http://" + host
+    try:
+        with urllib.request.urlopen(host + "/json/info", timeout=timeout) as r:
+            import json
+            return json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return None
+
+
+def verify_reboot(host, before, log, timeout=90):
+    """After an OTA: wait for the device to come back and say what it runs
+    now - its version and build id - and whether the build changed."""
+    t0 = time.time()
+    time.sleep(6)
+    while time.time() - t0 < timeout:
+        info = device_info(host)
+        if info:
+            ver, vid = info.get("ver", "?"), info.get("vid", "?")
+            was = (before or {}).get("vid")
+            if was is not None and vid == was:
+                return False, f"the device is back on the SAME build ({ver}, {vid}) - the update did not take"
+            return True, f"the device is back: WLED {ver}, build {vid}" + (f" (was {was})" if was is not None else "")
+        time.sleep(3)
+    return False, "the device did not answer within a minute and a half after the update - check it"
+
+
 def _message(page):
     """The text of WLED's message page, without its markup."""
     import re
@@ -393,7 +423,14 @@ class Job:
                 self.result = f"no firmware at {bin_} - build first"; return
             self.log(f"firmware: {bin_} ({os.path.getsize(bin_) // 1024} KB)")
             if self.upload:
+                before = device_info(self.host)
+                if before:
+                    self.log(f"device before: WLED {before.get('ver', '?')}, build {before.get('vid', '?')}, {before.get('name', '')}")
                 ok, msg = upload(self.host, bin_, self.log)
+                self.log(msg)
+                if ok:
+                    self.log("waiting for the device to reboot...")
+                    ok, msg = verify_reboot(self.host, before, self.log)
                 self.result = msg
                 self.ok = ok
             else:

@@ -1764,6 +1764,18 @@ class GraphPanel:
             if n["type"].startswith(G.SUB):
                 row("edit sub-graph", lambda: self.enter_sub(nid))
             row("where is this type used", lambda: self.show_where_used(n["type"]))
+            if self.cur_dir == self.sub_dir and d["params"] and not n["type"].startswith(G.SUB):
+                # inside a sub-graph: a setting can be promoted to the sub node outside
+                prom = n.get("promote") or []
+                free = [p["name"] for p in d["params"] if p["name"] not in prom and p["type"] not in ("file",)]
+                if free:
+                    dpg.add_text("promote a setting to the sub-graph node", parent=P, color=DIM)
+                    for p in free:
+                        row(f"  {p}", lambda p=p: self._promote(nid, p, True))
+                if prom:
+                    dpg.add_text("keep inside", parent=P, color=DIM)
+                    for p in prom:
+                        row(f"  {p}", lambda p=p: self._promote(nid, p, False))
             if n["type"] == "Image":
                 row("convert to Bitmap + Colour pick", lambda: self.image_to_bitmap(nid))
             if dpg.get_selected_nodes("node_editor"):
@@ -1830,6 +1842,23 @@ class GraphPanel:
                                callback=lambda s, a, u: (dpg.hide_item(P), self.app.show_layout("graph"), self.open(u[0], sub=u[1])))
         vw, vh = dpg.get_viewport_client_width(), dpg.get_viewport_client_height()
         dpg.configure_item(P, pos=(vw // 2 - 180, vh // 3), show=True)
+
+    def _promote(self, nid, name, on):
+        """A setting of a node inside a sub-graph becomes a setting of the
+        sub-graph's node outside, or stops being one."""
+        n = self.graph.nodes[nid]
+        self.touch(); self.snapshot(); self._sync_pos()
+        prom = [x for x in n.get("promote") or [] if x != name]
+        if on:
+            prom.append(name)
+        if prom:
+            n["promote"] = prom
+        else:
+            n.pop("promote", None)
+        self.save()                                  # the sub node outside reads it from the file
+        self.refresh_lib()
+        self.rebuild()
+        self.status(f"{name}: {'a setting of the sub-graph node now' if on else 'kept inside'}")
 
     def _expose(self, nid, name, on):
         """A param becomes an input pin (its value the pin's default), or

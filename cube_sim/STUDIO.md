@@ -690,6 +690,13 @@ and `app` (the whole loop) in ms; the `measure` test hook prints the split.
   geometry extras and desktop drops moved out of app.py into a mixin.
 - `tests/smoke_app.py` drives the app through fifteen steps and fails on
   a traceback. GUIDE.md is the short user guide.
+- Sub-graphs take settings: inside one, a node's right-click menu
+  promotes any of its settings to the sub-graph node outside (`promote`
+  on the inner node; `sub_def` lists it, `flatten` applies it), so a
+  reused sub-graph can differ per use without pins for everything.
+- After an OTA the flash dialog reads `/json/info` before and after,
+  waits for the device to come back, and reports its version and build
+  id - and says so if the build did not change.
 
 ## Running it
 

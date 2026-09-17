@@ -173,16 +173,35 @@ def exposed_def(base, n):
 
 
 def sub_def(name, sub):
-    """The definition of a sub-graph as a node: one pin per boundary node."""
-    ins, outs = [], []
+    """The definition of a sub-graph as a node: one pin per boundary node,
+    and one setting per inner setting the sub-graph promotes (a node's
+    "promote" list) - set on the sub node in the parent, applied to the
+    inner node when the sub-graph is inlined."""
+    ins, outs, params = [], [], []
     for n in sorted(sub.nodes.values(), key=lambda n: (n["pos"][1], n["pos"][0])):
         if n["type"] == "Graph input":
             ins.append({"name": n["params"].get("name", "in"), "type": n["params"].get("type", "float"),
                         "default": n["params"].get("default", 0.0)})
         elif n["type"] == "Graph output":
             outs.append({"name": n["params"].get("name", "out"), "type": n["params"].get("type", "float")})
-    return dict(name=SUB + name, cat="subgraphs", scope="pixel", inputs=ins, outputs=outs, params=[],
-                code="", doc=f"sub-graph {sub.name}: {len(ins)} in, {len(outs)} out", label=sub.name)
+        for pname in n.get("promote") or []:
+            try:
+                d = sub.node_def(n)
+            except GraphError:
+                continue
+            p = next((q for q in d["params"] if q["name"] == pname), None)
+            if p is None:
+                continue
+            label = d.get("label") or n["type"]
+            entry = dict(p)
+            entry["name"] = f"{pname} of {label} #{n['id']}"
+            entry["default"] = n["params"].get(pname, p["default"])
+            entry["promote"] = (n["id"], pname)
+            entry["doc"] = f"{label}'s {pname}, set from outside: " + (p.get("doc") or "")
+            params.append(entry)
+    return dict(name=SUB + name, cat="subgraphs", scope="pixel", inputs=ins, outputs=outs, params=params,
+                code="", doc=f"sub-graph {sub.name}: {len(ins)} in, {len(outs)} out"
+                + (f", {len(params)} setting(s)" if params else ""), label=sub.name)
 
 
 class Graph:
@@ -434,6 +453,15 @@ class Graph:
                 flat.nodes[new] = dict(sn, id=new, params=dict(sn.get("params", {})), inputs=dict(sn.get("inputs", {})),
                                        pos=[sn["pos"][0] + n["pos"][0], sn["pos"][1] + n["pos"][1]])
             inner = [(smap[a], o, smap[b], i) for a, o, b, i in sub.links]
+            # promoted settings: the sub node's values onto the inner nodes
+            try:
+                sdef = self.node_def(n)
+            except GraphError:
+                sdef = {"params": []}
+            for p in sdef["params"]:
+                if p.get("promote") and p["promote"][0] in smap:
+                    sid, pname = p["promote"]
+                    flat.nodes[smap[sid]]["params"][pname] = n.get("params", {}).get(p["name"], p["default"])
             # where each boundary pin lands
             src_in = {}    # pin name -> what feeds it from OUTSIDE (a, out), if anything
             for a, o, b, i in links:
