@@ -270,14 +270,20 @@ class Graph:
                     self.link(a, o, new, i)
         return new
 
-    def arrange(self, col_w=260, row_gap=30):
+    def arrange(self, col_w=260, row_gap=30, only=None):
         """Lay the nodes out in columns by depth - each node one column right
         of the furthest node that feeds it - stacked in their current order.
-        Frames and notes stay where they are."""
-        deps = {nid: set() for nid in self.nodes}
+        Frames and notes stay where they are. With `only`, just those nodes,
+        by their depth among themselves, anchored at their top-left corner."""
+        ids_ = set(only) if only else set(self.nodes)
+        deps = {nid: set() for nid in self.nodes if nid in ids_}
         for a, _, b, _ in self.links:
             if a in deps and b in deps and not self._late(b):
                 deps[b].add(a)
+        ox, oy = 40, 40
+        if only:
+            ox = min(self.nodes[i]["pos"][0] for i in ids_ if i in self.nodes)
+            oy = min(self.nodes[i]["pos"][1] for i in ids_ if i in self.nodes)
         depth = {}
         def dep(n, seen=()):
             if n in depth:
@@ -289,19 +295,19 @@ class Graph:
                 d = max(d, dep(m, seen + (n,)) + 1)
             depth[n] = d
             return d
-        for nid in self.nodes:
+        for nid in deps:
             dep(nid)
         cols = {}
         for nid, n in self.nodes.items():
-            if n["type"] in ("Frame", "Note"):
+            if n["type"] in ("Frame", "Note") or nid not in deps:
                 continue
             cols.setdefault(depth[nid], []).append(nid)
         for c, ids in cols.items():
             ids.sort(key=lambda i: self.nodes[i]["pos"][1])
-            y = 40
+            y = oy
             for nid in ids:
                 n = self.nodes[nid]
-                n["pos"] = [40 + c * col_w, y]
+                n["pos"] = [ox + c * col_w, y]
                 try:
                     d = self.node_def(n)
                     rows = len(d["inputs"]) + len(d["outputs"]) + (0 if n.get("collapsed") else len(d["params"]))

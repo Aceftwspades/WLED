@@ -42,6 +42,7 @@ from native.project import (default_project, Project, list_projects, project_pat
 from native.graph_ui import GraphPanel, build_panel
 from native import chrome, glow
 from native.gpucube import CubeQuads
+from native.features import Features
 from native.dropfiles import DropFiles, classify
 from native.codeedit import CodeEditor
 from native.keys import Keymap, combo as key_combo
@@ -201,7 +202,7 @@ def present_theme():
 PALETTES = []
 
 
-class App:
+class App(Features):
     def __init__(self):
         self.project = default_project()
         self.eng = Engine()
@@ -229,6 +230,7 @@ class App:
         self.loop_ms = 0.0           # the whole app's, frame to frame
         self._loop_t = 0.0
         self.gpu_cube = bool(self.prefs.get("gpu_cube", True))   # the cube as textured quads, not a numpy warp
+        self.gpu_net = bool(self.prefs.get("gpu_net", True))     # the net scaled by the GPU, not repeated on the CPU
         self.code_ed = None          # CodeEditor, made in build()
         self.cube_quads = None       # CubeQuads while the GPU view is up
         self.ab = None               # a second engine, for comparing two effects side by side
@@ -515,6 +517,12 @@ class App:
                     pass
         threading.Thread(target=work, daemon=True).start()
 
+    def set_gpu_net(self, on):
+        self.gpu_net = bool(on)
+        self.prefs["gpu_net"] = self.gpu_net
+        save_prefs(self.prefs)
+        self.request_layout()
+
     def set_gpu_cube(self, on):
         self.gpu_cube = bool(on)
         self.prefs["gpu_cube"] = self.gpu_cube
@@ -612,39 +620,7 @@ class App:
             params["faces"] = "N,W,T,E,S"           # a wiring is being set: leave the raster order
         self.apply_geometry(Geometry(g.kind, **params))
 
-    def on_geom_wiring(self, sender, val):
-        """A panel option on the cube: the wiring changes, the picture does not."""
-        key = dpg.get_item_user_data(sender)
-        g = self.project.geometry
-        params = dict(g.params); params[key] = bool(val)
-        if g.kind == "cube" and not params.get("faces"):
-            params["faces"] = "N,W,T,E,S"
-        self.apply_geometry(Geometry(g.kind, **params))
 
-    def import_ledmap(self, path=None, host=None):
-        """A WLED ledmap, from a file or fetched from the device, becomes the
-        geometry: a matrix with its gaps and wiring, or a strip."""
-        import json
-        try:
-            if host:
-                import urllib.request
-                host = host.strip().rstrip("/")
-                if not host.startswith("http"):
-                    host = "http://" + host
-                with urllib.request.urlopen(host + "/ledmap.json", timeout=5) as r:
-                    d = json.loads(r.read().decode("utf-8", "replace"))
-                source = host + "/ledmap.json"
-            else:
-                d = json.load(open(path, encoding="utf-8"))
-                source = os.path.basename(path)
-            g = Geometry.from_ledmap(d, source)
-        except Exception as e:
-            msg = f"could not read the ledmap: {e}"
-            dpg.set_value("geom_desc", msg); self.gp.status(msg); return
-        self.apply_geometry(g)
-        dpg.set_value("geom_kind", g.kind)
-        self.rebuild_geom_fields()
-        self.gp.status(f"geometry from {source}: {g.describe()}")
 
     def on_xyz_file(self, s, app_data):
         path = app_data.get("file_path_name") if isinstance(app_data, dict) else None
@@ -863,6 +839,12 @@ class App:
         """Every line holding the find text, as rows that go to the line."""
         needle = dpg.get_value("find_text")
         dpg.delete_item("edit_errors", children_only=True)
+        if self.code_ed is not None:
+            self.code_ed.set_needle(needle)
+            if needle:
+                self.code_ed.find_next()
+                self.code_ed.focus = True
+                dpg.focus_item("code_key")
         if not needle:
             return
         lines = dpg.get_value("code").split("\n")
@@ -976,7 +958,7 @@ class App:
         self.edit_dirty = True
         self._code_edits = getattr(self, "_code_edits", 0) + 1
         now = time.time()
-        if now - self._code_t > 1.0:
+        if now - self._code_t > 0.6:                     # a pause in typing ends an undo step
             self._code_undo.append(self._code_text)
             del self._code_undo[:-200]
             self._code_redo.clear()
@@ -1508,7 +1490,13 @@ class App:
             top = 36 if self.ui else 0                    # the caption row
             dpg.configure_item(img, pos=(max(0, (cw - iw) // 2), top + max(0, (ch - top - ih) // 2)))
 
+    NET_SRC_SCALE = 4            # the net's upscale for the GPU-scaled view
+
     def remake_net_texture(self):
+        """The net view's texture. Crisp: the net repeated by a whole number
+        on the CPU (6 ms a frame, hard-edged LEDs). GPU: the net at 4x, the
+        image widget scaling it up - a fifth of the work, edges a little
+        soft (the bilinear step is a quarter of an LED)."""
         img = self.net_image()
         w = img.shape[1] * self.net_scale
         h = img.shape[0] * self.net_scale
@@ -1516,8 +1504,13 @@ class App:
             dpg.delete_item("net_img")
         if dpg.does_item_exist("net_tex"):
             dpg.delete_item("net_tex")
+        if self.gpu_net:
+            k = self.NET_SRC_SCALE
+            tw, th = img.shape[1] * k, img.shape[0] * k
+        else:
+            tw, th = w, h
         with dpg.texture_registry():
-            dpg.add_raw_texture(w, h, np.zeros(w * h * 4, np.float32),
+            dpg.add_raw_texture(tw, th, np.zeros(tw * th * 4, np.float32),
                                 format=dpg.mvFormat_Float_rgba, tag="net_tex")
         dpg.add_image("net_tex", tag="net_img", parent="net_win", width=w, height=h)
         self._bufs.pop("net", None)
@@ -1672,9 +1665,12 @@ class App:
             shift_ = dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift)
             if self.code_ed.key(app_data, ctrl_, shift_):
                 return
-            if not ctrl_ and app_data not in (dpg.mvKey_F1, dpg.mvKey_F2, dpg.mvKey_F5, dpg.mvKey_F11, dpg.mvKey_F12):
+            if not ctrl_ and app_data not in (dpg.mvKey_F1, dpg.mvKey_F2, dpg.mvKey_F3, dpg.mvKey_F5, dpg.mvKey_F11, dpg.mvKey_F12):
                 return                                   # plain keys are typing
         if any(dpg.does_item_exist(t) and dpg.is_item_active(t) for t in self._inputs):
+            return
+        if app_data == dpg.mvKey_F3 and dpg.does_item_exist("find_text") and dpg.is_item_active("find_text"):
+            self.run_action("find_prev" if (dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift)) else "find_next")
             return
         if any(dpg.does_item_exist(t) and dpg.is_item_active(t)
                for t in ("find_text", "replace_text", "device_host", "name_input", "editor_cmd") + self.META_FIELDS):
@@ -1708,7 +1704,8 @@ class App:
             step = 1 if shift else 10
             arrows = {dpg.mvKey_Left: (-step, 0), dpg.mvKey_Right: (step, 0),
                       dpg.mvKey_Up: (0, -step), dpg.mvKey_Down: (0, step)}
-            if app_data in arrows:
+            alt = dpg.is_key_down(dpg.mvKey_LAlt) or dpg.is_key_down(dpg.mvKey_RAlt)
+            if app_data in arrows and not alt:
                 self.gp.nudge(*arrows[app_data]); return
         action = self.keys.lookup(binding, "graph" if self.layout == "graph" else "global") if binding else None
         if action:
@@ -1741,6 +1738,8 @@ class App:
             "rename":       self.rename_current,
             "import":       self.toggle_import_current,
             "find":         self.focus_find,
+            "find_next":    lambda: self.code_ed and (self.code_ed.set_needle(dpg.get_value("find_text")), self.code_ed.find_next()),
+            "find_prev":    lambda: self.code_ed and (self.code_ed.set_needle(dpg.get_value("find_text")), self.code_ed.find_next(True)),
             "external":     self.open_external,
             "screenshot":   lambda: setattr(self, "shot_req", True),
             "record":       lambda: self.start_rec(15.0),
@@ -1763,6 +1762,12 @@ class App:
                                                lambda v: gp.make_sub_from_selection(v)),
             "enter_sub":    self.enter_or_back,
             "arrange":      gp.arrange,
+            "align_left":   lambda: gp.align("left"),
+            "align_right":  lambda: gp.align("right"),
+            "align_top":    lambda: gp.align("top"),
+            "align_bottom": lambda: gp.align("bottom"),
+            "distribute_x": lambda: gp.distribute("x"),
+            "distribute_y": lambda: gp.distribute("y"),
             "zoom_in":      lambda: gp.zoom_step(1),
             "zoom_out":     lambda: gp.zoom_step(-1),
             "zoom_reset":   lambda: gp.set_zoom(1.0),
@@ -1795,57 +1800,7 @@ class App:
     FLOATING = ("frames_win", "keys_win", "flash_win", "where_win", "history_win", "compare_menu", "sweep_win", "wav_dialog", "appearance_win", "name_dialog", "device_dialog", "editor_dialog", "about_win",
                 "open_menu", "graph_menu", "graph_ctx", "project_dialog", "graph_import_dialog", "xyz_dialog")
 
-    # --- files dropped on the window -----------------------------------------
-    def poll_drops(self):
-        drop = getattr(self, "drops", None)
-        if not drop:
-            return
-        for path in drop.take():
-            self.take_file(path)
 
-    def take_file(self, path):
-        """A file from the desktop: a graph or bundle opens in the graph pane,
-        a .cpp becomes a code effect, an image an Image node in the graph,
-        an XYZ file or a ledmap the geometry, a WAV the audio."""
-        kind = classify(path)
-        name = os.path.basename(path)
-        if kind == "graph":
-            self.gp.import_bundle(path)
-            self.show_layout("graph")
-        elif kind == "code":
-            fname = os.path.basename(path)
-            if not fname.endswith(".cpp"):
-                fname += ".cpp"
-            n = 2
-            stem = fname[:-4]
-            while fname in self.project.effect_files():
-                fname = f"{stem}_{n}.cpp"; n += 1
-            self.project.write_effect(fname, open(path, encoding="utf-8", errors="replace").read())
-            self.open_code(fname)
-        elif kind == "image":
-            adir = os.path.join(self.project.path, "assets")
-            os.makedirs(adir, exist_ok=True)
-            dst = os.path.join(adir, name)
-            if os.path.abspath(dst) != os.path.abspath(path):
-                shutil.copyfile(path, dst)
-            if not self.gp.graph:
-                self.gp.status(f"{name} copied to assets/ - open a graph to place it"); return
-            self.show_layout("graph")
-            nid = self.gp.add_node("Image")
-            if nid is not None:
-                self.gp.graph.nodes[nid]["params"]["file"] = "assets/" + name
-                self.gp.rebuild()
-            self.gp.status(f"{name} as an Image node")
-        elif kind == "xyz":
-            self.on_xyz_file(None, {"file_path_name": path})
-        elif kind == "ledmap":
-            self.import_ledmap(path=path)
-        elif kind == "wav":
-            self.start_file_audio(path)
-        else:
-            self.gp.status(f"{name}: not a graph, .cpp, image, XYZ, ledmap or WAV")
-            return
-        self.gp.status(f"{name}: {kind}")
 
     def poll_view_mode(self):
         """The 3-D view is remade when what it should draw changes: flat
@@ -1897,252 +1852,24 @@ class App:
                     holes.append((x - 1, y - 1, x + w + 1, y + h + 1))
         self.frames.update(rects, holes)
 
-    # --- segments ----------------------------------------------------------------
-    def seg_labels(self):
-        out = []
-        for k in range(self.eng.seg_count()):
-            x0, y0, x1, y1, op, fx, bm = self.eng.seg_get(k)
-            name = self.eng.names[fx] if 0 <= fx < len(self.eng.names) else "?"
-            out.append(f"{k}: {x0},{y0} - {x1},{y1}  {name}")
-        return out
 
-    def rebuild_seg_fields(self):
-        if not dpg.does_item_exist("seg_fields"):
-            return
-        labels = self.seg_labels()
-        dpg.configure_item("seg_combo", items=labels)
-        dpg.set_value("seg_combo", labels[self.eng.seg] if self.eng.seg < len(labels) else "")
-        dpg.delete_item("seg_fields", children_only=True)
-        if self.eng.seg_count() < 2:
-            dpg.add_text("one segment, the whole strip - + adds another", parent="seg_fields", color=(139, 147, 163))
-            return
-        x0, y0, x1, y1, op, fx, bm = self.eng.seg_get(self.eng.seg)
-        with dpg.group(horizontal=True, parent="seg_fields"):
-            for key, val in (("x0", x0), ("y0", y0), ("x1", x1), ("y1", y1)):
-                dpg.add_input_int(label=key, width=60, default_value=val, user_data=key, on_enter=True, step=0,
-                                  callback=self.on_seg_field)
-        dpg.add_slider_int(label="opacity", parent="seg_fields", width=200, min_value=0, max_value=255, default_value=op,
-                           callback=lambda s, v: self.on_seg_field(s, v, "opacity"))
-        # WLED's per-segment blend mode ("bm"): how this segment lands on the ones under it
-        modes = self.eng.BLEND_MODES
-        dpg.add_combo(modes, label="blend mode", parent="seg_fields", width=200, default_value=modes[bm if bm < len(modes) else 0],
-                      callback=lambda s, v: self.on_seg_blend(modes.index(v)))
 
-    def on_seg_blend(self, mode):
-        self.eng.seg_blend(self.eng.seg, mode)
-        self.save_segments()
 
-    def on_seg_field(self, sender, val, key=None):
-        key = key or dpg.get_item_user_data(sender)
-        k = self.eng.seg
-        x0, y0, x1, y1, op, fx, bm = self.eng.seg_get(k)
-        cur = {"x0": x0, "y0": y0, "x1": x1, "y1": y1, "opacity": op}
-        cur[key] = int(val)
-        self.eng.seg_config(k, cur["x0"], cur["y0"], cur["x1"], cur["y1"], cur["opacity"])
-        self.save_segments()
-        self.rebuild_seg_fields()
 
-    def seg_pick(self, label):
-        try:
-            k = int(str(label).split(":")[0])
-        except ValueError:
-            return
-        self.eng.seg_select(k)
-        dpg.set_value("fx_combo", self.eng.names[self.eng.idx])
-        self.rebuild_params()
-        self.sync_palette_combo()
-        self.rebuild_seg_fields()
 
-    def seg_add(self):
-        n = self.eng.seg_count()
-        if n >= 8:
-            self.gp.status("eight segments is the most"); return
-        w, h = self.eng.cols, self.eng.rows
-        # the new one takes the right half of the strip (or the bottom, on a strip)
-        if w >= h:
-            self.eng.seg_config(n, w // 2, 0, w, h, 255)
-        else:
-            self.eng.seg_config(n, 0, h // 2, w, h, 255)
-        self.eng.seg_select(n)
-        self.save_segments()
-        dpg.set_value("fx_combo", self.eng.names[self.eng.idx])
-        self.rebuild_params(); self.sync_palette_combo(); self.rebuild_seg_fields()
 
-    def seg_remove(self):
-        n = self.eng.seg_count()
-        if n <= 1:
-            return
-        self.eng.seg_truncate(n - 1)
-        self.save_segments()
-        dpg.set_value("fx_combo", self.eng.names[self.eng.idx])
-        self.rebuild_params(); self.sync_palette_combo(); self.rebuild_seg_fields()
 
-    def save_segments(self):
-        self.project.options["segments"] = self.eng.segments() if self.eng.seg_count() > 1 else []
-        self.project.save()
 
-    def restore_segments(self):
-        segs = self.project.options.get("segments") or []
-        if len(segs) > 1:
-            try:
-                self.eng.load_segments(segs)
-            except Exception as e:
-                self.gp.status(f"segments not restored: {e}")
-        self.rebuild_seg_fields()
 
-    def _draw_segments(self):
-        """The segments' bounds over the net, the current one in the accent,
-        when there is more than one."""
-        if not dpg.does_item_exist("seg_overlay"):
-            dpg.add_viewport_drawlist(front=True, tag="seg_overlay")
-        for it in getattr(self, "_seg_items", []):
-            if dpg.does_item_exist(it):
-                dpg.delete_item(it)
-        self._seg_items = []
-        if self.eng.seg_count() < 2 or not (self.ui and self.layout in ("both", "net") and dpg.does_item_exist("net_img")):
-            return
-        st = dpg.get_item_state("net_img")
-        if "rect_min" not in st:
-            return
-        ox, oy = st["rect_min"]
-        sc = self.net_scale
-        ry = self.net_image().shape[0] / max(1, self.eng.rows) * sc
-        for k in range(self.eng.seg_count()):
-            x0, y0, x1, y1, op, fx, bm = self.eng.seg_get(k)
-            col = (90, 169, 230, 255) if k == self.eng.seg else (255, 184, 70, 200)
-            self._seg_items.append(dpg.draw_rectangle((ox + x0 * sc, oy + y0 * ry), (ox + x1 * sc, oy + y1 * ry),
-                                                      parent="seg_overlay", color=col, thickness=2))
-            self._seg_items.append(dpg.draw_text((ox + x0 * sc + 4, oy + y0 * ry + 2), str(k), parent="seg_overlay",
-                                                 color=col, size=14))
 
-    # --- the scripted runtime ---------------------------------------------------------
-    def compile_current_script(self):
-        """The current graph as bytecode, or None with the reason in the status."""
-        from native.script import compile_script, ScriptError
-        if not self.gp.graph:
-            self.gp.status("open a graph first"); return None
-        try:
-            self.gp.save()
-            return compile_script(self.gp.graph)         # flattens sub-graphs itself
-        except Exception as e:
-            self.gp.status(f"not scriptable - {e}"); return None
 
-    def preview_script(self):
-        """Run the current graph as a script in the sim's Studio Script
-        effect - what the device will run - with the graph's own settings."""
-        from native.script import settings_of
-        prog = self.compile_current_script()
-        if prog is None:
-            return
-        si = self.eng.script_effect()
-        if si is None:
-            self.gp.status("this engine build has no Studio Script effect"); return
-        if not self.eng.script(prog):
-            self.gp.status("the engine did not take the script"); return
-        st = settings_of(self.gp.graph)
-        pal = st.pop("pal")
-        self.eng.select(si, params=dict(st, pal=pal))
-        dpg.set_value("fx_combo", self.eng.names[si])
-        self.rebuild_params(); self.sync_palette_combo()
-        self.gp.status(f"running as a script: {len(prog)} bytes")
 
-    def send_script(self):
-        """The current graph to the device as /studio.bin, then the Studio
-        Script effect selected there with the graph's settings."""
-        from native import flash
-        from native.script import settings_of
-        host = self.project.options.get("device", "")
-        if not host.strip():
-            chrome.show_device(self); self.gp.status("set the device's address first"); return
-        prog = self.compile_current_script()
-        if prog is None:
-            return
-        ok, msg = flash.send_script(host, prog)
-        self.gp.status(msg)
-        if not ok:
-            return
-        st = settings_of(self.gp.graph)
-        params = {k: st[k] for k in ("sx", "ix", "c1", "c2", "c3")}
-        params.update({k: bool(st[k]) for k in ("o1", "o2", "o3")})
-        pal = self.palette_name_for(st["pal"])
-        ok2, msg2 = flash.push_settings(host, "Ace 3-D Studio Script", params, pal, self.seg_cols)
-        self.gp.status(msg + ("; " + msg2 if not ok2 else "; the device is running it"))
 
-    def push_settings(self):
-        """The effect on the cube here, with its sliders, checkboxes, palette
-        and colours, becomes the device's first segment."""
-        from native import flash
-        host = self.project.options.get("device", "")
-        if not host.strip():
-            chrome.show_device(self)
-            self.gp.status("set the device's address first"); return
-        f = self.eng.fx
-        params = {k: f.get(k) for k in ("sx", "ix", "c1", "c2", "c3")}
-        params.update({k: bool(f.get(k)) for k in ("o1", "o2", "o3")})
-        bm, op = 0, 255
-        if self.eng.seg_count() >= 1:
-            g = self.eng.seg_get(self.eng.seg); bm, op = g[6], g[4]
-        ok, msg = flash.push_settings(host, self.eng.names[self.eng.idx], params,
-                                      self.palette_name_for(self.eng.pal), self.seg_cols, seg_id=self.eng.seg, blend=bm, opacity=op)
-        dpg.set_value("edit_status", msg); self.gp.status(msg)
 
-    # --- A/B: two effects side by side ------------------------------------------
-    # The engine is one strip in one DLL, so a second effect needs a second
-    # engine: the same library copied under another name (the loader gives
-    # one process one instance per FILE). B gets A's geometry, colours and
-    # audio each frame; the view splits, the camera is shared.
-    def _b_library(self):
-        lib = self.eng.library
-        self._ab_n += 1
-        root, ext = os.path.splitext(lib)
-        path = f"{root}_b{self._ab_n}{ext}"
-        shutil.copyfile(lib, path)
-        return path
 
-    def start_ab(self, name):
-        if name not in self.eng.names:
-            return
-        self._gpu_was = None
-        try:
-            if self.ab is None:
-                self.ab = Engine(self._b_library())
-            self._ab_sync()
-            self.ab.select(self.ab.names.index(name))
-        except Exception as e:
-            self.gp.status(f"cannot compare: {e}"); self.ab = None; return
-        self.ab_name = name
-        self.request_layout()
-        self.gp.status(f"A: {self.eng.names[self.eng.idx]}   B: {name}")
 
-    def stop_ab(self):
-        self.ab = None
-        self.ab_name = None
-        self.request_layout()
 
-    def _ab_sync(self):
-        """B follows A's geometry, colours and palette source."""
-        if not self.ab:
-            return
-        try:
-            self.ab.set_geometry(self.project.geometry)
-            self.ab.colors(*self.seg_cols)
-            self.ab.pal_source = self.eng.pal_source
-            if dpg.does_item_exist("map1d2d"):
-                self.ab.set_map1d2d(["strip", "bars", "arcs", "corner"].index(dpg.get_value("map1d2d")))
-        except Exception:
-            pass
 
-    def _ab_reloaded(self, library):
-        """The library was rebuilt: B takes a fresh copy and its effect back."""
-        if not self.ab:
-            return
-        try:
-            self.ab.reload(self._b_library())
-            self._ab_sync()
-            if self.ab_name in self.ab.names:
-                self.ab.select(self.ab.names.index(self.ab_name))
-        except Exception as e:
-            self.gp.status(f"comparison dropped: {e}"); self.ab = None
 
     def toggle_pane(self, which):
         """C and G: the pane, or back to the two views if it is already up."""
@@ -2195,40 +1922,8 @@ class App:
             self.ui = False
         self.request_layout()
 
-    # --- the loop ------------------------------------------------------------
-    # --- sweep: a slider driven through its range ----------------------------------
-    def start_sweep(self, key, secs, loop=True, record=False):
-        if key not in self.eng.fx:
-            return
-        self.sweep = {"key": key, "secs": max(1.0, float(secs)), "t0": time.perf_counter(), "loop": loop,
-                      "was": self.eng.fx[key]}
-        self.playing = True
-        if record:
-            self.start_rec(self.sweep["secs"])
-        self.gp.status(f"sweeping {key} over {secs:.0f} s" + (", looping" if loop else ""))
 
-    def stop_sweep(self, restore=True):
-        if self.sweep and restore:
-            self.eng.fx[self.sweep["key"]] = self.sweep["was"]
-            self.eng.push(); self.rebuild_params()
-        self.sweep = None
 
-    def _poll_sweep(self):
-        sw = self.sweep
-        if not sw:
-            return
-        t = (time.perf_counter() - sw["t0"]) / sw["secs"]
-        if t >= 1.0 and not sw["loop"]:
-            self.stop_sweep(); return
-        phase = t % 1.0
-        hi = 31 if sw["key"] == "c3" else 255
-        v = int(round(hi * (1.0 - abs(2.0 * phase - 1.0))))        # up, then back down
-        if v != self.eng.fx.get(sw["key"]):
-            self.eng.fx[sw["key"]] = v
-            self.eng.push()
-            for tag in (f"sld_{sw['key']}", f"inp_{sw['key']}"):
-                if dpg.does_item_exist(tag):
-                    dpg.set_value(tag, v)
 
     def step_sim(self):
         now = time.perf_counter()
@@ -2257,34 +1952,6 @@ class App:
             self.acc -= STEP
             n += 1
 
-    def _draw_wiring(self):
-        """The wiring order as a line through the net's pixels, first LED
-        marked, when asked for and the net is on screen."""
-        if not dpg.does_item_exist("wiring_overlay"):
-            dpg.add_viewport_drawlist(front=True, tag="wiring_overlay")
-        for it in self._wiring_items:
-            if dpg.does_item_exist(it):
-                dpg.delete_item(it)
-        self._wiring_items = []
-        if not (self.show_wiring and self.ui and self.layout in ("both", "net") and dpg.does_item_exist("net_img")):
-            return
-        g = self.eng.geom
-        if g is None or g.phys is None or len(g.phys) < 2:
-            return
-        st = dpg.get_item_state("net_img")
-        if "rect_min" not in st:
-            return
-        x0, y0 = st["rect_min"]
-        sc = self.net_scale
-        w = g.w
-        rows = self.net_image().shape[0]
-        ry = rows / max(1, g.h)                      # a strip is drawn tall
-        pts = [(x0 + (i % w + 0.5) * sc, y0 + ((i // w) * ry + ry / 2) * sc) for i in g.phys]
-        self._wiring_items.append(dpg.draw_polyline(pts, parent="wiring_overlay", color=(90, 169, 230, 150), thickness=1))
-        self._wiring_items.append(dpg.draw_circle(pts[0], max(3, sc / 2), parent="wiring_overlay",
-                                                  color=(255, 184, 70, 255), fill=(255, 184, 70, 200)))
-        self._wiring_items.append(dpg.draw_circle(pts[-1], max(3, sc / 2), parent="wiring_overlay",
-                                                  color=(255, 96, 96, 255), fill=(255, 96, 96, 200)))
 
     SCRUB_FRAMES = 300           # ~10 s at the simulated frame rate
     CUBE_SRC_SCALE = 4           # the net's upscale for the GPU cube's texture
@@ -2300,8 +1967,14 @@ class App:
             net = self.history_frames[max(0, min(len(self.history_frames) - 1, self.scrub))]
         big = img = None
         if self.layout in ("both", "net"):
-            big = net.repeat(self.net_scale, 0).repeat(self.net_scale, 1)
-            dpg.set_value("net_tex", self._rgba("net", big))
+            if self.gpu_net:
+                k = self.NET_SRC_SCALE
+                dpg.set_value("net_tex", self._rgba("net", net.repeat(k, 0).repeat(k, 1)))
+                if self.shot_req or self.rec is not None:
+                    big = net.repeat(self.net_scale, 0).repeat(self.net_scale, 1)
+            else:
+                big = net.repeat(self.net_scale, 0).repeat(self.net_scale, 1)
+                dpg.set_value("net_tex", self._rgba("net", big))
         if self.layout in ("both", "cube", "edit", "graph") and self.cube_quads is not None:
             k = self.CUBE_SRC_SCALE
             src = net if net.shape[0] == self.eng.rows else self.net_image()
@@ -2673,6 +2346,8 @@ def service_command(app):
                 app.goto_line(int(c["ed_goto"]))
             if "drop" in c:                             # test hook: a path, as if dropped on the window
                 app.take_file(c["drop"])
+            if "gpu_net" in c:
+                app.set_gpu_net(bool(c["gpu_net"]))
             if "gpu" in c:                              # test hook: the GPU cube view on or off
                 app.set_gpu_cube(bool(c["gpu"]))
             if "appearance" in c:                       # test hook: {"light": bool, "accent": [r,g,b]}

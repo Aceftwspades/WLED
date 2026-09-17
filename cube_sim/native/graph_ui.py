@@ -2014,13 +2014,77 @@ class GraphPanel:
         self.rebuild()
 
     def arrange(self):
+        """Arrange the selection when there is one of two or more nodes, the
+        whole graph otherwise."""
         if not self.graph:
             return
+        sel = self._selected()
         self.snapshot(); self._sync_pos()
+        if len(sel) >= 2:
+            self.graph.arrange(only=sel)
+            self.rebuild()
+            self.status(f"arranged {len(sel)} nodes")
+            return
         self.offset = [0.0, 0.0]
         self.graph.arrange()
         self.rebuild()
         self.status("arranged")
+
+    def align(self, how):
+        """The selected nodes on one edge or one centre line: left, right,
+        top, bottom, centre_x, centre_y."""
+        sel = self._selected()
+        if len(sel) < 2:
+            self.status("select two or more nodes to align"); return
+        self.snapshot(); self._sync_pos()
+        boxes = {}
+        for nid in sel:
+            n = self.graph.nodes[nid]
+            w, h = self._node_size(nid)
+            boxes[nid] = (n["pos"][0], n["pos"][1], n["pos"][0] + w, n["pos"][1] + h)
+        x0 = min(b[0] for b in boxes.values()); x1 = max(b[2] for b in boxes.values())
+        y0 = min(b[1] for b in boxes.values()); y1 = max(b[3] for b in boxes.values())
+        for nid, (bx0, by0, bx1, by1) in boxes.items():
+            n = self.graph.nodes[nid]
+            w, h = bx1 - bx0, by1 - by0
+            if how == "left":       n["pos"][0] = x0
+            elif how == "right":    n["pos"][0] = x1 - w
+            elif how == "top":      n["pos"][1] = y0
+            elif how == "bottom":   n["pos"][1] = y1 - h
+            elif how == "centre_x": n["pos"][0] = (x0 + x1) / 2 - w / 2
+            elif how == "centre_y": n["pos"][1] = (y0 + y1) / 2 - h / 2
+        self.rebuild()
+        self.status(f"aligned {len(sel)} nodes: {how.replace('_', ' ')}")
+
+    def distribute(self, axis):
+        """The selected nodes spread evenly between the first and the last
+        along x or y, by their gaps."""
+        sel = self._selected()
+        if len(sel) < 3:
+            self.status("select three or more nodes to distribute"); return
+        self.snapshot(); self._sync_pos()
+        k = 0 if axis == "x" else 1
+        sizes = {nid: self._node_size(nid)[k] for nid in sel}
+        order = sorted(sel, key=lambda i: self.graph.nodes[i]["pos"][k])
+        first, last = self.graph.nodes[order[0]], self.graph.nodes[order[-1]]
+        span = (last["pos"][k] + sizes[order[-1]]) - first["pos"][k]
+        total = sum(sizes[i] for i in order)
+        gap = (span - total) / (len(order) - 1)
+        x = first["pos"][k]
+        for nid in order:
+            self.graph.nodes[nid]["pos"][k] = x
+            x += sizes[nid] + gap
+        self.rebuild()
+        self.status(f"distributed {len(sel)} nodes along {axis}")
+
+    def _node_size(self, nid):
+        """A node's size in graph units, from the widget when it is on screen."""
+        tag = f"gnode_{nid}"
+        if dpg.does_item_exist(tag):
+            st = dpg.get_item_state(tag)
+            if "rect_size" in st and st["rect_size"][0] > 0:
+                return (st["rect_size"][0] / self.zoom, st["rect_size"][1] / self.zoom)
+        return (NODE_W, 120)
 
     def detach(self, nid):
         """Alt-click: a node loses every wire, in and out, and stays put."""

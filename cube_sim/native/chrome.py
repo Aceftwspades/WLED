@@ -99,6 +99,16 @@ def build_menus(app):
             _mi(app, "Fold into sub-graph...", "fold", callback=lambda: ask(
                 app, "Sub-graph", "a name for the new node type", "", lambda v: app.gp.make_sub_from_selection(v)))
             _mi(app, "Arrange", "arrange", callback=lambda: app.gp.arrange())
+            with dpg.menu(label="Align"):
+                _mi(app, "Left edges", "align_left", callback=lambda: app.gp.align("left"))
+                _mi(app, "Right edges", "align_right", callback=lambda: app.gp.align("right"))
+                _mi(app, "Tops", "align_top", callback=lambda: app.gp.align("top"))
+                _mi(app, "Bottoms", "align_bottom", callback=lambda: app.gp.align("bottom"))
+                dpg.add_menu_item(label="Centres, across", callback=lambda: app.gp.align("centre_x"))
+                dpg.add_menu_item(label="Centres, down", callback=lambda: app.gp.align("centre_y"))
+                dpg.add_separator()
+                _mi(app, "Distribute across", "distribute_x", callback=lambda: app.gp.distribute("x"))
+                _mi(app, "Distribute down", "distribute_y", callback=lambda: app.gp.distribute("y"))
             dpg.add_separator()
             _mi(app, "Find / replace in code", "find", callback=lambda: app.focus_find())
             _mi(app, "Open code in external editor", "external", callback=lambda: app.open_external())
@@ -154,6 +164,8 @@ def build_menus(app):
             dpg.add_menu_item(label="External editor command...", callback=lambda: show_editor(app))
             dpg.add_menu_item(label="Draw the cube on the GPU", check=True, default_value=app.gpu_cube, tag="menu_gpu",
                               callback=lambda s, a: app.set_gpu_cube(bool(a)))
+            dpg.add_menu_item(label="Scale the net on the GPU (softer LED edges, faster)", check=True, default_value=app.gpu_net,
+                              tag="menu_gpu_net", callback=lambda s, a: app.set_gpu_net(bool(a)))
             dpg.add_menu_item(label="Device speed factor...", callback=lambda: ask(
                 app, "Device speed", "how many times slower than this PC the device is (the fps estimate in the footer)",
                 str(app.prefs.get("device_factor", 60)), lambda v: app.set_device_factor(v)))

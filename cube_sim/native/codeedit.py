@@ -48,6 +48,11 @@ COL_LINE = (255, 255, 255, 12)
 COL_ERR = (235, 80, 70, 70)
 COL_CURSOR = (240, 244, 250, 255)
 COL_GUTTER = (0, 0, 0, 40)
+COL_FIND = (255, 184, 70, 80)
+COL_FIND_CUR = (255, 184, 70, 160)
+COL_BRACKET = (90, 169, 230, 110)
+BRACKETS = {"(": ")", "[": "]", "{": "}"}
+CLOSERS = {v: k for k, v in BRACKETS.items()}
 
 TOKEN = re.compile(r'(//.*$)|(/\*.*?\*/)|(/\*.*$)|("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\')|'
                    r'(\b(?:0x[0-9a-fA-F]+|\d+\.?\d*(?:[eE][-+]?\d+)?)[fFuUlL]*\b)|([A-Za-z_]\w*)|(\s+)|(.)')
@@ -66,6 +71,8 @@ class CodeEditor:
         self.focus = False
         self.err_lines = set()
         self.mark = None               # a line to show (goto), until the next edit
+        self.needle = ""               # the find text; its matches are highlighted
+        self.find_at = None            # the match the cursor was last taken to
         self._store = None
         self._dirty = True
         self._items = []
@@ -182,6 +189,9 @@ class CodeEditor:
     def _insert(self, text):
         self._delete_sel()
         l, c = self.cur
+        if text == "}" and self.lines[l][:c].strip() == "" and self.lines[l][:c].startswith("  "):
+            self.lines[l] = self.lines[l][2:]
+            c = max(0, c - 2); self.cur = [l, c]
         parts = text.split("\n")
         head, tail = self.lines[l][:c], self.lines[l][c:]
         if len(parts) == 1:
@@ -261,8 +271,39 @@ class CodeEditor:
                 self.lines[l:l + 2] = [self.lines[l] + self.lines[l + 1]]; self._commit()
             return True
         if code in (K.mvKey_Return, K.mvKey_NumPadEnter):
-            indent = re.match(r"[ \t]*", self.lines[l]).group(0)
-            self._insert("\n" + indent); return True
+            # keep the line's indent; one more step after an opening brace,
+            # and a closing brace typed next lands back out
+            line = self.lines[l]
+            indent = re.match(r"[ \t]*", line).group(0)
+            before = line[:c].rstrip()
+            after = line[c:].lstrip()
+            if before.endswith("{"):
+                if after.startswith("}"):
+                    self._insert("\n" + indent + "  " + "\n" + indent)
+                    self._move(self.cur[0] - 1, len(indent) + 2, False)
+                else:
+                    self._insert("\n" + indent + "  ")
+            else:
+                self._insert("\n" + indent)
+            return True
+        if code == K.mvKey_Tab:
+            s_ = self._sel()
+            if s_ and s_[0][0] != s_[1][0]:
+                (l0, c0), (l1, c1) = s_
+                for i in range(l0, l1 + 1):
+                    ln_ = self.lines[i]
+                    if shift:
+                        lead = len(ln_) - len(ln_.lstrip(" "))
+                        self.lines[i] = ln_[min(2, lead):]
+                    else:
+                        self.lines[i] = "  " + ln_
+                self.anchor = [l0, 0]; self.cur = [l1, len(self.lines[l1])]
+                self._commit(); return True
+            if shift:
+                if self.lines[l].startswith("  "):
+                    self.lines[l] = self.lines[l][2:]; self.cur = [l, max(0, c - 2)]; self._commit()
+                return True
+            return False                                   # the catcher inserts the tab characters
         if code == K.mvKey_Escape:
             self.anchor = None; self._dirty = True; return True
         if ctrl and code == K.mvKey_A:
@@ -293,6 +334,79 @@ class CodeEditor:
                 self.lines[i] = (ln[:k] + ln[k:].replace("//", "", 1).lstrip(" ")) if allc else (ln[:k] + "// " + ln[k:])
             self._commit(); return True
         return False
+
+    # --- find --------------------------------------------------------------------------
+    def set_needle(self, text):
+        self.needle = (text or "")
+        self.find_at = None
+        self._dirty = True
+
+    def matches(self):
+        """Every (line, col) the needle occurs at, case-insensitive."""
+        n = self.needle.lower()
+        if not n:
+            return []
+        out = []
+        for li, ln in enumerate(self.lines):
+            low = ln.lower()
+            i = low.find(n)
+            while i >= 0:
+                out.append((li, i))
+                i = low.find(n, i + max(1, len(n)))
+        return out
+
+    def find_next(self, backwards=False):
+        """The cursor to the next match after it (or before, backwards),
+        wrapping round; the match is selected."""
+        self._sync_from_store()
+        ms = self.matches()
+        if not ms:
+            return False
+        cur = tuple(self.cur)
+        if backwards:
+            cands = [m for m in ms if m < (cur[0], cur[1] - (len(self.needle) if self.find_at == cur else 0))]
+            m = cands[-1] if cands else ms[-1]
+        else:
+            cands = [m for m in ms if m > cur or (m == cur and self.find_at != cur)]
+            m = cands[0] if cands else ms[0]
+        self.anchor = [m[0], m[1]]
+        self.cur = [m[0], m[1] + len(self.needle)]
+        self.find_at = (m[0], m[1] + len(self.needle))
+        self.top = max(0, min(max(0, len(self.lines) - self.rows), m[0] - self.rows // 3)) if not (self.top <= m[0] < self.top + self.rows) else self.top
+        self._show_cursor()
+        self._dirty = True
+        return True
+
+    # --- brackets ----------------------------------------------------------------------
+    def _bracket_pair(self):
+        """(here, there) for a bracket at or before the cursor, or None."""
+        l, c = self.cur
+        ln = self.lines[l]
+        for pos in (c, c - 1):
+            if 0 <= pos < len(ln) and (ln[pos] in BRACKETS or ln[pos] in CLOSERS):
+                ch = ln[pos]
+                fwd = ch in BRACKETS
+                other = BRACKETS.get(ch) or CLOSERS.get(ch)
+                depth = 0
+                li, ci = l, pos
+                step = 1 if fwd else -1
+                while 0 <= li < len(self.lines):
+                    row = self.lines[li]
+                    while 0 <= ci < len(row):
+                        x = row[ci]
+                        if x == ch:
+                            depth += 1
+                        elif x == other:
+                            depth -= 1
+                            if depth == 0:
+                                return (l, pos), (li, ci)
+                        ci += step
+                    li += step
+                    ci = 0 if fwd else (len(self.lines[li]) - 1 if 0 <= li < len(self.lines) else 0)
+                    if abs(li - l) > 400:
+                        break
+                return None
+        return None
 
     def wheel(self, d):
         self.top = max(0, min(max(0, len(self.lines) - self.rows), self.top - int(d) * 3))
@@ -394,8 +508,29 @@ class CodeEditor:
                     xb = x_text + (b - self.left) * self.char_w
                     add(dpg.draw_rectangle((max(GUTTER, xa), y), (min(W, xb), y + LINE_H), parent=self.dl,
                                            color=(0, 0, 0, 0), fill=COL_SEL))
+            if self.needle:
+                n = len(self.needle)
+                low = self.lines[li].lower()
+                i = low.find(self.needle.lower())
+                while i >= 0:
+                    xa = x_text + (i - self.left) * self.char_w
+                    xb = xa + n * self.char_w
+                    if xb > GUTTER and xa < W:
+                        current = self.find_at == (li, i + n)
+                        add(dpg.draw_rectangle((max(GUTTER, xa), y + 1), (min(W, xb), y + LINE_H - 1), parent=self.dl,
+                                               color=(0, 0, 0, 0), fill=COL_FIND_CUR if current else COL_FIND, rounding=2))
+                    i = low.find(self.needle.lower(), i + max(1, n))
             add(dpg.draw_text((4, y + 1), f"{li + 1:>5}", parent=self.dl, color=COL_DIM, size=FONT_PX))
             self._draw_line(li, x_text, y + 1, W)
+        if self.focus:
+            pair = self._bracket_pair()
+            if pair:
+                for (bl, bc) in pair:
+                    r = bl - self.top
+                    if 0 <= r < self.rows:
+                        xa = x_text + (bc - self.left) * self.char_w
+                        add(dpg.draw_rectangle((xa, 2 + r * LINE_H + 1), (xa + self.char_w, 2 + r * LINE_H + LINE_H - 1),
+                                               parent=self.dl, color=COL_BRACKET, fill=COL_BRACKET, rounding=2))
         self._draw_cursor()
 
     def _draw_line(self, li, x0, y, W):
