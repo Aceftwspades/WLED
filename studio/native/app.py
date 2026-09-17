@@ -1,5 +1,5 @@
 """
-WLED Effect Studio - the native front end.
+WLED Effects Studio - the native front end.
 
     python -m native.app
 
@@ -759,7 +759,7 @@ class App(Features):
         self.refresh_import_buttons()
 
     # --- projects ---------------------------------------------------------------------
-    # One folder per project under cube_sim/projects/ (or anywhere, by path).
+    # One folder per project under studio/projects/ (or anywhere, by path).
     # Switching swaps the project object, applies its geometry, re-lists its
     # effects and graphs, and rebuilds the engine for its effects list.
     def switch_project(self, path, create=False):
@@ -2541,7 +2541,7 @@ class App(Features):
 
 def build(app):
     dpg.create_context()
-    dpg.create_viewport(title="WLED Effect Studio", width=1280, height=800, vsync=False)
+    dpg.create_viewport(title="WLED Effects Studio", width=1280, height=800, vsync=False)
 
     with dpg.handler_registry():
         dpg.add_mouse_drag_handler(button=dpg.mvMouseButton_Left, callback=app.on_drag)
@@ -3142,7 +3142,7 @@ def main():
     app = App()
     build(app)
     dpg.show_viewport()
-    app.drops = DropFiles("WLED Effect Studio")
+    app.drops = DropFiles("WLED Effects Studio")
     os.makedirs(SHOT_DIR, exist_ok=True)
     os.makedirs(GIF_DIR, exist_ok=True)
     print(f"if a frame throws, the traceback lands in {os.path.join(SHOT_DIR, 'crash.txt')}")

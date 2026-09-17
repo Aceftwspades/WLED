@@ -322,7 +322,7 @@ def build_dialogs(app):
         with dpg.child_window(tag="keys_rows", height=-1, border=False):
             pass
     with dpg.window(tag="about_win", label="About", show=False, width=460, height=200, no_collapse=True):
-        dpg.add_text("WLED Effect Studio")
+        dpg.add_text("WLED Effects Studio")
         dpg.add_text("Node graphs and C++ compiled into WLED effects, previewed on a\n"
                      "simulated cube, sphere, matrix or strip with synthetic or live audio.", color=DIM)
         dpg.add_spacer(height=6)

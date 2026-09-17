@@ -636,7 +636,7 @@ loadGlue().then(() => CubeFX({ locateFile: p => p + bust })).then(mod => {
   el('err').textContent =
     'Failed to start.\n\n' + e +
     '\n\nIf this says something about fetch or CORS: the .wasm cannot load from file://.' +
-    '\nServe the folder instead, from cube_sim/:\n\n    python -m http.server 8000\n\n' +
+    '\nServe the folder instead, from studio/:\n\n    python -m http.server 8000\n\n' +
     'then open http://localhost:8000/';
 });
 </script>

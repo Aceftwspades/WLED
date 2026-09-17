@@ -1,6 +1,6 @@
 """
 The example graphs, written out by script so they stay reproducible: five
-cube_fx effects rebuilt from nodes. Run from cube_sim:
+cube_fx effects rebuilt from nodes. Run from studio:
 
     python examples/build_examples.py            # writes examples/graphs/*.json
     python examples/build_examples.py --check    # and compiles + builds them

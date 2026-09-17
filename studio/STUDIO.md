@@ -1,4 +1,4 @@
-# WLED Effect Studio — the playground branch
+# WLED Effects Studio — the playground branch
 
 The simulator grows into an effect editor for any WLED user: write an effect
 as C++ in the app and see it on your own geometry within a second, or build one
@@ -677,6 +677,33 @@ them within each group; ticked when done.
       the type rule, problems, exposed params, the state fallback, arrange,
       JSON round-trip with wire meta, the ledmap format.
 
+### A self-contained app (on hold)
+
+The goal: one download that runs, for any WLED user, not a checkout of
+this repo with a compiler beside it. Today the studio is a source tree
+inside the WLED checkout, run in place with hand-installed packages, and
+the engine is compiled from the firmware's own sources by clang - which
+is also what every graph build needs. In the order to do them, when the
+housekeeping above is done:
+
+- [ ] `pyproject.toml` + `requirements.txt` with pins, and `python -m
+      native.doctor`: Python version, packages, the compiler, PlatformIO,
+      and exactly what is missing.
+- [ ] A prebuilt engine in releases (`cubefx.dll` for the commit), so a
+      first run needs no compiler: viewing, the examples, the script
+      preview and device pushes work at once; the compiler is needed only
+      to build.
+- [ ] A PyInstaller one-folder build (Windows first) - the app, its
+      packages, the prebuilt engine - and the handful of firmware files
+      the engine compiles copied in as a runtime folder, which is the step
+      that cuts the dependency on the full WLED tree.
+- [ ] A Linux / macOS pass: run it there, fix what falls over (font
+      paths, viewport flags, audio device listing).
+- [ ] Housekeeping first: the studio no longer assumes a cube anywhere a
+      user reads - `studio/` (was `cube_sim/`), "WLED Effects Studio"; the
+      firmware usermod stays `cube_fx` and its effect names keep the "Ace
+      3-D" family prefix the on-cube menu filters on.
+
 ### Deferred from earlier lists
 
 - [x] **Live values on pins**: the compiler puts a `GC_PROBE` after every
@@ -796,7 +823,7 @@ and `app` (the whole loop) in ms; the `measure` test hook prints the split.
 ## Running it
 
 ```bash
-cd cube_sim
+cd studio
 pip install dearpygui numpy pillow sounddevice        # pyaudiowpatch on Windows for loopback
 python build.py --native-only                          # once; the app rebuilds incrementally
 python -m native.app
@@ -807,7 +834,7 @@ shortcuts (F1) lists them and lets you change any of them. Keys: **G** node grap
 (again returns to the panels), **H** hide the controls, **space** pause, **Ctrl+N / Ctrl+S / F2 / F5** new, save, rename, build. In the graph: **Delete** removes selected nodes,
 **Ctrl+Z / Ctrl+Y** undo / redo, **Ctrl+C / X / V** copy, cut, paste, **wheel / Ctrl+= / Ctrl+- / Ctrl+0** zoom,
 **M** mute, **Shift+D** duplicate with inputs, **Ctrl+L** arrange, **Ctrl+H** hide unwired pins, **F** connect two
-selected nodes, **Alt+click** detach a node. Projects live in `cube_sim/projects/<name>/`;
+selected nodes, **Alt+click** detach a node. Projects live in `studio/projects/<name>/`;
 the default one is created on first run.
 
 ## Compatibility rules for this branch

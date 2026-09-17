@@ -24,8 +24,8 @@ import urllib.request
 from native.project import ROOT
 
 USERMOD = "usermod_studio"
-MARK_BEGIN = ";; --- WLED Effect Studio: generated environment (rewritten on every flash) ---"
-MARK_END = ";; --- end WLED Effect Studio ---"
+MARK_BEGIN = ";; --- WLED Effects Studio: generated environment (rewritten on every flash) ---"
+MARK_END = ";; --- end WLED Effects Studio ---"
 
 
 def pio_exe():

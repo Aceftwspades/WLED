@@ -313,7 +313,7 @@ def run(view, name):
         dpg.add_mouse_wheel_handler(callback=on_wheel)
         dpg.add_key_press_handler(callback=on_key)
 
-    kw = dict(title=f"Ace 3-D Studio - {TITLES.get(view, view)}", width=w0, height=h0, clear_color=(0, 0, 0, 255),
+    kw = dict(title=f"WLED Effects Studio - {TITLES.get(view, view)}", width=w0, height=h0, clear_color=(0, 0, 0, 255),
               min_width=160, min_height=160)
     if "x" in cfg and "y" in cfg:
         kw.update(x_pos=int(cfg["x"]), y_pos=int(cfg["y"]))

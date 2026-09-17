@@ -1,6 +1,6 @@
 """The compiler without the app: compile, scope, migrate, problems, arrange,
-exposed params, sub-graphs. Run with  python -m pytest cube_sim/tests  from
-the WLED root, or  python -m pytest tests  from cube_sim.
+exposed params, sub-graphs. Run with  python -m pytest studio/tests  from
+the WLED root, or  python -m pytest tests  from studio.
 """
 import os
 import sys

@@ -35,7 +35,7 @@ TEMPLATE = r'''#include "wled.h"
 // ===========================================================================
 // {title}
 // ===========================================================================
-// Written in the WLED Effect Studio. This file is an ordinary WLED effect:
+// Written in the WLED Effects Studio. This file is an ordinary WLED effect:
 // drop it into usermods/cube_fx/ (or any usermod folder that includes
 // cube_fx_common.h and cube_fx_bank.h) and it compiles into the firmware
 // unchanged.
@@ -277,13 +277,13 @@ class Project:
                 shutil.copyfile(src, os.path.join(um, h))
         with open(os.path.join(um, "library.json"), "w", encoding="utf-8") as f:
             json.dump({"name": "usermod_studio", "version": "1.0.0",
-                       "description": "Effects written in the WLED Effect Studio",
+                       "description": "Effects written in the WLED Effects Studio",
                        "build": {"libArchive": False}}, f, indent=2)
         titles = [self.effect_title(f) for f in files]
         g = self.geometry
         with open(os.path.join(um, "README.md"), "w", encoding="utf-8") as f:
             f.write("# Studio export\n\n"
-                    f"Effects written in the WLED Effect Studio for: {g.describe()}.\n\n"
+                    f"Effects written in the WLED Effects Studio for: {g.describe()}.\n\n"
                     "## Effects\n\n" + "".join(f"- {t}\n" for t in titles) + "\n"
                     "## Building\n\n"
                     "1. Copy this folder into `usermods/` of a WLED source tree (0.15 / 16.x).\n"

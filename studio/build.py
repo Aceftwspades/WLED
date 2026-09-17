@@ -428,7 +428,7 @@ def main():
     if "--wasm-only" in want:   want = {"--wasm"}
     if "--native-only" in want: want = {"--native"}
 
-    print("cube_sim build")
+    print("studio build")
     srcs = engine_sources()
 
     if "--native" in want:

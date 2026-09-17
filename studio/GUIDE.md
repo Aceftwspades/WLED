@@ -1,4 +1,4 @@
-# WLED Effect Studio — a short guide
+# WLED Effects Studio — a short guide
 
 Effects for a WLED LED cube (or any matrix or strip), built as node graphs
 or as C++, previewed on a simulated cube with synthetic or live audio, and
@@ -8,7 +8,7 @@ NODES.md lists every node.
 ## First run
 
 ```bash
-cd cube_sim
+cd studio
 pip install dearpygui numpy pillow sounddevice        # pyaudiowpatch on Windows for loopback
 python build.py --native-only                          # once; the app rebuilds the engine as it needs
 python -m native.app                                   # or the desktop shortcut

@@ -1,6 +1,6 @@
 @echo off
 REM ===========================================================================
-REM  WLED Effect Studio - launcher for the desktop shortcut
+REM  WLED Effects Studio - launcher for the desktop shortcut
 REM ===========================================================================
 REM  Runs from its own folder rather than wherever the shortcut was invoked
 REM  from, builds the native DLL if it is missing, and holds the window open on

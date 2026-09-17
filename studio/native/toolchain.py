@@ -32,7 +32,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
-HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))     # cube_sim/
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))     # studio/
 ROOT = os.path.dirname(HERE)                                            # repo
 BUILD = os.path.join(HERE, "build")
 OBJ = os.path.join(BUILD, "obj")

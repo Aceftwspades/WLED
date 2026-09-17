@@ -258,7 +258,7 @@ class Features:
         params = {k: st[k] for k in ("sx", "ix", "c1", "c2", "c3")}
         params.update({k: bool(st[k]) for k in ("o1", "o2", "o3")})
         pal = self.palette_name_for(st["pal"])
-        ok2, msg2 = flash.push_settings(host, "Ace 3-D Studio Script", params, pal, self.seg_cols)
+        ok2, msg2 = flash.push_settings(host, "Studio Script", params, pal, self.seg_cols)
         self.gp.status(msg + ("; " + msg2 if not ok2 else "; the device is running it"))
     def push_settings(self):
         """The effect on the cube here, with its sliders, checkboxes, palette

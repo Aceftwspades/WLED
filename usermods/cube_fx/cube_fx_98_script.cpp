@@ -4,9 +4,9 @@
 #include "cube_fx_studio_helpers.h"
 
 // ===========================================================================
-// Ace 3-D Studio Script - the scripted runtime
+// Studio Script - the scripted runtime
 // ===========================================================================
-// Runs a program the WLED Effect Studio compiled from a node graph
+// Runs a program the WLED Effects Studio compiled from a node graph
 // (native/script.py), so an effect reaches the cube over the network with no
 // firmware build: the studio POSTs /studio.bin to /upload, this effect sees
 // the file change and runs it. One effect slot, any graph the studio's
@@ -309,5 +309,5 @@ static void mode_studio_script() {
   FX_DONE;
 }
 
-static const char _data_FX_MODE_STUDIO_SCRIPT[] PROGMEM = "Ace 3-D Studio Script@Speed,Intensity,Custom 1,Custom 2,Custom 3,Check 1,Check 2,Check 3;;!;12;sx=128,ix=128";
+static const char _data_FX_MODE_STUDIO_SCRIPT[] PROGMEM = "Studio Script@Speed,Intensity,Custom 1,Custom 2,Custom 3,Check 1,Check 2,Check 3;;!;12;sx=128,ix=128";
 static CfxBankReg studio_script_reg(&mode_studio_script, _data_FX_MODE_STUDIO_SCRIPT);

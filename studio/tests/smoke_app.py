@@ -6,7 +6,7 @@ This launches the app, walks the layouts, opens a graph and a code effect,
 exercises the editor, segments, A/B, sweep, the script preview, the
 dialogs and the keys, then reads the app's log for tracebacks.
 
-    python tests/smoke_app.py          # from cube_sim; ~60 s; exits 1 on a traceback
+    python tests/smoke_app.py          # from studio; ~60 s; exits 1 on a traceback
 
 It is deliberately not a pytest: it needs the window, the engine and a
 minute; run it before a release, not on every save.

@@ -6,7 +6,7 @@ of Dear PyGui's, answering WM_DROPFILES and passing everything else on. The
 paths are queued; the app's loop takes them on its own thread and decides
 what each one is (a graph, a code effect, an image, an XYZ file, a ledmap).
 
-    drop = DropFiles("WLED Effect Studio")     # after show_viewport()
+    drop = DropFiles("WLED Effects Studio")     # after show_viewport()
     for path in drop.take(): ...                # each loop pass
 
 Elsewhere (macOS, Linux) this does nothing and says so once; the imports on

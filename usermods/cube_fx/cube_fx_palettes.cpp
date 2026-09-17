@@ -129,7 +129,7 @@
 // ---------------------------------------------------------------------------
 // THE SIMULATOR RUNS THESE TOO
 // ---------------------------------------------------------------------------
-// The filename has no NN prefix, so cube_sim/build.py's effect glob skips it -
+// The filename has no NN prefix, so studio/build.py's effect glob skips it -
 // it is not an effect - and build.py names it explicitly instead. The simulator
 // carries WLED's real palette set, its own usermodPalettes registry and a
 // usermod loop, so these appear in its palette list and react there exactly as

@@ -154,7 +154,7 @@ using FFTmathType = int32_t;
 // These are the input and output vectors.  Input vectors receive computed results from FFT.
 static FFTsampleType* valFFT = nullptr;
 
-// --- cube_fx / cube_sim: PCM slot ------------------------------------------
+// --- cube_fx / studio: PCM slot ------------------------------------------
 // The time-domain samples of each FFT batch, for effects that draw the
 // waveform itself (cube_fx Warp and Scope, which otherwise rebuild one from
 // the bins). Every batch is folded 2:1 to CFX_PCM_N points, scaled to
@@ -404,7 +404,7 @@ void FFTcode(void * parameter)
     // band pass filter - can reduce noise floor by a factor of 50 and avoid aliasing effects to base & high frequency bands
     // downside: frequencies below 100Hz will be ignored
     if (useMicFilter) runMicFilter(samplesFFT, valFFT);
-    // cube_fx / cube_sim PCM slot: the batch as it is, before the FFT
+    // cube_fx / studio PCM slot: the batch as it is, before the FFT
     // (the peak below is not known yet; the previous batch's serves, the
     // scale only sets the amplitude)
     cfxPcmCapture(valFFT, samplesFFT, cfxPcmPeak);
@@ -1388,7 +1388,7 @@ class AudioReactive : public Usermod {
         um_data->u_size = 9;                   // 8 of WLED's, plus the cube_fx PCM slot (u_data[8])
         um_data->u_type = new um_types_t[um_data->u_size];
         um_data->u_data = new void*[um_data->u_size];
-        um_data->u_data[8] = &cfxPcm;           // cube_fx / cube_sim PCM slot: a CfxPcm, see cfxPcmCapture
+        um_data->u_data[8] = &cfxPcm;           // cube_fx / studio PCM slot: a CfxPcm, see cfxPcmCapture
         um_data->u_type[8] = UMT_BYTE_ARR;
         um_data->u_data[0] = &volumeSmth;      //*used (New)
         um_data->u_type[0] = UMT_FLOAT;
