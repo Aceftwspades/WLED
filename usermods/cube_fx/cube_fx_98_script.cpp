@@ -262,12 +262,24 @@ static void mode_studio_script() {
 
   ssRun(P.frame, P.frame + P.frameLen, F, C, S, P.nf, P.nc, P.ns, fft);
 
+  // The budget: a program too heavy for the chip runs at half, then a
+  // quarter, of the horizontal resolution (each pixel's colour repeated
+  // across its neighbours) rather than dragging the whole device down;
+  // it climbs back when frames come in under the line. Measured per
+  // frame; the stride is kept in the state block.
+  static uint8_t stride = 1;
+  const uint32_t t0 = micros();
   const int cols = W, rows = H; (void)rows;
   CFX_NET_PREP();
   for (int py = 0; py < H; py++) {
     CFX_NET_ROW(py);
+    uint32_t last = 0;
     for (int px = 0; px < W; px++) {
       CFX_NET_SKIP(px);
+      if (stride > 1 && (px % stride) != 0) {
+        if (is2d) SEGMENT.setPixelColorXY(px, py, last); else SEGMENT.setPixelColor(px, last);
+        continue;
+      }
       const float u = (W > 1) ? (float)px / (float)(W - 1) : 0.5f;
       const float v = (H > 1) ? (float)py / (float)(H - 1) : 0.5f;
       const float cx = u * 2.0f - 1.0f, cy = 1.0f - v * 2.0f;
@@ -287,9 +299,13 @@ static void mode_studio_script() {
       F[SSF_px] = (float)px; F[SSF_py] = (float)py;
       F[SSF_X3] = X3; F[SSF_Y3] = Y3; F[SSF_Z3] = Z3; F[SSF_nx] = nx; F[SSF_ny] = ny; F[SSF_nz] = nz;
       const uint32_t c = ssRun(P.pixel, P.pixel + P.pixelLen, F, C, S, P.nf, P.nc, P.ns, fft);
+      last = c;
       if (is2d) SEGMENT.setPixelColorXY(px, py, c); else SEGMENT.setPixelColor(px, c);
     }
   }
+  const uint32_t took = micros() - t0;
+  if (took > 40000u && stride < 4) stride *= 2;                 // over 40 ms: coarser
+  else if (took < 12000u && stride > 1) stride /= 2;            // well under: finer again
   FX_DONE;
 }
 

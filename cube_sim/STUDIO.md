@@ -672,6 +672,25 @@ After: the cube layout 16 ms a frame (the 60 Hz ceiling), the graph layout
 left; it stays crisp on purpose). The footer shows `effect` (the engine)
 and `app` (the whole loop) in ms; the `measure` test hook prints the split.
 
+## Polish pass (September 2026)
+
+- Editor: find matches highlighted (the current one brighter), **F3** /
+  **Shift+F3** next and previous, bracket matching, indent after `{` and
+  a `}` stepping back out, Tab / Shift+Tab on a block, undo steps ending
+  at a 0.6 s pause.
+- Graph: **Arrange** works on a selection of two or more (anchored where
+  they sit); Edit > Align (left, right, top, bottom, centres) and
+  Distribute (across, down) on **Alt+arrows / Alt+H / Alt+V**.
+- The net view scaled on the GPU (Settings, on by default): the "both"
+  layout at the refresh rate too; the crisp CPU path remains a toggle.
+- The Studio Script effect has a frame budget: over 40 ms a frame it runs
+  at half, then a quarter, of the horizontal resolution and climbs back
+  when frames fit - a heavy program cannot take the device down.
+- `native/features.py`: segments, A/B, sweep, scripts, the device, the
+  geometry extras and desktop drops moved out of app.py into a mixin.
+- `tests/smoke_app.py` drives the app through fifteen steps and fails on
+  a traceback. GUIDE.md is the short user guide.
+
 ## Running it
 
 ```bash
