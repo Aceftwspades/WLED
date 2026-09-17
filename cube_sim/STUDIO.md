@@ -457,6 +457,56 @@ within each group is the order to do them.
       continuous per-node taps cheaply; the realistic version is a small
       image on the node being pin-previewed.
 
+### Against Blender, second pass (September 2026)
+
+The first list done, measured again - against the shader, geometry and
+compositor editors plus Node Wrangler. Ranked by value over effort; the
+order is the order they were done.
+
+- [x] **Select all / none / invert** (A, Alt+A, Ctrl+Shift+I). imnodes owns
+      the click selection and cannot be told to select, so nodes selected
+      by key are a second list (`ext_sel`): they wear an accent outline,
+      every selection-taking action reads the union, and dragging a
+      clicked node carries them along (`_poll_ext_sel`).
+- [x] **Frame selected** (Shift+Home): the graph shifted so the selection's
+      box starts at the top left, the zoom the largest step it fits at.
+- [x] **Select upstream / downstream / linked** (Ctrl+[, Ctrl+], Shift+L):
+      the whole chain, not just the neighbours.
+- [x] **Grid snapping** (Shift+Tab toggles; Ctrl while dragging does the
+      other thing): nodes land on the 20-unit grid when let go.
+- [x] **Delete with reconnect** (Ctrl+Delete): what fed the node's first
+      wired input feeds whatever its outputs fed, where the types allow.
+- [x] **Drop a node onto a wire** to splice it in, the node downstream
+      pushed right if the two now overlap (the wire is hit-tested along
+      the curve imnodes draws, `_wire_points`).
+- [x] **Swap inputs** (Alt+S): a node's first two, wires and typed values.
+- [x] **Node labels** (Shift+F2, or the node's menu): a name of your own
+      over the type; `label` on the node.
+- [x] **Frame the selection** (Ctrl+J): a Frame sized round it. (Alt+P
+      detach has no meaning here - a Frame holds what lies inside it.)
+- [x] **Multi-edit**: Alt while changing a value puts it on every selected
+      node of that type.
+- [x] **Backspace over a value** resets it to its default; **Ctrl+wheel**
+      over a dropdown steps it.
+- [x] **Knife** (Ctrl+right-drag): the line drawn cuts every wire it crosses.
+- [x] **A wire dropped on a node's body** lands on its first free pin that fits.
+- [x] **Favourites and recents** at the top of the add menu (a node's
+      menu stars it; the last six added are listed).
+- [x] **Command palette** (Ctrl+P): every action by name with its key,
+      Enter runs the first hit; graph actions listed while the graph is up.
+- [x] **Undo history** (Ctrl+Alt+Z, Edit menu): the edits newest first,
+      click one to go back to before it. Each snapshot is named after the
+      method that took it.
+- [x] **Ctrl+Shift+click** previews a node's output; again, the next one.
+- [x] **Repeat last** (Shift+R).
+- [ ] Numeric expressions in fields ("2*pi") - deferred: the number boxes
+      are Dear PyGui's and parse their own text.
+- Not applicable: per-node timings (one compiled function, no per-node
+  clock - the effect-ms readout is the honest equivalent), the
+  spreadsheet (the pin preview and live value), simulation zones and
+  baking (Fields, Sequencer, Particles), multiple editor areas (the
+  movable panes and pop-outs).
+
 ### Alongside
 
 - Cross-platform audio (done): WASAPI loopback on Windows, and any input

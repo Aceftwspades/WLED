@@ -135,6 +135,14 @@ class GraphPanel:
         self.preview = None      # (node, output) routed to Output instead of the graph's own
         self._frame_last = {}    # frame node -> its position last poll
         self._frame_drag = {}    # frame node -> the nodes moving with it, while it moves
+        # Selected by key (A, Ctrl+[, ...): imnodes owns the click selection
+        # and cannot be told to select, so these wear an outline of their
+        # own and are moved along when a clicked one is dragged.
+        self.ext_sel = []
+        self._ext_last = {}      # node -> its position last poll, while ext_sel has nodes
+        self._knife = None       # (x0, y0) while a Ctrl+right-drag cuts wires
+        self._press_pos = {}     # node -> position at the last press (a drop onto a wire)
+        self._undo_desc = []     # what each undo snapshot precedes
         self.auto = False        # live preview: rebuild after every edit
         self._dirty = 0.0        # time of the last edit not yet built, 0 when clean
         self._queued = False     # an edit landed while a build was running
@@ -226,7 +234,7 @@ class GraphPanel:
         self.graph.project_dir = self.app.project.path
         self.file = fname
         self.cur_dir = d
-        self._undo.clear(); self._redo.clear(); self._last_snap = None
+        self._undo.clear(); self._redo.clear(); self._last_snap = None; self._undo_desc.clear(); self.ext_sel = []
         self.preview = None
         self.rebuild()
         dpg.configure_item("graph_file", items=self.files())
@@ -627,7 +635,13 @@ class GraphPanel:
         self._last_snap = (key, now)
         self._sync_pos()
         self._undo.append(json.dumps(self.graph.to_json()))
+        # what the edit was, from the method asking - for the history list
+        import sys
+        who = sys._getframe(1).f_code.co_name
+        desc = key[0] if isinstance(key, tuple) else (key or who)
+        self._undo_desc.append(str(desc).replace("_", " ").strip())
         del self._undo[:-self.UNDO_MAX]
+        del self._undo_desc[:-self.UNDO_MAX]
         self._redo.clear()
 
     def _restore(self, snap):
@@ -642,6 +656,8 @@ class GraphPanel:
         self._sync_pos()
         self._redo.append(json.dumps(self.graph.to_json()))
         self._restore(self._undo.pop())
+        if self._undo_desc:
+            self._undo_desc.pop()
         self.status(f"undo ({len(self._undo)} more)")
 
     def redo(self):
@@ -649,8 +665,20 @@ class GraphPanel:
             self.status("nothing to redo"); return
         self._sync_pos()
         self._undo.append(json.dumps(self.graph.to_json()))
+        self._undo_desc.append("redo")
         self._restore(self._redo.pop())
         self.status("redo")
+
+    def undo_steps(self):
+        """The history list, oldest first: what each undo step takes back."""
+        return list(self._undo_desc[-len(self._undo):]) if self._undo else []
+
+    def undo_to(self, k):
+        """Back k steps (the history list's row)."""
+        for _ in range(max(0, int(k))):
+            if not self._undo:
+                break
+            self.undo()
 
     def nudge(self, dx, dy):
         """Move the selected nodes by a step - the arrow keys."""
@@ -680,6 +708,212 @@ class GraphPanel:
                 dpg.set_item_pos(f"gnode_{nid}", self._disp(n["pos"]))
         self._frame_last = {nid: tuple(self._disp(n["pos"])) for nid, n in self.graph.nodes.items() if n["type"] == "Frame"}
 
+    # --- selection by key --------------------------------------------------------------------
+    def set_selection(self, nids):
+        """The selection becomes these (by key: imnodes' own is cleared)."""
+        if not self.graph:
+            return
+        if dpg.does_item_exist("node_editor"):
+            dpg.clear_selected_nodes("node_editor")
+        self.ext_sel = [n for n in nids if n in self.graph.nodes]
+        self._ext_last = {n: tuple(dpg.get_item_pos(f"gnode_{n}")) for n in self.ext_sel if dpg.does_item_exist(f"gnode_{n}")}
+        for nid, n in self.graph.nodes.items():
+            if dpg.does_item_exist(f"gnode_{nid}"):
+                self._bind_node_theme(nid, n)
+        self._focus_sel = None                                  # focus mode follows
+
+    def select_all(self):
+        self.set_selection(list(self.graph.nodes) if self.graph else [])
+        self.status(f"{len(self.ext_sel)} nodes selected")
+
+    def select_none(self):
+        self.set_selection([])
+        self.status("nothing selected")
+
+    def select_invert(self):
+        cur = set(self._selected())
+        self.set_selection([n for n in self.graph.nodes if n not in cur])
+        self.status(f"{len(self.ext_sel)} nodes selected")
+
+    def select_linked(self, direction):
+        """Everything feeding the selection ("up"), fed by it ("down") or
+        both ("both") - the whole chain, not just the neighbours."""
+        sel = self._selected()
+        if not sel:
+            self.status("select a node first"); return
+        keep = set(sel)
+        grow = True
+        while grow:
+            grow = False
+            for a, _, b, _ in self.graph.links:
+                if direction in ("up", "both") and b in keep and a not in keep:
+                    keep.add(a); grow = True
+                if direction in ("down", "both") and a in keep and b not in keep:
+                    keep.add(b); grow = True
+        self.set_selection([n for n in self.graph.nodes if n in keep])
+        self.status(f"{len(keep)} nodes: the selection and what it is {'fed by' if direction == 'up' else 'feeding' if direction == 'down' else 'wired to'}")
+
+    def _poll_ext_sel(self):
+        """A clicked node dragged carries the key-selected ones with it."""
+        if not self.ext_sel or not self.graph:
+            return
+        clicked = set(self._clicked())
+        mover = next((n for n in self.ext_sel if n in clicked and n in self._ext_last), None)
+        if mover is None:
+            self._ext_last = {n: tuple(dpg.get_item_pos(f"gnode_{n}")) for n in self.ext_sel if dpg.does_item_exist(f"gnode_{n}")}
+            return
+        cur = tuple(dpg.get_item_pos(f"gnode_{mover}"))
+        last = self._ext_last[mover]
+        dx, dy = cur[0] - last[0], cur[1] - last[1]
+        if dx or dy:
+            for n in self.ext_sel:
+                if n in clicked or not dpg.does_item_exist(f"gnode_{n}"):
+                    continue
+                x, y = dpg.get_item_pos(f"gnode_{n}")
+                dpg.set_item_pos(f"gnode_{n}", [x + dx, y + dy])
+        self._ext_last = {n: tuple(dpg.get_item_pos(f"gnode_{n}")) for n in self.ext_sel if dpg.does_item_exist(f"gnode_{n}")}
+
+    def frame_selected(self):
+        """The selection filling the editor: the graph shifted so its box
+        starts at the top left, the zoom the largest step it fits at."""
+        sel = self._selected()
+        if not sel:
+            self.home(); return
+        self._sync_pos()
+        self.snapshot()
+        boxes = [(self.graph.nodes[n]["pos"], self._node_size(n)) for n in sel]
+        x0 = min(p[0] for p, _ in boxes); y0 = min(p[1] for p, _ in boxes)
+        x1 = max(p[0] + sz[0] for p, sz in boxes); y1 = max(p[1] + sz[1] for p, sz in boxes)
+        for n in self.graph.nodes.values():
+            n["pos"] = [n["pos"][0] - x0 + 20, n["pos"][1] - y0 + 20]
+        self.offset = [0.0, 0.0]
+        w, h = dpg.get_item_rect_size("node_editor") if dpg.does_item_exist("node_editor") else (0, 0)
+        if w <= 0 or h <= 0:                             # not drawn since a rebuild: the pane's size, less its rows
+            w, h = dpg.get_item_rect_size("graph_win") if dpg.does_item_exist("graph_win") else (800, 600)
+            h = max(200, h - 160)
+        fit = min((w - 40) / max(1.0, x1 - x0), (h - 40) / max(1.0, y1 - y0))
+        z = max([zz for zz in ZOOMS if zz <= fit] or [ZOOMS[0]])
+        self.zoom = min(1.0, z) if len(sel) > 1 else min(z, 1.5)
+        self.rebuild()
+        self.status(f"framed {len(sel)} node(s) at {int(self.zoom * 100)}%")
+
+    GRID = 20                    # graph units; the editor's grid squares
+
+    def snap_selected(self):
+        """The selected nodes onto the grid."""
+        sel = self._selected()
+        if not sel:
+            return
+        self._sync_pos()
+        g = self.GRID
+        for n in sel:
+            p = self.graph.nodes[n]["pos"]
+            p[0] = round(p[0] / g) * g; p[1] = round(p[1] / g) * g
+            if dpg.does_item_exist(f"gnode_{n}"):
+                dpg.set_item_pos(f"gnode_{n}", self._disp(p))
+        self._frame_last = {nid: tuple(self._disp(n["pos"])) for nid, n in self.graph.nodes.items() if n["type"] == "Frame"}
+
+    def toggle_snap(self):
+        on = not self.app.prefs.get("snap")
+        self.app.prefs["snap"] = on
+        from native.project import save_prefs
+        save_prefs(self.app.prefs)
+        if on:
+            self.snap_selected()
+        self.status("snap to grid on (Ctrl while dragging: the other way)" if on else "snap to grid off")
+
+    def dissolve_selected(self):
+        """Delete with reconnect: a node goes, and what fed its first wired
+        input feeds whatever its outputs fed, where the types allow."""
+        sel = self._selected()
+        if not sel:
+            self.status("select nodes first"); return
+        self.snapshot(); self._sync_pos()
+        joined = 0
+        for nid in sel:
+            if nid not in self.graph.nodes:
+                continue
+            src = next(((a, o) for a, o, b, i in self.graph.links if b == nid), None)
+            outs = [(b, i) for a, o, b, i in self.graph.links if a == nid and b not in sel]
+            if src and outs:
+                a, o = src
+                at = next((x["type"] for x in self.graph.node_def(self.graph.nodes[a])["outputs"] if x["name"] == o), "float")
+                for b, i in outs:
+                    bt = next((x["type"] for x in self.graph.node_def(self.graph.nodes[b])["inputs"] if x["name"] == i), "float")
+                    if compatible(at, bt):
+                        self.graph.link(a, o, b, i); joined += 1
+            self.graph.remove(nid)
+        self.ext_sel = []
+        self.rebuild()
+        self.status(f"{len(sel)} node(s) dissolved, {joined} wire(s) joined")
+
+    def swap_inputs(self):
+        """The first two inputs of each selected node change places: their
+        wires and their typed values, where the types allow."""
+        sel = self._selected()
+        if not sel:
+            self.status("select a node first"); return
+        self.snapshot(); self._sync_pos()
+        done = 0
+        for nid in sel:
+            d = self.graph.node_def(self.graph.nodes[nid])
+            ins = d["inputs"]
+            if len(ins) < 2 or not compatible(ins[0]["type"], ins[1]["type"]) or not compatible(ins[1]["type"], ins[0]["type"]):
+                continue
+            a, b = ins[0]["name"], ins[1]["name"]
+            la = next((l for l in self.graph.links if l[2] == nid and l[3] == a), None)
+            lb = next((l for l in self.graph.links if l[2] == nid and l[3] == b), None)
+            self.graph.unlink(nid, a); self.graph.unlink(nid, b)
+            if la:
+                self.graph.link(la[0], la[1], nid, b)
+            if lb:
+                self.graph.link(lb[0], lb[1], nid, a)
+            vals = self.graph.nodes[nid].setdefault("inputs", {})
+            va, vb = vals.get(a), vals.get(b)
+            vals.pop(a, None); vals.pop(b, None)
+            if va is not None: vals[b] = va
+            if vb is not None: vals[a] = vb
+            done += 1
+        self.rebuild()
+        self.status(f"inputs swapped on {done} node(s)" if done else "no selected node has two inputs of one kind")
+
+    def set_label(self, nid, text):
+        """A name of your own over the node's type (blank: the type again)."""
+        if nid not in self.graph.nodes:
+            return
+        self.snapshot(); self._sync_pos()
+        text = (text or "").strip()
+        if text:
+            self.graph.nodes[nid]["label"] = text
+        else:
+            self.graph.nodes[nid].pop("label", None)
+        self.rebuild()
+
+    def label_selected(self):
+        sel = self._selected()
+        if not sel:
+            self.status("select a node first"); return
+        from native import chrome
+        n = self.graph.nodes[sel[0]]
+        chrome.ask(self.app, "Node label", f"a label for this {n['type']} (blank: its type)", n.get("label", ""),
+                   lambda v: self.set_label(sel[0], v))
+
+    def frame_selection(self, title=None):
+        """A Frame drawn round the selected nodes, with room to spare."""
+        sel = [n for n in self._selected() if self.graph.nodes[n]["type"] != "Frame"]
+        if not sel:
+            self.status("select nodes first"); return
+        self._sync_pos()
+        self.snapshot()
+        boxes = [(self.graph.nodes[n]["pos"], self._node_size(n)) for n in sel]
+        pad = 24
+        x0 = min(p[0] for p, _ in boxes) - pad; y0 = min(p[1] for p, _ in boxes) - pad - 30
+        x1 = max(p[0] + sz[0] for p, sz in boxes) + pad; y1 = max(p[1] + sz[1] for p, sz in boxes) + pad
+        fid = self.graph.add("Frame", (x0, y0), {"title": title or "group", "w": int(x1 - x0), "h": int(y1 - y0)})
+        self.rebuild()
+        self.status(f"framed {len(sel)} node(s)")
+        return fid
+
     def typing(self):
         """True while a value box on a node has the keyboard."""
         return any(dpg.does_item_exist(w) and dpg.is_item_active(w) for w in self._widgets)
@@ -690,10 +924,25 @@ class GraphPanel:
     # into a sub-graph. Pasting gives fresh ids and nudges the copies so they
     # do not land exactly on the originals.
     def _selected(self):
+        """The selection: what imnodes has, then what the keys added."""
         if not self.graph:
             return []
         if getattr(self, "_test_sel", None):            # the remote-control hooks stand in for a click
             return [i for i in self._test_sel if i in self.graph.nodes]
+        out = []
+        for tag in dpg.get_selected_nodes("node_editor"):
+            nid = dpg.get_item_user_data(tag)
+            if nid in self.graph.nodes and nid not in out:
+                out.append(nid)
+        for nid in self.ext_sel:
+            if nid in self.graph.nodes and nid not in out:
+                out.append(nid)
+        return out
+
+    def _clicked(self):
+        """imnodes' own selection only."""
+        if not self.graph:
+            return []
         out = []
         for tag in dpg.get_selected_nodes("node_editor"):
             nid = dpg.get_item_user_data(tag)
@@ -771,6 +1020,7 @@ class GraphPanel:
 
     def poll(self):
         self._poll_frames()
+        self._poll_ext_sel()
         self._poll_help()
         self._poll_props()
         self._poll_focus()
@@ -855,7 +1105,7 @@ class GraphPanel:
         th = self.themes()
         linked = {(b, inp) for _, _, b, inp in self.graph.links}
         n.setdefault("inputs", {})
-        label = d.get("label") or n["type"]
+        label = n.get("label") or d.get("label") or n["type"]
         if n["type"] in ("Graph input", "Graph output"):
             label = f"{n['type']}: {n['params'].get('name', '')}"
         if n["type"] == "Frame":
@@ -913,14 +1163,18 @@ class GraphPanel:
         self._bind_node_theme(nid, n)
 
     def _bind_node_theme(self, nid, n):
-        """The node's own look: muted grey, its colour, a frame's wash."""
+        """The node's own look: muted grey, its colour, a frame's wash; an
+        outline when the keys selected it."""
         col = n.get("color")
+        sel = nid in self.ext_sel
         if n.get("muted"):
-            dpg.bind_item_theme(f"gnode_{nid}", self._node_theme((70, 74, 82)))
+            dpg.bind_item_theme(f"gnode_{nid}", self._node_theme((70, 74, 82), sel=sel))
         elif col:
-            dpg.bind_item_theme(f"gnode_{nid}", self._node_theme(tuple(col)))
+            dpg.bind_item_theme(f"gnode_{nid}", self._node_theme(tuple(col), sel=sel))
         elif n["type"] == "Frame":
-            dpg.bind_item_theme(f"gnode_{nid}", self._node_theme(tuple(n["params"].get("colour", [90, 110, 160]))[:3], frame=True))
+            dpg.bind_item_theme(f"gnode_{nid}", self._node_theme(tuple(n["params"].get("colour", [90, 110, 160]))[:3], frame=True, sel=sel))
+        elif sel:
+            dpg.bind_item_theme(f"gnode_{nid}", self._node_theme(None, sel=True))
         else:
             dpg.bind_item_theme(f"gnode_{nid}", 0)
 
@@ -1138,15 +1392,23 @@ class GraphPanel:
         self._make_node(nid, self.graph.nodes[nid])
         return nid
 
-    def _node_theme(self, col, frame=False):
-        """A node theme whose title bar is `col`; a frame's body is a wash of
-        the same colour so the nodes inside still read through it."""
-        key = (col, frame)
+    def _node_theme(self, col, frame=False, sel=False):
+        """A node theme whose title bar is `col` (None: the default look); a
+        frame's body is a wash of the same colour so the nodes inside still
+        read through it; `sel` adds the key-selection outline."""
+        key = (col, frame, sel)
         th = self._node_themes.get(key)
         if th is None:
-            r, g, b = col
             with dpg.theme() as th:
                 with dpg.theme_component(dpg.mvNode):
+                    if sel:
+                        from native import chrome
+                        dpg.add_theme_color(dpg.mvNodeCol_NodeOutline, tuple(chrome.ACCENT[:3]) + (255,), category=dpg.mvThemeCat_Nodes)
+                        dpg.add_theme_style(dpg.mvNodeStyleVar_NodeBorderThickness, 3, category=dpg.mvThemeCat_Nodes)
+                    if col is None:
+                        self._node_themes[key] = th
+                        return th
+                    r, g, b = col
                     dpg.add_theme_color(dpg.mvNodeCol_TitleBar, (r, g, b, 255), category=dpg.mvThemeCat_Nodes)
                     dpg.add_theme_color(dpg.mvNodeCol_TitleBarHovered, (min(255, r + 30), min(255, g + 30), min(255, b + 30), 255),
                                         category=dpg.mvThemeCat_Nodes)
@@ -1156,7 +1418,8 @@ class GraphPanel:
                         dpg.add_theme_color(dpg.mvNodeCol_NodeBackground, (r, g, b, 40), category=dpg.mvThemeCat_Nodes)
                         dpg.add_theme_color(dpg.mvNodeCol_NodeBackgroundHovered, (r, g, b, 55), category=dpg.mvThemeCat_Nodes)
                         dpg.add_theme_color(dpg.mvNodeCol_NodeBackgroundSelected, (r, g, b, 70), category=dpg.mvThemeCat_Nodes)
-                        dpg.add_theme_color(dpg.mvNodeCol_NodeOutline, (r, g, b, 160), category=dpg.mvThemeCat_Nodes)
+                        if not sel:
+                            dpg.add_theme_color(dpg.mvNodeCol_NodeOutline, (r, g, b, 160), category=dpg.mvThemeCat_Nodes)
             self._node_themes[key] = th
         return th
 
@@ -1234,6 +1497,14 @@ class GraphPanel:
                                no_alpha=True, no_inputs=True, user_data=ud, callback=self._on_input, show=show)
         self._widgets.add(w)
 
+    def _same_type_selected(self, nid):
+        """Alt held: the other selected nodes of this node's type - an edit
+        lands on all of them."""
+        if not (dpg.is_key_down(dpg.mvKey_LAlt) or dpg.is_key_down(dpg.mvKey_RAlt)):
+            return []
+        t = self.graph.nodes[nid]["type"]
+        return [k for k in self._selected() if k != nid and self.graph.nodes[k]["type"] == t]
+
     def _on_input(self, sender, val):
         self.touch()
         nid, name = dpg.get_item_user_data(sender)
@@ -1245,12 +1516,75 @@ class GraphPanel:
         elif isinstance(val, (list, tuple)) and len(val) >= 3 and all(isinstance(x, float) for x in val):
             val = [int(round(x * 255)) if x <= 1.0 else int(x) for x in val[:3]]
         self.graph.nodes[nid].setdefault("inputs", {})[name] = val
+        for k in self._same_type_selected(nid):
+            self.graph.nodes[k].setdefault("inputs", {})[name] = val
+            w = f"gin_{k}_{name}_w"
+            if dpg.does_item_exist(w):
+                dpg.set_value(w, val if ptype != "color" else [c / 255.0 for c in val] + [1.0])
 
     def _show_input(self, b, inp, linked):
         tag = f"gin_{b}_{inp}"
         if dpg.does_item_exist(tag + "_t"):
             dpg.configure_item(tag + "_t", show=linked)
             dpg.configure_item(tag + "_w", show=not linked)
+
+    def _hovered_field(self):
+        """(widget, nid, name, kind) for the value box under the pointer."""
+        for w in self._widgets:
+            if dpg.does_item_exist(w) and dpg.is_item_hovered(w):
+                ud = dpg.get_item_user_data(w)
+                if isinstance(ud, tuple) and len(ud) == 2 and ud[0] in self.graph.nodes:
+                    nid, name = ud
+                    kind = "param" if any(p["name"] == name for p in self.graph.node_def(self.graph.nodes[nid])["params"]) else "input"
+                    return w, nid, name, kind
+        return None
+
+    def _set_param_widget(self, nid, name, val):
+        for w in self._widgets:
+            if dpg.does_item_exist(w) and dpg.get_item_user_data(w) == (nid, name):
+                try:
+                    if dpg.get_item_type(w).endswith("ColorEdit"):
+                        dpg.set_value(w, [c / 255.0 for c in list(val)[:3]] + [1.0])
+                    else:
+                        dpg.set_value(w, val)
+                except Exception:
+                    pass
+
+    def reset_hovered(self):
+        """Backspace over a value box: the default again."""
+        h = self._hovered_field()
+        if not h or not self.graph:
+            return False
+        w, nid, name, kind = h
+        n = self.graph.nodes[nid]
+        d = self.graph.node_def(n)
+        self.snapshot()
+        if kind == "param":
+            p = next(p for p in d["params"] if p["name"] == name)
+            n["params"][name] = p["default"]
+        else:
+            n.setdefault("inputs", {}).pop(name, None)
+        self.touch()
+        self._sync_pos(); self.rebuild()
+        self.status(f"{name}: back to its default")
+        return True
+
+    def step_hovered(self, direction):
+        """Ctrl+wheel over a dropdown: the next or previous choice."""
+        h = self._hovered_field()
+        if not h or not self.graph:
+            return False
+        w, nid, name, kind = h
+        if not dpg.get_item_type(w).endswith("Combo"):
+            return False
+        items = dpg.get_item_configuration(w).get("items") or []
+        if not items:
+            return False
+        cur = dpg.get_value(w)
+        k = (items.index(cur) + (1 if direction > 0 else -1)) % len(items) if cur in items else 0
+        dpg.set_value(w, items[k])
+        self._on_param(w, items[k])
+        return True
 
     def _param_widget(self, nid, n, p, multiline=False):
         v = n["params"].get(p["name"], p["default"])
@@ -1486,6 +1820,9 @@ class GraphPanel:
         if isinstance(val, (list, tuple)) and len(val) >= 3 and all(isinstance(x, float) for x in val):
             val = [int(round(x * 255)) if x <= 1.0 else int(x) for x in val[:3]]
         self.graph.nodes[nid]["params"][name] = val
+        for k in self._same_type_selected(nid):
+            self.graph.nodes[k]["params"][name] = val
+            self._set_param_widget(k, name, val)
         if self.graph.nodes[nid]["type"] == "Frame" and name in ("title", "colour"):
             self._sync_pos(); self.rebuild()
         if self.graph.nodes[nid]["type"] in ("Graph input", "Graph output") and name in ("name", "type"):
@@ -1552,10 +1889,24 @@ class GraphPanel:
     def on_press(self):
         if not self.graph or not dpg.does_item_exist("node_editor") or not dpg.is_item_shown("node_editor"):
             return
-        if dpg.is_key_down(dpg.mvKey_LAlt) or dpg.is_key_down(dpg.mvKey_RAlt):
-            for nid in list(self.graph.nodes):
-                if dpg.does_item_exist(f"gnode_{nid}") and dpg.is_item_hovered(f"gnode_{nid}"):
-                    self.detach(nid); return
+        ctrl = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
+        shift = dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift)
+        alt = dpg.is_key_down(dpg.mvKey_LAlt) or dpg.is_key_down(dpg.mvKey_RAlt)
+        over = next((nid for nid in self.graph.nodes
+                     if dpg.does_item_exist(f"gnode_{nid}") and dpg.is_item_hovered(f"gnode_{nid}")), None)
+        if alt and over is not None:
+            self.detach(over); return
+        if ctrl and shift and over is not None:
+            # Ctrl+Shift+click previews the node's first output; again, the next one
+            outs = [o["name"] for o in self.graph.node_def(self.graph.nodes[over])["outputs"]]
+            if outs:
+                k = (outs.index(self.preview[1]) + 1) % len(outs) if self.preview and self.preview[0] == over and self.preview[1] in outs else 0
+                self.preview_pin(over, outs[k])
+            return
+        if dpg.is_item_hovered("node_editor") and not ctrl and not shift and self.ext_sel and over not in self.ext_sel:
+            self.set_selection([])                     # a plain click elsewhere: the key selection is over
+        # where every node is now: a node dragged onto a wire is spliced in on release
+        self._press_pos = {nid: tuple(dpg.get_item_pos(f"gnode_{nid}")) for nid in self.graph.nodes if dpg.does_item_exist(f"gnode_{nid}")}
         self._drag_kind = None
         for (nid, kind, name), tag in self._pins.items():
             if dpg.does_item_exist(tag) and dpg.is_item_hovered(tag):
@@ -1583,6 +1934,16 @@ class GraphPanel:
                     self._sync_pos(); self.rebuild()
                     break
         if self._drag_type is None:
+            if self.graph and self._press_pos:
+                moved = [nid for nid, p in self._press_pos.items()
+                         if dpg.does_item_exist(f"gnode_{nid}") and tuple(dpg.get_item_pos(f"gnode_{nid}")) != p]
+                self._press_pos = {}
+                if moved:
+                    ctrl = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
+                    if bool(self.app.prefs.get("snap")) != ctrl:
+                        self.snap_selected()
+                    if len(moved) == 1 and self.graph.nodes[moved[0]]["type"] != "Frame":
+                        self._drop_on_wire(moved[0])
             return
         t, frm = self._drag_type, self._drag_from
         self._drag_type = self._drag_from = None
@@ -1604,6 +1965,9 @@ class GraphPanel:
                 return
         for nid in self.graph.nodes:
             if dpg.does_item_exist(f"gnode_{nid}") and dpg.is_item_hovered(f"gnode_{nid}"):
+                # dropped on a node's body: its first free pin that fits
+                if nid != frm[0]:
+                    self._wire_to_body(frm, t, nid, getattr(self, "_drag_kind", "out"))
                 return
         gx, gy = self._to_graph((mx, my))
         self._menu_pos = (gx - 20, gy - 10)
@@ -1613,6 +1977,142 @@ class GraphPanel:
         else:
             self._pending = (frm[0], frm[1], t)
             self.show_add_menu((mx, my), only=self._consumers(t, limit=60))
+
+    def _wire_to_body(self, frm, t, nid, kind):
+        """A wire from `frm` dropped on node `nid`: the first free input that
+        takes it (from an output), or the first output that feeds it."""
+        d = self.graph.node_def(self.graph.nodes[nid])
+        wired = {(b, i) for _, _, b, i in self.graph.links}
+        if kind == "out":
+            inp = next((i["name"] for i in d["inputs"] if (nid, i["name"]) not in wired and compatible(t, i["type"])), None)
+            if inp is None:
+                inp = next((i["name"] for i in d["inputs"] if compatible(t, i["type"])), None)
+            if inp is None:
+                self.status("no input there takes it"); return
+            self.snapshot(); self.graph.link(frm[0], frm[1], nid, inp)
+        else:
+            out = next((o["name"] for o in d["outputs"] if compatible(o["type"], t)), None)
+            if out is None:
+                self.status("no output there fits"); return
+            self.snapshot(); self.graph.link(nid, out, frm[0], frm[1])
+        self.rebuild()
+
+    def _wire_points(self, lid):
+        """A wire's polyline on screen, sampled along the curve imnodes draws."""
+        b, inp = self.links.get(lid, (None, None))
+        if b is None:
+            return None
+        a = next((l[0] for l in self.graph.links if l[2] == b and l[3] == inp), None)
+        out = next((l[1] for l in self.graph.links if l[2] == b and l[3] == inp), None)
+        if a is None:
+            return None
+        p0 = self._pin_point(a, "out", out); p1 = self._pin_point(b, "in", inp)
+        if p0 is None or p1 is None:
+            return None
+        d = max(50.0, abs(p1[0] - p0[0]) * 0.5)
+        c0, c1 = (p0[0] + d, p0[1]), (p1[0] - d, p1[1])
+        pts = []
+        for k in range(17):
+            u = k / 16.0; v = 1 - u
+            pts.append((v ** 3 * p0[0] + 3 * v * v * u * c0[0] + 3 * v * u * u * c1[0] + u ** 3 * p1[0],
+                        v ** 3 * p0[1] + 3 * v * v * u * c0[1] + 3 * v * u * u * c1[1] + u ** 3 * p1[1]))
+        return pts
+
+    @staticmethod
+    def _seg_dist(p, a, b):
+        ax, ay = a; bx, by = b; px, py = p
+        dx, dy = bx - ax, by - ay
+        L = dx * dx + dy * dy
+        t = 0.0 if L == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L))
+        return ((ax + t * dx - px) ** 2 + (ay + t * dy - py) ** 2) ** 0.5
+
+    @staticmethod
+    def _segs_cross(a, b, c, d):
+        def orient(p, q, r):
+            return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+        return (orient(a, b, c) * orient(a, b, d) < 0) and (orient(c, d, a) * orient(c, d, b) < 0)
+
+    def _drop_on_wire(self, nid):
+        """A node let go over a wire it could sit on is spliced into it, the
+        node downstream pushed right if the two now overlap."""
+        st = dpg.get_item_state(f"gnode_{nid}")
+        if "rect_min" not in st:
+            return
+        (x0, y0), (x1, y1) = st["rect_min"], st["rect_max"]
+        centre = ((x0 + x1) / 2, (y0 + y1) / 2)
+        d = self.graph.node_def(self.graph.nodes[nid])
+        if not d["inputs"] or not d["outputs"]:
+            return
+        mine = {(l[0], l[1]) for l in self.graph.links if l[2] == nid} | {(l[2], l[3]) for l in self.graph.links if l[0] == nid}
+        best = None
+        for lid, (b, inp) in list(self.links.items()):
+            if b == nid or not dpg.does_item_exist(lid):
+                continue
+            a = next((l[0] for l in self.graph.links if l[2] == b and l[3] == inp), None)
+            if a == nid or a is None:
+                continue
+            pts = self._wire_points(lid)
+            if not pts:
+                continue
+            dist = min(self._seg_dist(centre, pts[k], pts[k + 1]) for k in range(len(pts) - 1))
+            if dist < 14 * self.zoom and (best is None or dist < best[0]):
+                best = (dist, a, b, inp)
+        if best is None:
+            return
+        _, a, b, inp = best
+        out = next(l[1] for l in self.graph.links if l[2] == b and l[3] == inp)
+        at = next((o["type"] for o in self.graph.node_def(self.graph.nodes[a])["outputs"] if o["name"] == out), "float")
+        bt = next((i["type"] for i in self.graph.node_def(self.graph.nodes[b])["inputs"] if i["name"] == inp), "float")
+        wired = {(x, i) for _, _, x, i in self.graph.links}
+        my_in = next((i["name"] for i in d["inputs"] if (nid, i["name"]) not in wired and compatible(at, i["type"])), None)
+        my_out = next((o["name"] for o in d["outputs"] if compatible(o["type"], bt)), None)
+        if my_in is None or my_out is None:
+            return
+        self.snapshot(); self._sync_pos()
+        self.graph.link(a, out, nid, my_in)
+        self.graph.link(nid, my_out, b, inp)
+        # auto-offset: the consumer moves right if the new node now covers it
+        pn, sn = self.graph.nodes[nid]["pos"], self._node_size(nid)
+        pb, sb = self.graph.nodes[b]["pos"], self._node_size(b)
+        if pb[0] < pn[0] + sn[0] + 20 and pb[0] + sb[0] > pn[0] and abs(pb[1] - pn[1]) < max(sn[1], sb[1]):
+            self.graph.nodes[b]["pos"][0] = pn[0] + sn[0] + 40
+        self.rebuild()
+        self.status(f"spliced into the wire ({a} . {out} -> {b} . {inp})")
+
+    def knife_start(self):
+        """Ctrl+right-drag: the line drawn cuts every wire it crosses."""
+        if not self.graph or not dpg.does_item_exist("node_editor") or not dpg.is_item_hovered("node_editor"):
+            return False
+        self._knife = tuple(dpg.get_mouse_pos(local=False))
+        return True
+
+    def knife_drag(self):
+        if not self._knife or not dpg.does_item_exist("knife_line"):
+            return
+        mx, my = dpg.get_mouse_pos(local=False)
+        dpg.configure_item("knife_line", p1=self._knife, p2=(mx, my), show=True)
+
+    def knife_end(self):
+        if not self._knife:
+            return
+        a = self._knife; b = tuple(dpg.get_mouse_pos(local=False))
+        self._knife = None
+        if dpg.does_item_exist("knife_line"):
+            dpg.configure_item("knife_line", show=False)
+        if abs(b[0] - a[0]) + abs(b[1] - a[1]) < 8 or not self.graph:
+            return
+        cut = []
+        for lid, (nb, inp) in list(self.links.items()):
+            pts = self._wire_points(lid)
+            if pts and any(self._segs_cross(a, b, pts[k], pts[k + 1]) for k in range(len(pts) - 1)):
+                cut.append((nb, inp))
+        if not cut:
+            self.status("the knife crossed no wire"); return
+        self.snapshot()
+        for nb, inp in cut:
+            self.graph.unlink(nb, inp)
+        self.rebuild()
+        self.status(f"{len(cut)} wire(s) cut")
 
     # --- the right-click menus -------------------------------------------------------------
     def open_menu(self):
@@ -1643,6 +2143,7 @@ class GraphPanel:
         """The add menu at a screen position, its search box focused and
         empty. `only` narrows it to those node types (a dropped wire)."""
         self._only = only
+        self._fill_quick()
         dpg.set_value("graph_search", "")
         self._search("graph_search", "")
         dpg.configure_item("graph_menu", show=True)
@@ -1764,6 +2265,9 @@ class GraphPanel:
             if n["type"].startswith(G.SUB):
                 row("edit sub-graph", lambda: self.enter_sub(nid))
             row("where is this type used", lambda: self.show_where_used(n["type"]))
+            row("remove from favourites" if n["type"] in self.app.prefs.get("fav_nodes", []) else "add to favourites",
+                lambda: self.toggle_favourite(n["type"]))
+            row("label this node...", lambda: (self.set_selection([nid]), self.label_selected()))
             if self.cur_dir == self.sub_dir and d["params"] and not n["type"].startswith(G.SUB):
                 # inside a sub-graph: a setting can be promoted to the sub node outside
                 prom = n.get("promote") or []
@@ -2163,6 +2667,9 @@ class GraphPanel:
         dpg.add_child_window(tag="graph_hits", parent="graph_menu", show=False, width=230, height=60,
                              border=False)
         with dpg.child_window(tag="graph_cats", parent="graph_menu", width=230, height=430, border=False):
+            # the last few added and the starred ones sit on top; refilled each open
+            dpg.add_group(tag="graph_quick")
+            self._fill_quick()
             pre = self.presets()
             if pre:
                 with dpg.collapsing_header(label="presets", default_open=True):
@@ -2179,6 +2686,40 @@ class GraphPanel:
                         dpg.add_selectable(label=lbl, user_data=n,
                                            callback=lambda s, a, u: self.add_node_at_menu(u))
         self._widgets.add("graph_search")
+
+    def _fill_quick(self):
+        """Favourites (starred in a node's menu) and the recently added, at
+        the top of the add menu."""
+        if not dpg.does_item_exist("graph_quick"):
+            return
+        dpg.delete_item("graph_quick", children_only=True)
+        favs = [n for n in self.app.prefs.get("fav_nodes", []) if n in self.lib]
+        rec = [n for n in self.app.prefs.get("recent_nodes", []) if n in self.lib and n not in favs]
+        for title, names in (("favourites", favs), ("recent", rec)):
+            if not names:
+                continue
+            with dpg.collapsing_header(label=title, default_open=True, parent="graph_quick"):
+                for n in names:
+                    dpg.add_selectable(label=self.lib[n].get("label", n), user_data=n,
+                                       callback=lambda s, a, u: self.add_node_at_menu(u))
+
+    def _note_recent(self, type_):
+        if type_ not in self.lib or self.lib[type_].get("decor"):
+            return
+        rec = [n for n in self.app.prefs.get("recent_nodes", []) if n != type_]
+        self.app.prefs["recent_nodes"] = ([type_] + rec)[:6]
+        from native.project import save_prefs
+        save_prefs(self.app.prefs)
+
+    def toggle_favourite(self, type_):
+        favs = list(self.app.prefs.get("fav_nodes", []))
+        if type_ in favs:
+            favs.remove(type_); self.status(f"{type_}: no longer a favourite")
+        else:
+            favs.append(type_); self.status(f"{type_}: a favourite, at the top of the add menu")
+        self.app.prefs["fav_nodes"] = favs
+        from native.project import save_prefs
+        save_prefs(self.app.prefs)
 
     def _hide_menus(self):
         for t in ("graph_menu", "graph_ctx"):
@@ -2201,6 +2742,7 @@ class GraphPanel:
             self.snapshot()
             nid = self.graph.add(type_, self._menu_pos)
             self._make_node(nid, self.graph.nodes[nid])
+            self._note_recent(type_)
         if type_ == "Frame":
             self._sync_pos(); self.rebuild()      # behind the nodes it now covers
         if self._pending and self._pending[0] == "into":

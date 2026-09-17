@@ -1985,6 +1985,9 @@ class App(Features):
             self.gp.on_release()
 
     def on_right_click(self, sender, app_data):
+        if self.layout == "graph" and (dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)):
+            if self.gp.knife_start():
+                return                                   # Ctrl+right-drag: the knife, not the menu
         for pane, tag in getattr(self, "pane_menus", {}).items():
             if pane == "side_win" and not any(dpg.is_item_hovered(f"sec_{k}_hdr") for k in self.SECTIONS
                                               if dpg.does_item_exist(f"sec_{k}_hdr")):
@@ -2081,6 +2084,9 @@ class App(Features):
             return
         if self.layout == "graph" and dpg.does_item_exist("node_editor") and dpg.is_item_hovered("node_editor") \
                 and not dpg.is_item_hovered("graph_menu") and not dpg.is_item_hovered("graph_ctx"):
+            ctrl = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
+            if ctrl and self.gp.step_hovered(app_data):
+                return                                   # Ctrl+wheel over a dropdown steps it
             self.gp.zoom_step(app_data, dpg.get_mouse_pos(local=False))
             return
         if not dpg.is_item_hovered("cube_img"):
@@ -2094,6 +2100,13 @@ class App(Features):
         # pair together.
         # Not while a value is being typed. The handler is global, so without
         # this, typing into a box would also be driving the layout.
+        if dpg.does_item_exist("palette_win") and dpg.is_item_shown("palette_win"):
+            # the palette has every key while it is up: Esc closes, Enter runs the first row
+            if app_data == dpg.mvKey_Escape:
+                dpg.hide_item("palette_win")
+            elif app_data in (dpg.mvKey_Return, dpg.mvKey_NumPadEnter):
+                chrome.palette_enter(self)
+            return
         if self.layout == "edit" and self.code_ed is not None and self.code_ed.focus:
             ctrl_ = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
             shift_ = dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift)
@@ -2130,6 +2143,8 @@ class App(Features):
                 self._capture = None
                 chrome.refresh_keys(self)
             return
+        if self.layout == "graph" and app_data == dpg.mvKey_Back and self.gp.reset_hovered():
+            return                                       # Backspace over a value: its default
         if self.layout == "graph" and binding is None:
             return
         if self.layout == "graph":
@@ -2208,6 +2223,21 @@ class App(Features):
             "frame_all":    gp.home,
             "stop_preview": gp.stop_preview,
             "focus_mode":   lambda: gp.set_focus_mode(not gp.focus_mode),
+            "select_all":   gp.select_all,
+            "select_none":  gp.select_none,
+            "select_invert": gp.select_invert,
+            "select_up":    lambda: gp.select_linked("up"),
+            "select_down":  lambda: gp.select_linked("down"),
+            "select_linked": lambda: gp.select_linked("both"),
+            "frame_selected": gp.frame_selected,
+            "snap":         gp.toggle_snap,
+            "dissolve":     gp.dissolve_selected,
+            "swap_inputs":  gp.swap_inputs,
+            "label_node":   gp.label_selected,
+            "frame_sel":    lambda: gp.frame_selection(),
+            "repeat":       self.repeat_last,
+            "palette":      lambda: chrome.show_palette(self),
+            "undo_history": lambda: chrome.show_undo_history(self),
             "history":      lambda: chrome.show_history(self),
             "compare":      lambda: self.stop_ab() if self.ab else chrome.show_compare(self),
             "script_preview": self.preview_script,
@@ -2216,7 +2246,16 @@ class App(Features):
         }
         fn = table.get(action)
         if fn:
+            if action not in ("repeat", "palette", "undo_history", "undo", "redo"):
+                self._last_action = action
             fn()
+
+    def repeat_last(self):
+        a = getattr(self, "_last_action", None)
+        if a:
+            self.run_action(a)
+        else:
+            self.gp.status("nothing to repeat yet")
 
     @staticmethod
     def _screen_rect(tag):
@@ -2231,7 +2270,7 @@ class App(Features):
         x, y = st.get("rect_min") or dpg.get_item_pos(tag)
         return (x, y, x + w, y + h)
 
-    FLOATING = ("frames_win", "keys_win", "flash_win", "where_win", "history_win", "compare_menu", "sweep_win", "wav_dialog", "appearance_win", "name_dialog", "device_dialog", "editor_dialog", "about_win",
+    FLOATING = ("frames_win", "keys_win", "flash_win", "where_win", "history_win", "palette_win", "undo_win", "compare_menu", "sweep_win", "wav_dialog", "appearance_win", "name_dialog", "device_dialog", "editor_dialog", "about_win",
                 "open_menu", "graph_menu", "graph_ctx", "project_dialog", "graph_import_dialog", "xyz_dialog")
 
 
@@ -2268,14 +2307,21 @@ class App(Features):
                 eh = dpg.get_item_rect_size("node_editor")[1]
                 clip = (pane[0] + 9, pane[3] - 9 - eh, pane[2] - 9, pane[3] - 9)
                 pad = self.gp.px(8)
-                for nid in self.gp._selected()[:8]:
+                sel = self.gp._selected()
+                boxes = []
+                for nid in sel:
                     tag = f"gnode_{nid}"
                     if not dpg.does_item_exist(tag):
                         continue
                     st = dpg.get_item_state(tag)
                     (x0, y0), (x1, y1) = st.get("rect_min", (0, 0)), st.get("rect_max", (0, 0))
                     if x1 > x0 and y1 > y0:          # the content rect; the node is a padding wider
-                        rects.append((x0 - pad, y0 - pad, x1 + pad, y1 + pad, clip, 1.0, "sel"))
+                        boxes.append((x0 - pad, y0 - pad, x1 + pad, y1 + pad))
+                if len(boxes) > 3:
+                    # a big selection wears one frame round the lot, not a frame each
+                    boxes = [(min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))]
+                for x0, y0, x1, y1 in boxes:
+                    rects.append((x0, y0, x1, y1, clip, 1.0, "sel"))
         # Every window that floats over the panes is a hole in the frames.
         holes = []
         for tag in self.FLOATING:
@@ -2471,6 +2517,8 @@ def build(app):
         dpg.add_mouse_release_handler(button=dpg.mvMouseButton_Left, callback=app.on_mouse_release)
         dpg.add_mouse_click_handler(button=dpg.mvMouseButton_Right, callback=app.on_right_click)
         dpg.add_mouse_wheel_handler(callback=app.on_wheel)
+        dpg.add_mouse_drag_handler(button=dpg.mvMouseButton_Right, callback=lambda s, a: app.gp.knife_drag())
+        dpg.add_mouse_release_handler(button=dpg.mvMouseButton_Right, callback=lambda s, a: app.gp.knife_end())
         dpg.add_mouse_drag_handler(button=dpg.mvMouseButton_Middle,
                                    callback=lambda s, a: app.gp.on_mid_drag((a[1], a[2])))
         dpg.add_mouse_release_handler(button=dpg.mvMouseButton_Middle, callback=lambda s, a: app.gp.on_mid_release())
@@ -2678,6 +2726,7 @@ def build(app):
     with dpg.viewport_drawlist(front=True, tag="snap_dl"):
         dpg.draw_rectangle((0, 0), (10, 10), tag="snap_rect", show=False, thickness=2,
                            color=tuple(chrome.ACCENT[:3]) + (230,), fill=tuple(chrome.ACCENT[:3]) + (50,))
+        dpg.draw_line((0, 0), (10, 10), tag="knife_line", show=False, thickness=2, color=(240, 90, 90, 230))
     dpg.set_primary_window("root", True)
     app.frames = glow.Frames()
     chrome.apply_frames(app)
@@ -2940,6 +2989,10 @@ def service_command(app):
                     app.gp.connect_selected()
                 finally:
                     _d.get_selected_nodes = _orig
+            if "palette" in c:                          # test hook: the command palette with this text
+                chrome.show_palette(app); dpg.set_value("palette_text", c["palette"]); chrome._palette_fill(app, c["palette"])
+            if "graph_select" in c:                     # test hook: the key selection, as A / Ctrl+[ would
+                app.gp.set_selection([int(x) for x in c["graph_select"]])
             if "graph_selected" in c:                   # test hook: a selection, held until cleared with []
                 app.gp._test_sel = [int(x) for x in c["graph_selected"]] or None
             if "graph_collapse" in c:

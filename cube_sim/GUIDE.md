@@ -42,7 +42,14 @@ node and pin explains itself in the box above the graph when hovered, and
 while the effect is on the cube the box shows the pin's live value. The
 bolt on the toolbar (**L**) rebuilds as you edit; F5 rebuilds on demand.
 Sub-graphs (select nodes, Ctrl+G) fold a cluster into one node you can
-reuse. File > History keeps a copy at every save.
+reuse. File > History keeps a copy at every save. The editor has the
+Blender habits: A selects all, Ctrl+[ / Ctrl+] grow the selection up or
+down the wires, Shift+Home frames it, Ctrl+Delete deletes a node and
+joins the wires across it, a node dropped on a wire is spliced in, a
+Ctrl+right-drag cuts wires, Alt while editing a value edits every
+selected node of that type, Backspace over a value resets it, Ctrl+P is
+the command palette and Ctrl+Alt+Z the undo history. Settings > Keyboard
+shortcuts lists the rest.
 
 **As code.** Ctrl+N in the code pane makes a `.cpp` from the effect
 skeleton; the editor colours it, errors from a build go to their lines,

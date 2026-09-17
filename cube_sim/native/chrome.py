@@ -110,6 +110,22 @@ def build_menus(app):
                 _mi(app, "Distribute across", "distribute_x", callback=lambda: app.gp.distribute("x"))
                 _mi(app, "Distribute down", "distribute_y", callback=lambda: app.gp.distribute("y"))
             dpg.add_separator()
+            _mi(app, "Undo history...", "undo_history", callback=lambda: show_undo_history(app))
+            _mi(app, "Repeat last action", "repeat", callback=lambda: app.repeat_last())
+            _mi(app, "Command palette...", "palette", callback=lambda: show_palette(app))
+            dpg.add_separator()
+            with dpg.menu(label="Select"):
+                _mi(app, "All", "select_all", callback=lambda: app.gp.select_all())
+                _mi(app, "None", "select_none", callback=lambda: app.gp.select_none())
+                _mi(app, "Invert", "select_invert", callback=lambda: app.gp.select_invert())
+                _mi(app, "What feeds the selection", "select_up", callback=lambda: app.gp.select_linked("up"))
+                _mi(app, "What the selection feeds", "select_down", callback=lambda: app.gp.select_linked("down"))
+                _mi(app, "Everything wired to it", "select_linked", callback=lambda: app.gp.select_linked("both"))
+            _mi(app, "Delete and reconnect", "dissolve", callback=lambda: app.gp.dissolve_selected())
+            _mi(app, "Swap the first two inputs", "swap_inputs", callback=lambda: app.gp.swap_inputs())
+            _mi(app, "Label the node...", "label_node", callback=lambda: app.gp.label_selected())
+            _mi(app, "Frame the selection", "frame_sel", callback=lambda: app.gp.frame_selection())
+            dpg.add_separator()
             _mi(app, "Find / replace in code", "find", callback=lambda: app.focus_find())
             _mi(app, "Open code in external editor", "external", callback=lambda: app.open_external())
         with dpg.menu(label="View"):
@@ -129,6 +145,8 @@ def build_menus(app):
             _mi(app, "Zoom out", "zoom_out", callback=lambda: app.gp.zoom_step(-1))
             _mi(app, "Zoom 100%", "zoom_reset", callback=lambda: app.gp.set_zoom(1.0))
             _mi(app, "Frame all", "frame_all", callback=lambda: app.gp.home())
+            _mi(app, "Frame the selection", "frame_selected", callback=lambda: app.gp.frame_selected())
+            _mi(app, "Snap to grid", "snap", check=True, tag="menu_snap", callback=lambda: app.gp.toggle_snap())
             dpg.add_separator()
             dpg.add_menu_item(label="Minimap", check=True, default_value=True, tag="menu_minimap",
                               callback=lambda s, a: dpg.configure_item("node_editor", minimap=bool(a)))
@@ -333,6 +351,17 @@ def build_dialogs(app):
     with dpg.window(tag="history_win", label="History", show=False, width=520, height=420, no_collapse=True):
         dpg.add_text("", tag="history_what", color=DIM, wrap=500)
         with dpg.child_window(tag="history_rows", height=-1, border=False):
+            pass
+    # the command palette: every action by name, Enter runs the first hit
+    with dpg.window(tag="palette_win", show=False, no_title_bar=True, no_resize=True, no_move=True, width=460, height=380,
+                    no_collapse=True):
+        dpg.add_input_text(tag="palette_text", hint="type an action (Esc closes)", width=440,
+                           callback=lambda s, v: _palette_fill(app, v))
+        with dpg.child_window(tag="palette_rows", height=-1, border=False):
+            pass
+    with dpg.window(tag="undo_win", label="Undo history", show=False, width=420, height=380, no_collapse=True):
+        dpg.add_text("the graph's edits, newest first; click one to go back to before it", color=DIM, wrap=400)
+        with dpg.child_window(tag="undo_rows", height=-1, border=False):
             pass
 
 
@@ -834,6 +863,60 @@ def show_history(app):
     dpg.show_item("history_win")
 
 
+def show_palette(app):
+    dpg.set_value("palette_text", "")
+    _palette_fill(app, "")
+    _centre("palette_win", 460, 380)
+    dpg.show_item("palette_win")
+    dpg.focus_item("palette_text")
+
+
+def _palette_fill(app, text):
+    """The rows: actions whose label or name has the text, the key beside
+    each; menu-only things are on the menus already."""
+    from native.keys import ACTIONS
+    text = (text or "").strip().lower()
+    dpg.delete_item("palette_rows", children_only=True)
+    ctx = "graph" if app.layout == "graph" else "global"
+    rows = []
+    for action, label, _, where in ACTIONS:
+        if where == "graph" and ctx != "graph":
+            continue
+        if text and text not in label.lower() and text not in action.replace("_", " "):
+            continue
+        rows.append((0 if text and label.lower().startswith(text) else 1, label, action))
+    rows.sort(key=lambda r: (r[0], r[1].lower()) if text else 0)
+    for _, label, action in rows[:40]:
+        with dpg.group(horizontal=True, parent="palette_rows"):
+            dpg.add_selectable(label=label, width=330, user_data=action,
+                               callback=lambda s, a, u: (dpg.hide_item("palette_win"), app.run_action(u)))
+            dpg.add_text(app.keys.label(action), color=DIM)
+    if not rows:
+        dpg.add_text("no action matches", parent="palette_rows", color=DIM)
+
+
+def palette_enter(app):
+    """Enter in the palette runs the first row."""
+    for k in dpg.get_item_children("palette_rows", 1) or []:
+        kids = dpg.get_item_children(k, 1) or []
+        if kids and dpg.get_item_user_data(kids[0]):
+            dpg.hide_item("palette_win")
+            app.run_action(dpg.get_item_user_data(kids[0]))
+            return
+
+
+def show_undo_history(app):
+    steps = app.gp.undo_steps()
+    dpg.delete_item("undo_rows", children_only=True)
+    for k, desc in enumerate(reversed(steps)):
+        dpg.add_selectable(label=f"{len(steps) - k:3d}  {desc}", parent="undo_rows", user_data=k + 1,
+                           callback=lambda s, a, u: (app.gp.undo_to(u), show_undo_history(app)))
+    if not steps:
+        dpg.add_text("nothing to undo", parent="undo_rows", color=DIM)
+    _centre("undo_win", 420, 380)
+    dpg.show_item("undo_win")
+
+
 def _restore(app, kind, stem, ext, path):
     from native import history
     text = open(path, encoding="utf-8").read()
@@ -1017,6 +1100,8 @@ def refresh(app):
     for v in ("net", "cube"):
         if dpg.does_item_exist(f"menu_pop_{v}"):
             dpg.set_value(f"menu_pop_{v}", app.popouts.is_out(v))
+    if dpg.does_item_exist("menu_snap"):
+        dpg.set_value("menu_snap", bool(app.prefs.get("snap")))
     for key, _, _ in LAYOUTS:
         on = app.layout == key and app.ui
         dpg.set_value(f"menu_view_{key}", on)
