@@ -110,7 +110,7 @@ static FX_RET mode_fracture() {
       for (size_t k = 0; k < lut; k++) rev[k] = 0xFFFF;
       for (int y = 0; y < rows; y++)
         for (int x = 0; x < cols; x++) {
-          if ((x / B) != 1 && (y / B) != 1) continue;
+          if (cfx_gap(x, y, B)) continue;
           const size_t ci = (size_t)cfx_cidx(x, y, cols, B, cube);
           float X, Y, Z; cfx_pos(x, y, cols, rows, B, cube, X, Y, Z);
           int f, a, b; cfx_face((int)(X * 127.0f), (int)(Y * 127.0f),
@@ -123,7 +123,7 @@ static FX_RET mode_fracture() {
     }
     for (int y = 0; y < rows; y++)
       for (int x = 0; x < cols; x++) {
-        if (cube && (x / B) != 1 && (y / B) != 1) continue;
+        if (cube && cfx_gap(x, y, B)) continue;
         const size_t ci = (size_t)cfx_cidx(x, y, cols, B, cube);
         float X, Y, Z; cfx_pos(x, y, cols, rows, B, cube, X, Y, Z);
         if (cube) {

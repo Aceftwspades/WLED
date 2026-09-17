@@ -89,7 +89,7 @@ static void ms_build(uint8_t *az, uint16_t *lr, int cols, int rows, int B,
 
   for (int y = 0; y < rows; y++) {
     for (int x = 0; x < cols; x++) {
-      if (cube && (x / B) != 1 && (y / B) != 1) continue;          // gap corner
+      if (cube && cfx_gap(x, y, B)) continue;          // gap corner
       const size_t i = (size_t)cfx_cidx(x, y, cols, B, cube);
       float X, Y, Z;
       cfx_pos(x, y, cols, rows, B, cube, X, Y, Z);

@@ -124,7 +124,7 @@ static FX_RET mode_cube_chladni() {
   for (int y = 0; y < rows; y++) {
     const uint8_t byb = cube ? (uint8_t)(y / B) : 1;
     for (int x = 0; x < cols; x++, i++) {
-      if (cube && byb != 1 && colBlk[x] != 1) continue;
+      if (cube && cfx_gapBlock(colBlk[x], byb)) continue;
 
       const int ux = (int)cx[i] + 128, uy = (int)cy[i] + 128, uz = (int)cz[i] + 128;
       const int lx = (int)tl[ux] - 128, ly = (int)tl[uy] - 128, lz = (int)tl[uz] - 128;

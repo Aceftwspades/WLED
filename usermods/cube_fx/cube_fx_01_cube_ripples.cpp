@@ -51,7 +51,7 @@ static FX_RET mode_cube_ripples() {
         si = (size_t)hw_random16((uint16_t)n);
         if (!cube) break;
         const int bx = (int)(si % cols) / B, by = (int)(si / cols) / B;
-        if (bx == 1 || by == 1) break;                 // not a gap corner
+        if (!cfx_gapBlock(bx, by)) break;              // not a gap corner
       }
       uint8_t b1 = 0;
       for (uint8_t k = 1; k < 16; k++) if (fft[k] > fft[b1]) b1 = k;

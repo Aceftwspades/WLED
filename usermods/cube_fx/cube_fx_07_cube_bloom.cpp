@@ -97,7 +97,7 @@ static FX_RET mode_cube_bloom() {
       const size_t si = (size_t)hw_random16((uint16_t)n);
       if (cube) {
         const int bx = (int)(si % cols) / B, by = (int)(si / cols) / B;
-        if (bx != 1 && by != 1) continue;                // gap corner
+        if (cfx_gapBlock(bx, by)) continue;              // gap corner
       }
       if (!SEGMENT.check2) { bestI = si; break; }        // random placement
       int err = (int)cz[si] - targetZ; if (err < 0) err = -err;
@@ -195,7 +195,7 @@ static FX_RET mode_cube_bloom() {
   for (int y = 0; y < rows; y++) {
     const uint8_t byb = cube ? (uint8_t)(y / B) : 1;
     for (int x = 0; x < cols; x++, i++) {
-      if (cube && byb != 1 && colBlk[x] != 1) continue;
+      if (cube && cfx_gapBlock(colBlk[x], byb)) continue;
       const int px = cx[i], py = cy[i], pz = cz[i];
 
       uint8_t best = 0, bh = 0;

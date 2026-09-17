@@ -93,6 +93,8 @@ class Engine:
         L.simEffectName.restype = C.c_char_p;  L.simEffectName.argtypes = [C.c_int]
         L.simEffectMeta.restype = C.c_char_p;  L.simEffectMeta.argtypes = [C.c_int]
         L.simInit.argtypes = [C.c_int, C.c_int]
+        if hasattr(L, "simSixFaces"):
+            L.simSixFaces.argtypes = [C.c_int]
         L.simParams.argtypes = [C.c_int] * 9
         L.simColors.argtypes = [C.c_uint32] * 3
         L.simFftPtr.restype = C.POINTER(C.c_uint8)
@@ -149,6 +151,11 @@ class Engine:
         self.geom = geom
         self.cols, self.rows = geom.w, geom.h
         self.B = geom.params.get("B", self.B) if geom.kind == "cube" else self.B
+        # a lit bottom face in the net's (2,2) block; the effects size their
+        # buffers by it, so it is set before anything is (re)initialised
+        self.six = bool(geom.kind == "cube" and geom.params.get("six"))
+        if hasattr(self.lib, "simSixFaces"):
+            self.lib.simSixFaces(int(self.six))
         self.lib.simInit(self.cols, self.rows)
         # the engine clamps what it cannot hold; a size it did not take would
         # leave the pixel view reading past the buffer
@@ -411,7 +418,10 @@ class Engine:
             return np.ones((self.rows, self.cols), bool)
         B = self.B
         yy, xx = np.mgrid[0:self.rows, 0:self.cols]
-        return ((xx // B) == 1) | ((yy // B) == 1)
+        m = ((xx // B) == 1) | ((yy // B) == 1)
+        if getattr(self, "six", False):
+            m |= ((xx // B) == 2) & ((yy // B) == 2)       # the bottom face
+        return m
 
     def lid_mask(self):
         B = self.B

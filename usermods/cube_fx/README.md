@@ -45,17 +45,29 @@ on the S3; the classic ESP32 also accepts an analog mic.
 The cube is a single matrix segment laid out as a **3×3 grid of B×B blocks**. The
 four corner blocks are unlit gaps; the centre block is the **top face** and the four
 edge blocks fold up into the **four walls**. The bottom is open — five faces, not
-six.
+six — unless you have a six-faced cube, in which case the **bottom face takes the
+bottom-right corner block** (under EAST, right of SOUTH) and the net stays the same
+3×3 square.
 
 ```
-        +--------+
-        | NORTH  |
-   +----+--------+----+
-   |WEST|  TOP   |EAST|
-   +----+--------+----+
-        | SOUTH  |
-        +--------+
+        +--------+                    +--------+
+        | NORTH  |                    | NORTH  |
+   +----+--------+----+          +----+--------+----+
+   |WEST|  TOP   |EAST|          |WEST|  TOP   |EAST|
+   +----+--------+----+          +----+--------+----+
+        | SOUTH  |                    | SOUTH  |BOTTOM|
+        +--------+                    +--------+------+
+          five faces                      six faces
 ```
+
+Six faces is a setting, not a different net: tick **six_faces** on the CubeFXBank
+usermod's settings page (or build with `-D CFX_SIX_FACES=1`, which the studio does
+for a project whose cube has six). Every effect that reads pixel positions through
+`cfx_pos()` — nearly all of them — lights the bottom as the sixth face; the bottom's
+orientation is `X = a, Y = -b, Z = -1`: looked at from below, north is up. A few
+effects that ride the walls as a band or walk cells across folds (Tron, Matrix Rain,
+Breakout, DNA Helix, Whirlpool, Cube Fire, Split GEQ) leave the bottom dark. The
+bottom-face ledmap letter is `B`; `faces` becomes `N,W,T,E,S,B`.
 
 **These names are a fixed convention, and getting the physical cube to match them
 is the whole of orientation setup.** Hold the cube the way you normally look at it:

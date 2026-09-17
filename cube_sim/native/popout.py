@@ -38,8 +38,8 @@ TITLES = {"cube": "3-D view", "net": "Logical net"}
 class Block:
     """The shared block. Ints: 0 alive, 1 frame seq, 2 rows, 3 cols, 4 cube
     (1: the net of a cube of B a face; 0: LEDs with positions), 5 B, 6 point
-    count, 7 geometry seq. Floats: yaw, pitch, dist. Then the pixels, then
-    the positions."""
+    count, 7 geometry seq, 8 six faces. Floats: yaw, pitch, dist. Then the
+    pixels, then the positions."""
 
     def __init__(self, name, create):
         size = HDR + MAX_NET + MAX_PTS * 4
@@ -142,6 +142,7 @@ class Popouts:
         blk.i[3] = cols
         blk.i[4] = 1 if cube else 0
         blk.i[5] = int(eng.B)
+        blk.i[8] = 1 if getattr(eng, "six", False) else 0
         if not cube and g is not None and view == "cube":
             pos = g.pos
             if id(pos) != self._pos_id:
@@ -263,7 +264,7 @@ def run(view, name):
             dpg.set_value("tex", rgba("src", px.repeat(k, 0).repeat(k, 1)))
             q = state["quads"]
             q.resize(int(size * 0.86), vw, vh)        # the drawlist is the window; the cube sits centred, a margin round it
-            q.camera(cam[0], cam[1], cam[2])
+            q.camera(cam[0], cam[1], cam[2], six=bool(blk.i[8]))
             state["size"] = size
         else:
             p = state["px"]

@@ -150,7 +150,13 @@ def stage(project, base_env, log, only=None):
         log(f"staged {USERMOD} with its own bank")
     env = "studio_" + base_env
     lines = [MARK_BEGIN, f"[env:{env}]", f"extends = env:{base_env}", "custom_usermods ="]
-    lines += [f"  {m}" for m in mods if m != USERMOD] + [f"  {USERMOD}", MARK_END, ""]
+    lines += [f"  {m}" for m in mods if m != USERMOD] + [f"  {USERMOD}"]
+    g = project.geometry
+    if g.kind == "cube" and g.params.get("six"):
+        # a lit bottom: the firmware's default, before the settings page says otherwise
+        lines += [f"build_flags = ${{env:{base_env}.build_flags}} -D CFX_SIX_FACES=1"]
+        log("six faces: -D CFX_SIX_FACES=1 (the bottom face in the net's (2,2) block)")
+    lines += [MARK_END, ""]
     path = os.path.join(ROOT, "platformio_override.ini")
     text = open(path, encoding="utf-8").read() if os.path.exists(path) else "[platformio]\n"
     if MARK_BEGIN in text and MARK_END in text:
@@ -266,11 +272,12 @@ def _get_json(host, path, timeout=5):
         return json.loads(r.read().decode("utf-8", "replace"))
 
 
-def push_settings(host, effect, params, palette, colours, seg_id=0, blend=None, opacity=None):
+def push_settings(host, effect, params, palette, colours, seg_id=0, blend=None, opacity=None, six=None):
     """The current effect and its settings to the device's first segment
     over /json/state: the effect and palette found by NAME in the device's
     own lists (its ids are its own), the sliders, the checkboxes, the three
-    colours. Returns (ok, message)."""
+    colours; and, for a cube, whether it has six faces (the CubeFXBank
+    usermod's setting, over /json/cfg). Returns (ok, message)."""
     import json
     host = (host or "").strip().rstrip("/")
     if not host:
@@ -305,6 +312,15 @@ def push_settings(host, effect, params, palette, colours, seg_id=0, blend=None, 
     except Exception as e:
         return False, f"the device refused the state: {e}"
     note = "" if pal is not None else f" (palette {palette!r} not on the device; left as is)"
+    if six is not None:
+        body = json.dumps({"um": {"CubeFXBank": {"six_faces": bool(six)}}}).encode()
+        req = urllib.request.Request(host + "/json/cfg", data=body, headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                r.read()
+            note += f"; {'six' if six else 'five'} faces"
+        except Exception as e:
+            note += f" (the six-face setting was not taken: {e})"
     return True, f"{effect} with its settings sent to {host} as effect {fx}" + note
 
 

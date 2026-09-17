@@ -56,8 +56,10 @@ project: always built, exported, shipped.
 
 ## Seeing it properly
 
-The geometry section sets the cube's face size (or a matrix, cylinder,
-sphere, strip, or an XYZ file), and for the cube its wiring - which face
+The geometry section sets the cube's face size and whether it has six
+faces (a lit bottom; it takes the net's bottom-right corner block, and
+the flash build and the settings push tell the device) - or a matrix,
+cylinder, sphere, strip, or an XYZ file - and for the cube its wiring - which face
 first, turns, serpentine - which is what the exported ledmap says. Audio
 comes from the synth (sliders, a beat clock), a live capture, or a WAV
 file. Playback has A/B compare (two effects side by side), a slider sweep,

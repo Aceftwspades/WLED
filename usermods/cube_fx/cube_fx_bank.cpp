@@ -1,5 +1,13 @@
 #include "wled.h"
 #include "cube_fx_bank.h"
+#include "cube_fx_common.h"
+
+// The one definition of the six-face flag (cube_fx_common.h): the build's
+// default, then whatever the settings page says.
+#ifndef CFX_SIX_FACES
+#define CFX_SIX_FACES 0
+#endif
+bool cfx_sixFaces = (CFX_SIX_FACES != 0);
 
 // ===========================================================================
 // cube_fx_bank.cpp - the settings page for the effect slots
@@ -30,6 +38,7 @@
 class CubeFxBankUsermod : public Usermod {
  private:
   bool     enabled = true;
+  bool     sixFaces = (CFX_SIX_FACES != 0);   // the bottom face lit, in the net's (2,2) block
   uint16_t slots[CFX_BANK_SLOTS] = {0};
 
   static const char _name[];
@@ -54,6 +63,7 @@ class CubeFxBankUsermod : public Usermod {
   void addToConfig(JsonObject &root) override {
     JsonObject top = root.createNestedObject(FPSTR(_name));
     top[F("enabled")] = enabled;
+    top[F("six_faces")] = sixFaces;
     char k[4];
     for (uint8_t i = 0; i < CFX_BANK_SLOTS; i++) { slotKey(i, k); top[k] = slots[i]; }
   }
@@ -63,6 +73,8 @@ class CubeFxBankUsermod : public Usermod {
     if (top.isNull()) return false;
 
     getJsonValue(top[F("enabled")], enabled, true);
+    getJsonValue(top[F("six_faces")], sixFaces, (bool)(CFX_SIX_FACES != 0));
+    cfx_sixFaces = sixFaces;
     char k[4];
     for (uint8_t i = 0; i < CFX_BANK_SLOTS; i++) {
       slotKey(i, k);
@@ -218,6 +230,9 @@ class CubeFxBankUsermod : public Usermod {
          "<b>on reboot</b>. An effect used in another slot is greyed out; leave a slot "
          "empty to keep it free. Untick to ignore the slots and register every "
          "compiled effect, as before the bank existed.");
+    info("six_faces",
+         "the cube has a lit bottom face, wired as the bottom-right corner block of the "
+         "net (the block under EAST, right of SOUTH). Untick for the usual five faces.");
   }
 
   uint16_t getId() override { return USERMOD_ID_UNSPECIFIED; }

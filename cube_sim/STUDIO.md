@@ -548,6 +548,21 @@ them within each group; ticked when done.
 
 ### Geometry
 
+- [x] **Six-faced cubes**: the geometry section's "six faces: the bottom
+      lit too" puts the BOTTOM face in the net's (2,2) corner block - the
+      net stays 3B x 3B, so cube detection and every buffer keep their
+      shape; that block just stops being a gap. In the firmware the flag is
+      `cfx_sixFaces` (cube_fx_common.h: `cfx_gap()`, `cfx_gapBlock()`,
+      `cfx_faces()`; the net-skip macros and `cfx_cidx` follow it, so the
+      graph's generated code and the Script effect light the bottom for
+      free), set by `-D CFX_SIX_FACES=1` - the studio adds it to the flash
+      env for a six-faced project - or by the CubeFXBank usermod's
+      `six_faces` setting, which "Send the current effect's settings" also
+      pushes. The sim has `simSixFaces`; the renderers draw the sixth face
+      (seen from below); the wiring takes `B` as a face letter. Effects
+      that hand-build the four walls as a band or walk cells across folds
+      (Tron, Matrix Rain, Breakout, DNA Helix, Whirlpool, Cube Fire, Split
+      GEQ) leave the bottom dark; everything reading `cfx_pos` lights it.
 - [x] **Ledmap import** (File > Project): from the device (`/ledmap.json`,
       which the firmware serves from its filesystem) or a file - a matrix
       with its gaps and wiring, or a strip. **The exported ledmap was the

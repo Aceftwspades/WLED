@@ -336,8 +336,28 @@ static inline bool cfx_isCube(int cols, int rows) {
   return !SEGMENT.check3 && cols == rows && cols >= 12 && (cols % 3) == 0;
 }
 
+// ---------------------------------------------------------------------------
+// Six faces
+// ---------------------------------------------------------------------------
+// A cube with a lit BOTTOM keeps the same 3B x 3B net: the bottom face lives in
+// the (2,2) corner block - the one under EAST, right of SOUTH. The net stays
+// square, so cube detection and every buffer keep their shape; that one block
+// simply stops being a gap. Its orientation is the one cfx_pos always gave
+// the gap corners (X = a, Y = -b, Z = -1): looking up at it from below, north
+// is up and east is to your left, as it would be. The flag comes from the
+// build (-D CFX_SIX_FACES=1, what the studio sets when the project's cube has
+// six faces), from the CubeFXBank usermod's settings, or from the simulator.
+// Everything that asks "is this pixel a gap" asks these, never the block
+// index directly.
+extern bool cfx_sixFaces;
+static inline int  cfx_faces() { return cfx_sixFaces ? 6 : 5; }
+static inline bool cfx_gapBlock(int bx, int by) {
+  return bx != 1 && by != 1 && !(cfx_sixFaces && bx == 2 && by == 2);
+}
+static inline bool cfx_gap(int x, int y, int B) { return cfx_gapBlock(x / B, y / B); }
+
 // Surface position of one pixel. If a face on your cube comes out rotated or
-// mirrored, only the five face lines below need changing - every effect in
+// mirrored, only the six face lines below need changing - every effect in
 // this file reads through here.
 static inline void cfx_pos(int x, int y, int cols, int rows, int B, bool cubeNet,
                            float &X, float &Y, float &Z) {
@@ -351,7 +371,7 @@ static inline void cfx_pos(int x, int y, int cols, int rows, int B, bool cubeNet
     else if (bx == 1 && by == 2) { X =  a; Y = -1.0f; Z = -b; }  // SOUTH
     else if (bx == 0 && by == 1) { X = -1.0f; Y = -b; Z =  a; }  // WEST
     else if (bx == 2 && by == 1) { X =  1.0f; Y = -b; Z = -a; }  // EAST
-    else                         { X =  a; Y = -b; Z = -1.0f; }  // gap corners
+    else                         { X =  a; Y = -b; Z = -1.0f; }  // BOTTOM at (2,2) when six; the gap corners
   } else {
     X = 2.0f * (x + 0.5f) / (float)cols - 1.0f;
     Y = 1.0f - 2.0f * (y + 0.5f) / (float)rows;
@@ -839,12 +859,14 @@ inline uint16_t cfx_dropDt(uint16_t dtMs, uint16_t speedScale) {
 }
 
 // --- cube-net gap skipping --------------------------------------------------
-// The four corner blocks of the net are unlit: 44% of the pixel work. These
-// need `cube` and `B` in scope, so they follow the Flat mode checkbox.
+// The corner blocks of the net are unlit (four of them, or three with a lit
+// bottom): 44% of the pixel work. These need `cube` and `B` in scope, so they
+// follow the Flat mode checkbox. A column is 0 in the middle band, 1 left, 2
+// right; a row likewise; a corner is skipped unless it is the six-face bottom.
 #define CFX_NET_PREP()  uint8_t _outCol[cols]; \
-                        if (cube) for (int _c = 0; _c < cols; _c++) _outCol[_c] = (uint8_t)((_c / B) != 1)
-#define CFX_NET_ROW(Y)  const bool _outRow = cube && (((Y) / B) != 1)
-#define CFX_NET_SKIP(X) if (_outRow && _outCol[X]) continue
+                        if (cube) for (int _c = 0; _c < cols; _c++) _outCol[_c] = (uint8_t)(((_c / B) != 1) ? (1 + ((_c / B) == 2)) : 0)
+#define CFX_NET_ROW(Y)  const uint8_t _outRow = (uint8_t)((cube && (((Y) / B) != 1)) ? (1 + (((Y) / B) == 2)) : 0)
+#define CFX_NET_SKIP(X) if (_outRow && _outCol[X] && !(cfx_sixFaces && _outRow == 2 && _outCol[X] == 2)) continue
 
 // ---------------------------------------------------------------------------
 // Storage that skips the gaps too
@@ -865,20 +887,21 @@ inline uint16_t cfx_dropDt(uint16_t dtMs, uint16_t speedScale) {
 //   y < 2B    middle band, x in [0,3B)  -> [B^2,  4B^2)
 //   else      SOUTH band, x in [B,2B)   -> [4B^2, 5B^2)
 //
-// Five blocks of B^2 - one per lit face - against nine for the rectangle. On a
-// flat panel every pixel is lit, so this is the identity mapping and costs
-// nothing. Only ever pass coordinates that survived CFX_NET_SKIP: a gap corner
-// has no slot and would alias onto a real pixel's.
+// Five blocks of B^2 - one per lit face - against nine for the rectangle; six
+// with a lit bottom, whose block sits beside SOUTH so the south band is simply
+// twice as wide. On a flat panel every pixel is lit, so this is the identity
+// mapping and costs nothing. Only ever pass coordinates that survived
+// CFX_NET_SKIP: a gap corner has no slot and would alias onto a real pixel's.
 static inline int cfx_cidx(int x, int y, int cols, int B, bool cube) {
   if (!cube) return y * cols + x;
   const int BB = B * B;
   if (y <     B) return              y * B + (x - B);
   if (y < 2 * B) return BB + (y -     B) * 3 * B + x;
-  return          4 * BB + (y - 2 * B) * B + (x - B);
+  return          4 * BB + (y - 2 * B) * (cfx_sixFaces ? 2 * B : B) + (x - B);
 }
 
 static inline size_t cfx_litCount(int cols, int rows, int B, bool cube) {
-  return cube ? (size_t)5 * B * B : (size_t)cols * rows;
+  return cube ? (size_t)cfx_faces() * B * B : (size_t)cols * rows;
 }
 
 // custom3 is a FIVE-BIT slider. Widen it before using it as a full byte.
@@ -1156,7 +1179,7 @@ static inline void cfx_buildRev(uint16_t *rev, int cols, int rows, int B) {
   for (size_t k = 0; k < (size_t)6 * Bq * Bq; k++) rev[k] = 0xFFFF;
   for (int y = 0; y < rows; y++)
     for (int x = 0; x < cols; x++) {
-      if ((x / B) != 1 && (y / B) != 1) continue;
+      if (cfx_gap(x, y, B)) continue;
       float X, Y, Z; cfx_pos(x, y, cols, rows, B, true, X, Y, Z);
       int f, a, b; cfx_face(cfx_clamp8(X), cfx_clamp8(Y), cfx_clamp8(Z), f, a, b);
       int ai = ((a + 128) * Bq) >> 8, bi = ((b + 128) * Bq) >> 8;
@@ -1249,7 +1272,7 @@ static void cfx_buildBand(uint8_t *bu, uint8_t *bv, int cols, int rows, bool cub
       if (!cubeNet) { bu[i] = (uint8_t)x; bv[i] = (uint8_t)y; continue; }
       const int bx = x / B, by = y / B, lx = x % B, ly = y % B;
       if (bx == 1 && by == 1) { bu[i] = 255; bv[i] = 0; continue; }   // top face
-      if (bx != 1 && by != 1) { bu[i] = 255; bv[i] = 0; continue; }   // gap corner
+      if (bx != 1 && by != 1) { bu[i] = 255; bv[i] = 0; continue; }   // gap corner, or the bottom: not a wall
       if      (by == 0) { bu[i] = (uint8_t)(lx);                 bv[i] = (uint8_t)(B - 1 - ly); }
       else if (bx == 2) { bu[i] = (uint8_t)(B + ly);             bv[i] = (uint8_t)(lx);         }
       else if (by == 2) { bu[i] = (uint8_t)(2 * B + B - 1 - lx); bv[i] = (uint8_t)(ly);         }
@@ -1330,7 +1353,8 @@ static void cfx_buildDirLut(uint16_t *lut) {
       }
 }
 
-// Pixel -> surface cell, all five faces. 0xFFFF for gaps.
+// Pixel -> surface cell, the five faces the cycles ride. 0xFFFF for gaps and
+// for the six-face bottom, which the transition table treats as a wall.
 static void cfx_buildCells(uint16_t *cellOf, int cols, int rows, bool cube, int B) {
   for (int y = 0; y < rows; y++)
     for (int x = 0; x < cols; x++) {

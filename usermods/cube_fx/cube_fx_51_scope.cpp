@@ -83,7 +83,7 @@ static FX_RET mode_scope() {
   const int  B    = cube ? (cols / 3) : 1;
   const int  Bq   = cube ? B : 1;
   const size_t lut = cube ? (size_t)6 * Bq * Bq : 0;
-  const size_t m   = cube ? (size_t)5 * B * B : n;
+  const size_t m   = cube ? (size_t)cfx_faces() * B * B : n;
 
   const size_t need = sizeof(ScState) + 3 * m + lut * sizeof(uint16_t);
   if (!SEGENV.allocateData(need)) { SEGMENT.fill(SEGCOLOR(0)); FX_DONE; }

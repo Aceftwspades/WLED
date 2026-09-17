@@ -108,7 +108,7 @@ static FX_RET mode_warp() {
   const int  B    = cube ? (cols / 3) : 1;
   const int  Bq   = cube ? B : 1;
   const size_t lut = cube ? (size_t)6 * Bq * Bq : 0;
-  const size_t m   = cube ? (size_t)5 * B * B : n;
+  const size_t m   = cube ? (size_t)cfx_faces() * B * B : n;
 
   const size_t need = sizeof(WpState) + 3 * m + 3 * m + 3 * m + lut * sizeof(uint16_t);
   if (!SEGENV.allocateData(need)) { SEGMENT.fill(SEGCOLOR(0)); FX_DONE; }
@@ -137,7 +137,7 @@ static FX_RET mode_warp() {
       cfx_buildCube(sc, sc + n, sc + 2 * n, nullptr, nullptr, cols, rows, cube);
       for (int y = 0; y < rows; y++)
         for (int x = 0; x < cols; x++) {
-          if ((x / B) != 1 && (y / B) != 1) continue;
+          if (cfx_gap(x, y, B)) continue;
           const size_t src = (size_t)y * cols + x;
           const size_t ci  = (size_t)cfx_cidx(x, y, cols, B, cube);
           cx[ci] = sc[src]; cy[ci] = sc[n + src]; cz[ci] = sc[2 * n + src];

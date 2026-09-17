@@ -236,7 +236,7 @@ static FX_RET mode_sauron() {
         size_t j = 0;
         for (int y = 0; y < rows; y++)
           for (int x = 0; x < cols; x++) {
-            if ((x / B) != 1 && (y / B) != 1) continue;    // gap corner
+            if (cfx_gap(x, y, B)) continue;    // gap corner
             to[j++] = from[(size_t)y * cols + x];
           }
       }

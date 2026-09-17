@@ -218,6 +218,11 @@ static void registerStock() {
 void    cfxSetPaletteSource(uint8_t s);
 uint8_t cfxGetPaletteSource();
 
+// The six-face flag's one definition (cube_fx_common.h declares it; the sim
+// does not compile the bank, where the firmware's lives). C++ linkage, so it
+// sits outside the block.
+bool cfx_sixFaces = false;
+
 extern "C" {
 
 SIM_API int simEffectCount() { registerStock(); return (int)cfxBankCount(); }
@@ -391,6 +396,9 @@ SIM_API void simSetMap1D2D(int m) {
   gSegs[gCurSeg].map1d2d = (uint8_t)(m < 0 ? 0 : (m > 4 ? 4 : m));
   Segment::map1D2D = gSegs[gCurSeg].map1d2d;
 }
+
+// Six faces: the bottom lit, in the net's (2,2) block (cube_fx_common.h).
+SIM_API void simSixFaces(int on) { cfx_sixFaces = (on != 0); }
 
 SIM_API int simWidth()  { return gStripW; }
 SIM_API int simHeight() { return gStripH; }

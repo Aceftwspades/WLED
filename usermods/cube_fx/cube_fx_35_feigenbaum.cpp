@@ -115,7 +115,7 @@ static FX_RET mode_feigenbaum() {
 
     for (int y = 0; y < rows; y++)
       for (int x = 0; x < cols; x++) {
-        if (cube && (x / B) != 1 && (y / B) != 1) continue;
+        if (cube && cfx_gap(x, y, B)) continue;
         const size_t ci = (size_t)cfx_cidx(x, y, cols, B, cube);
         float X, Y, Z; cfx_pos(x, y, cols, rows, B, cube, X, Y, Z);
         float u, v;

@@ -130,7 +130,7 @@ static FX_RET mode_soap() {
   const size_t lut = cube ? (size_t)6 * Bq * Bq : 0;
 
   // Everything below is sized to the LIT pixels only - see cfx_cidx().
-  const size_t m = cube ? (size_t)5 * B * B : n;
+  const size_t m = cube ? (size_t)cfx_faces() * B * B : n;
 
   const size_t need = sizeof(SoapState) + 3 * m      // surface coords
                     + 3 * m + 3 * m                  // colour buffer + next
@@ -164,7 +164,7 @@ static FX_RET mode_soap() {
       cfx_buildCube(sc, sc + n, sc + 2 * n, nullptr, nullptr, cols, rows, cube);
       for (int y = 0; y < rows; y++)
         for (int x = 0; x < cols; x++) {
-          if ((x / B) != 1 && (y / B) != 1) continue;     // gap corner: no storage
+          if (cfx_gap(x, y, B)) continue;     // gap corner: no storage
           const size_t src = (size_t)y * cols + x;
           const size_t ci  = (size_t)cfx_cidx(x, y, cols, B, cube);
           cx[ci] = sc[src]; cy[ci] = sc[n + src]; cz[ci] = sc[2 * n + src];
@@ -173,7 +173,7 @@ static FX_RET mode_soap() {
       for (size_t k = 0; k < lut; k++) rev[k] = 0xFFFF;
       for (int y = 0; y < rows; y++)
         for (int x = 0; x < cols; x++) {
-          if ((x / B) != 1 && (y / B) != 1) continue;
+          if (cfx_gap(x, y, B)) continue;
           const size_t ci = (size_t)cfx_cidx(x, y, cols, B, cube);
           int f, a, b; cfx_face(cx[ci], cy[ci], cz[ci], f, a, b);
           int ai = ((a + 128) * Bq) >> 8, bi = ((b + 128) * Bq) >> 8;
@@ -266,7 +266,7 @@ static FX_RET mode_soap() {
   // --- the colour source: a slowly morphing noise field -------------------------
   for (int y = 0; y < rows; y++) {
     for (int x = 0; x < cols; x++) {
-      if (cube && (x / B) != 1 && (y / B) != 1) continue;      // gap: no storage
+      if (cube && cfx_gap(x, y, B)) continue;      // gap: no storage
       const size_t ci = cube ? (size_t)cfx_cidx(x, y, cols, B, cube) : (size_t)y * cols + x;
       const int u = cube ? (cx[ci] + 128) : ((x * 255) / (cols - 1));
       const int v = cube ? (cy[ci] + 128) : ((y * 255) / (rows - 1));
@@ -291,7 +291,7 @@ static FX_RET mode_soap() {
   // --- transport ------------------------------------------------------------------
   for (int y = 0; y < rows; y++) {
     for (int x = 0; x < cols; x++) {
-      if (cube && (x / B) != 1 && (y / B) != 1) continue;     // gap: no storage
+      if (cube && cfx_gap(x, y, B)) continue;     // gap: no storage
       const size_t i = cube ? (size_t)cfx_cidx(x, y, cols, B, cube) : (size_t)y * cols + x;
 
       uint8_t out[3];

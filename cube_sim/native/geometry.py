@@ -15,7 +15,8 @@ Kinds:
              start corner - which affect only the PHYSICAL order (the ledmap),
              never what the effect sees
   cube       the five-face net this project was built for: 3B x 3B logical
-             with the four corner blocks unlit, positions on a cube's faces
+             with the four corner blocks unlit, positions on a cube's faces;
+             `six` lights the bottom face too, in the (2,2) corner block
   cylinder   w round, h tall - a matrix rolled into a tube, seamless in x
   sphere     w round, h latitude rows - a matrix wrapped onto a globe
   torus      w round the ring, h round the tube
@@ -117,7 +118,7 @@ class Geometry:
         elif k == "cube":
             B = self._clamp("B", 16)
             self.w = self.h = 3 * B
-            pos, lit = _cube_net(B)
+            pos, lit = _cube_net(B, bool(p.get("six")))
             self.pos, self.lit = pos, lit
             if p.get("faces"):
                 self.phys = self._cube_order(B, p)
@@ -195,24 +196,26 @@ class Geometry:
                 out += [y * w + xx for y in ys]
         return np.asarray(out)
 
-    FACES = {"N": (1, 0), "W": (0, 1), "T": (1, 1), "E": (2, 1), "S": (1, 2)}
+    FACES = {"N": (1, 0), "W": (0, 1), "T": (1, 1), "E": (2, 1), "S": (1, 2), "B": (2, 2)}
 
     @classmethod
     def _cube_order(cls, B, p):
         """The cube's wiring: the faces in the order given (N W T E S as the
-        net shows them), each turned by quarter turns and walked as WLED's
-        panel options say (serpentine, vertical, start corner)."""
+        net shows them, and B for the bottom of a six-faced cube), each
+        turned by quarter turns and walked as WLED's panel options say
+        (serpentine, vertical, start corner)."""
         names = cls.FACES
+        have = "NWTESB" if p.get("six") else "NWTES"
         order, seen = [], set()
         for f in str(p.get("faces", "")).upper().replace(" ", "").split(","):
-            if f in names and f not in seen:
+            if f in have and f not in seen:
                 order.append(f); seen.add(f)
-        order += [f for f in "NWTES" if f not in seen]
+        order += [f for f in have if f not in seen]
         rots = []
         for r in str(p.get("rots", "")).split(","):
             r = r.strip()
             rots.append(int(r) % 4 if r.lstrip("-").isdigit() else 0)
-        rots += [0] * (5 - len(rots))
+        rots += [0] * (len(have) - len(rots))
         n = 3 * B
         walk = cls._matrix_order(B, B, p)
         grid = np.stack(np.mgrid[0:B, 0:B], axis=-1)           # (y, x) of each local pixel
@@ -257,7 +260,7 @@ class Geometry:
         k, p = self.kind, self.params
         if k == "strip":    return f"strip, {self.w} LEDs" + (" (ring)" if p.get("ring") else "")
         if k == "matrix":   return f"matrix {self.w}x{self.h}"
-        if k == "cube":     return f"cube, {p.get('B', 16)} px faces ({self.count} LEDs)"
+        if k == "cube":     return f"cube, {p.get('B', 16)} px faces, {'six' if p.get('six') else 'five'} ({self.count} LEDs)"
         if k == "cylinder": return f"cylinder {self.w} round x {self.h}"
         if k == "sphere":   return f"sphere {self.w} round x {self.h} rows"
         if k == "torus":    return f"torus {self.w} x {self.h}"
@@ -298,9 +301,10 @@ class Geometry:
         return cls("xyz", points=pts, source=os.path.basename(path))
 
 
-def _cube_net(B):
+def _cube_net(B, six=False):
     """Positions on the cube's faces for the 3B x 3B net, from the same face
-    lines cfx_pos uses (cube_fx_common.h). Unlit where the net has no face."""
+    lines cfx_pos uses (cube_fx_common.h). Unlit where the net has no face;
+    with `six` the (2,2) corner block is the bottom face."""
     n = 3 * B
     pos = np.full((n * n, 3), np.nan, np.float32)
     lit = np.zeros(n * n, bool)
@@ -315,6 +319,7 @@ def _cube_net(B):
             elif bx == 1 and by == 2: X, Y, Z = a, -1.0, -b       # SOUTH
             elif bx == 0 and by == 1: X, Y, Z = -1.0, -b, a       # WEST
             elif bx == 2 and by == 1: X, Y, Z = 1.0, -b, -a       # EAST
+            elif six and bx == 2 and by == 2: X, Y, Z = a, -b, -1.0   # BOTTOM
             else:
                 continue
             i = y * n + x

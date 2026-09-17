@@ -98,7 +98,7 @@ static FX_RET mode_cube_frame() {
   for (int y = 0; y < rows; y++) {
     const uint8_t byb = cube ? (uint8_t)(y / B) : 1;
     for (int x = 0; x < cols; x++, i++) {
-      if (cube && byb != 1 && colBlk[x] != 1) continue;
+      if (cube && cfx_gapBlock(colBlk[x], byb)) continue;
       const int px = cx[i], py = cy[i], pz = cz[i];
       const int rx = (int)((m00 * px + m01 * py + m02 * pz) / 256);
       const int ry = (int)((m10 * px + m11 * py + m12 * pz) / 256);

@@ -135,7 +135,7 @@ static FX_RET mode_cube_edges() {
   for (int y = 0; y < rows; y++) {
     const uint8_t byb = cube ? (uint8_t)(y / B) : 1;
     for (int x = 0; x < cols; x++, i++) {
-      if (cube && byb != 1 && colBlk[x] != 1) continue;  // gap corner - skip the work
+      if (cube && cfx_gapBlock(colBlk[x], byb)) continue;  // gap corner - skip the work
       const int d = (int)ed[i];
 
       // The wave DISPLACES the lit line instead of dimming it: the line sits

@@ -33,6 +33,9 @@ FACES = [
     _face(0, 1, lambda a, b: (-1.0, -b, a)),   # WEST
     _face(2, 1, lambda a, b: (1.0, -b, -a)),   # EAST
 ]
+# the sixth: a lit bottom, in the net's (2,2) corner block (cfx_pos's line for it)
+BOTTOM = _face(2, 2, lambda a, b: (a, -b, -1.0))
+FACES6 = FACES + [BOTTOM]
 
 
 def _homography(src, dst):
@@ -79,10 +82,11 @@ def _grid(size):
     return g
 
 
-def render(net_rgb, B, size, yaw, pitch, dist, fov=38.0, bg=(0, 0, 0)):
+def render(net_rgb, B, size, yaw, pitch, dist, fov=38.0, bg=(0, 0, 0), six=False):
     """Draw the cube from the unfolded net image.
 
     net_rgb : (3B, 3B, 3) uint8 - the same image the flat view shows
+    six     : the bottom face too (seen from below)
     returns : (size, size, 3) uint8
     """
     out = np.zeros((size, size, 3), np.uint8)
@@ -91,7 +95,7 @@ def render(net_rgb, B, size, yaw, pitch, dist, fov=38.0, bg=(0, 0, 0)):
     f = (size * 0.5) / np.tan(np.radians(fov) * 0.5)
 
     drawn = []
-    for fc in FACES:
+    for fc in (FACES6 if six else FACES):
         c = fc["corners"]
         centre = c.mean(axis=0)
         # Outward normal of a cube face is its own centre direction. Cull when

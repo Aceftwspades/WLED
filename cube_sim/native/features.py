@@ -25,7 +25,7 @@ class Features:
         g = self.project.geometry
         params = dict(g.params); params[key] = bool(val)
         if g.kind == "cube" and not params.get("faces"):
-            params["faces"] = "N,W,T,E,S"
+            params["faces"] = "N,W,T,E,S,B" if params.get("six") else "N,W,T,E,S"
         self.apply_geometry(Geometry(g.kind, **params))
     def import_ledmap(self, path=None, host=None):
         """A WLED ledmap, from a file or fetched from the device, becomes the
@@ -275,7 +275,8 @@ class Features:
         if self.eng.seg_count() >= 1:
             g = self.eng.seg_get(self.eng.seg); bm, op = g[6], g[4]
         ok, msg = flash.push_settings(host, self.eng.names[self.eng.idx], params,
-                                      self.palette_name_for(self.eng.pal), self.seg_cols, seg_id=self.eng.seg, blend=bm, opacity=op)
+                                      self.palette_name_for(self.eng.pal), self.seg_cols, seg_id=self.eng.seg, blend=bm, opacity=op,
+                                      six=self.eng.six if self.project.geometry.kind == "cube" else None)
         dpg.set_value("edit_status", msg); self.gp.status(msg)
     # --- A/B: two effects side by side ------------------------------------------
     # The engine is one strip in one DLL, so a second effect needs a second

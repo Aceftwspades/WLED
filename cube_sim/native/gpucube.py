@@ -20,7 +20,7 @@ at a few times its size to keep the LED grid crisp; see App.draw.
 import numpy as np
 import dearpygui.dearpygui as dpg
 
-from native.render import FACES, _camera
+from native.render import FACES6 as FACES, _camera
 
 N = 8            # sub-quads across a face
 FOV = 38.0
@@ -64,10 +64,11 @@ class CubeQuads:
             dpg.configure_item(self.tag, width=w, height=h)
             self._last = None
 
-    def camera(self, yaw, pitch, dist):
-        """Project every corner; a face pointing away is hidden. Nothing is
-        touched when the camera and size are as they were."""
-        key = (round(yaw, 4), round(pitch, 4), round(dist, 3), self.size)
+    def camera(self, yaw, pitch, dist, six=False):
+        """Project every corner; a face pointing away is hidden, and so is
+        the bottom unless the cube has six. Nothing is touched when the
+        camera and size are as they were."""
+        key = (round(yaw, 4), round(pitch, 4), round(dist, 3), self.size, self.w, self.h, bool(six))
         if key == self._last or not self.size:
             return
         self._last = key
@@ -79,7 +80,7 @@ class CubeQuads:
             c = fc["corners"]
             centre = c.mean(axis=0)
             quads = self.items[fi]
-            if np.dot(centre, centre - eye) >= 0:
+            if np.dot(centre, centre - eye) >= 0 or (fi == 5 and not six):
                 for q in quads:
                     dpg.configure_item(q, show=False)
                 continue

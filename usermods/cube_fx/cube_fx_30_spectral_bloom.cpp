@@ -230,7 +230,7 @@ static FX_RET mode_spectral_bloom() {
       cfx_buildCube(sc, sc + n, sc + 2 * n, nullptr, nullptr, cols, rows, cube);
       for (int y = 0; y < rows; y++)
         for (int x = 0; x < cols; x++) {
-          if ((x / B) != 1 && (y / B) != 1) continue;
+          if (cfx_gap(x, y, B)) continue;
           const size_t src = (size_t)y * cols + x;
           const size_t ci  = (size_t)cfx_cidx(x, y, cols, B, cube);
           cx[ci] = sc[src]; cy[ci] = sc[n + src]; cz[ci] = sc[2 * n + src];
@@ -238,7 +238,7 @@ static FX_RET mode_spectral_bloom() {
       for (size_t k = 0; k < lut; k++) rev[k] = 0xFFFF;
       for (int y = 0; y < rows; y++)
         for (int x = 0; x < cols; x++) {
-          if ((x / B) != 1 && (y / B) != 1) continue;
+          if (cfx_gap(x, y, B)) continue;
           const size_t ci = (size_t)cfx_cidx(x, y, cols, B, cube);
           int f, a, b; cfx_face(cx[ci], cy[ci], cz[ci], f, a, b);
           int ai = ((a + 128) * Bq) >> 8, bi = ((b + 128) * Bq) >> 8;
@@ -502,7 +502,7 @@ static FX_RET mode_spectral_bloom() {
   // --- transport ------------------------------------------------------------------
   for (int y = 0; y < rows; y++) {
     for (int x = 0; x < cols; x++) {
-      if (cube && (x / B) != 1 && (y / B) != 1) continue;
+      if (cube && cfx_gap(x, y, B)) continue;
       const size_t i = (size_t)cfx_cidx(x, y, cols, B, cube);
       uint8_t out[3];
 

@@ -119,9 +119,9 @@ static inline int fx_netB(int cols, int rows) {
 }
 #define FX_NET_PREP()  const int _netB = fx_netB(cols, rows); \
                        uint8_t _outCol[cols]; \
-                       if (_netB) for (int _c = 0; _c < cols; _c++) _outCol[_c] = (uint8_t)((_c / _netB) != 1)
-#define FX_NET_ROW(Y)  const bool _outRow = _netB && (((Y) / _netB) != 1)
-#define FX_NET_SKIP(X) if (_outRow && _outCol[X]) continue
+                       if (_netB) for (int _c = 0; _c < cols; _c++) _outCol[_c] = (uint8_t)(((_c / _netB) != 1) ? (1 + ((_c / _netB) == 2)) : 0)
+#define FX_NET_ROW(Y)  const uint8_t _outRow = (uint8_t)((_netB && (((Y) / _netB) != 1)) ? (1 + (((Y) / _netB) == 2)) : 0)
+#define FX_NET_SKIP(X) if (_outRow && _outCol[X] && !(cfx_sixFaces && _outRow == 2 && _outCol[X] == 2)) continue   // the (2,2) corner is the six-face bottom
 
 // Fast attack, slow release. The difference between punchy and seizure.
 static void fx_smoothSpec(uint8_t *spec, const uint8_t *fft, uint8_t sm) {

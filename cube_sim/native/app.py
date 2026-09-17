@@ -389,7 +389,7 @@ class App(Features):
         g = eng.geom
         if g is not None and g.kind == "cube" and not eng.fx.get("o3"):
             return render.render(net if net.shape[0] == eng.rows else eng.rgb(),
-                                 eng.B, px, self.yaw, self.pitch, self.dist)
+                                 eng.B, px, self.yaw, self.pitch, self.dist, six=eng.six)
         rgb = eng.rgb().reshape(-1, 3)
         if g is None:
             return np.zeros((px, px, 3), np.uint8)
@@ -637,7 +637,7 @@ class App(Features):
         "matrix":   [("w", "width", 1, 256), ("h", "height", 1, 256),
                      ("serpentine", "serpentine", None, None), ("vertical", "vertical", None, None),
                      ("start_right", "start right", None, None), ("start_bottom", "start bottom", None, None)],
-        "cube":     [("B", "pixels per face", 4, 85)],
+        "cube":     [("B", "pixels per face", 4, 85), ("six", "six faces: the bottom lit too", None, None)],
         "cylinder": [("w", "around", 3, 256), ("h", "tall", 1, 256)],
         "sphere":   [("w", "around", 3, 256), ("h", "rows", 2, 128)],
         "torus":    [("w", "around", 3, 256), ("h", "tube", 3, 64)],
@@ -679,7 +679,7 @@ class App(Features):
         g = self.project.geometry
         params = dict(g.params); params[key] = val
         if key in ("faces", "rots") and not params.get("faces"):
-            params["faces"] = "N,W,T,E,S"           # a wiring is being set: leave the raster order
+            params["faces"] = "N,W,T,E,S,B" if params.get("six") else "N,W,T,E,S"   # a wiring is being set: leave the raster order
         self.apply_geometry(Geometry(g.kind, **params))
 
 
@@ -720,10 +720,10 @@ class App(Features):
             # walked - what the exported ledmap says
             dpg.add_text("wiring (the ledmap)", parent="geom_fields", color=(139, 147, 163))
             dpg.add_input_text(label="faces, in wiring order", parent="geom_fields", user_data="faces", width=110,
-                               default_value=str(g.params.get("faces", "")), hint="N,W,T,E,S", on_enter=True,
+                               default_value=str(g.params.get("faces", "")), hint="N,W,T,E,S,B" if g.params.get("six") else "N,W,T,E,S", on_enter=True,
                                callback=self.on_geom_field)
             dpg.add_input_text(label="quarter turns per face", parent="geom_fields", user_data="rots", width=110,
-                               default_value=str(g.params.get("rots", "")), hint="0,0,0,0,0", on_enter=True,
+                               default_value=str(g.params.get("rots", "")), hint="0,0,0,0,0,0" if g.params.get("six") else "0,0,0,0,0", on_enter=True,
                                callback=self.on_geom_field)
             for row in ((("serpentine", "serpentine"), ("vertical", "vertical")),
                         (("start_right", "from right"), ("start_bottom", "from bottom"))):
@@ -2414,7 +2414,7 @@ class App(Features):
             k = self.CUBE_SRC_SCALE
             src = net if net.shape[0] == self.eng.rows else self.net_image()
             dpg.set_value("cube_src_tex", self._rgba("cube_src", src.repeat(k, 0).repeat(k, 1)))
-            self.cube_quads.camera(self.yaw, self.pitch, self.dist)
+            self.cube_quads.camera(self.yaw, self.pitch, self.dist, six=self.eng.six)
             if self.shot_req or self.rec is not None:
                 img = self.view_image(net, self.cube_px)      # a picture is wanted: the software path makes one
         elif self.cube_on():
