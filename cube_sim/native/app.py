@@ -714,7 +714,7 @@ class App(Features):
                                   on_enter=True, callback=self.on_geom_field)
         if g.kind == "xyz":
             dpg.add_text(f"{g.count} points from {g.params.get('source', 'file')}",
-                         parent="geom_fields", color=(139, 147, 163))
+                         parent="geom_fields", color=(139, 147, 163), wrap=0)
         if g.kind == "cube":
             # the wiring: which face first, how each is turned, how each is
             # walked - what the exported ledmap says
@@ -725,15 +725,16 @@ class App(Features):
             dpg.add_input_text(label="quarter turns per face", parent="geom_fields", user_data="rots", width=110,
                                default_value=str(g.params.get("rots", "")), hint="0,0,0,0,0", on_enter=True,
                                callback=self.on_geom_field)
-            with dpg.group(horizontal=True, parent="geom_fields"):
-                for key, label in (("serpentine", "serpentine"), ("vertical", "vertical"),
-                                   ("start_right", "from right"), ("start_bottom", "from bottom")):
-                    dpg.add_checkbox(label=label, user_data=key, default_value=bool(g.params.get(key, False)),
-                                     callback=self.on_geom_wiring)
+            for row in ((("serpentine", "serpentine"), ("vertical", "vertical")),
+                        (("start_right", "from right"), ("start_bottom", "from bottom"))):
+                with dpg.group(horizontal=True, parent="geom_fields"):
+                    for key, label in row:
+                        dpg.add_checkbox(label=label, user_data=key, default_value=bool(g.params.get(key, False)),
+                                         callback=self.on_geom_wiring)
             self._inputs.update(("faces_in",))
         if g.params.get("map") is not None:
             dpg.add_text(f"wiring from {g.params.get('source', 'a ledmap')}: {g.count} LEDs, {int((~g.lit).sum())} gaps",
-                         parent="geom_fields", color=(139, 147, 163))
+                         parent="geom_fields", color=(139, 147, 163), wrap=0)
         if g.kind != "xyz":
             dpg.add_checkbox(label="show the wiring on the net", parent="geom_fields", default_value=self.show_wiring,
                              callback=lambda s, v: setattr(self, "show_wiring", bool(v)))
@@ -2550,11 +2551,11 @@ def build(app):
                                   default_value=app.palette_name_for(app.eng.pal_source),
                                   callback=app.on_pal_source)
 
-                def _seg_extras():
-                    dpg.add_button(label="+", small=True, callback=lambda: app.seg_add())
-                    dpg.add_button(label="-", small=True, callback=lambda: app.seg_remove())
-                with Section(app, "segments", "SEGMENTS", _seg_extras):
-                    dpg.add_combo([], tag="seg_combo", width=200, callback=lambda s, v: app.seg_pick(v))
+                with Section(app, "segments", "SEGMENTS"):
+                    with dpg.group(horizontal=True):
+                        dpg.add_combo([], tag="seg_combo", width=200, callback=lambda s, v: app.seg_pick(v))
+                        dpg.add_button(label="+", small=True, callback=lambda: app.seg_add())
+                        dpg.add_button(label="-", small=True, callback=lambda: app.seg_remove())
                     dpg.add_group(tag="seg_fields")
                 with Section(app, "geometry", "GEOMETRY"):
                     dpg.add_combo(list(KINDS), label="shape", tag="geom_kind", width=120,
@@ -2564,7 +2565,7 @@ def build(app):
                                   tag="map1d2d", width=100, default_value="strip",
                                   show=app.project.geometry.is2d, callback=app.on_map1d2d)
                     dpg.add_text(app.project.geometry.describe(), tag="geom_desc",
-                                 color=(139, 147, 163), wrap=300)
+                                 color=(139, 147, 163), wrap=0)
                     with dpg.file_dialog(directory_selector=False, show=False, tag="xyz_dialog",
                                          width=620, height=420, callback=app.on_xyz_file,
                                          cancel_callback=lambda s, a: dpg.set_value("geom_kind", app.project.geometry.kind)):
@@ -2640,7 +2641,7 @@ def build(app):
                              lambda v: setattr(app.live, "gain", float(v)) if app.live else None,
                              is_float=True)
                     dpg.add_progress_bar(tag="lvl_bar", default_value=0.0, width=280)
-                    dpg.add_text("", tag="live_msg", wrap=300)
+                    dpg.add_text("", tag="live_msg", wrap=0)
                 app.sec_apply_order()
         with dpg.group(tag="footer"):
           dpg.add_text("", tag="stat_txt")

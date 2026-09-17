@@ -117,13 +117,14 @@ class Features:
         dpg.set_value("seg_combo", labels[self.eng.seg] if self.eng.seg < len(labels) else "")
         dpg.delete_item("seg_fields", children_only=True)
         if self.eng.seg_count() < 2:
-            dpg.add_text("one segment, the whole strip - + adds another", parent="seg_fields", color=(139, 147, 163))
+            dpg.add_text("one segment, the whole strip - + adds another", parent="seg_fields", color=(139, 147, 163), wrap=0)
             return
         x0, y0, x1, y1, op, fx, bm = self.eng.seg_get(self.eng.seg)
-        with dpg.group(horizontal=True, parent="seg_fields"):
-            for key, val in (("x0", x0), ("y0", y0), ("x1", x1), ("y1", y1)):
-                dpg.add_input_int(label=key, width=60, default_value=val, user_data=key, on_enter=True, step=0,
-                                  callback=self.on_seg_field)
+        for row in ((("x0", x0), ("y0", y0)), (("x1", x1), ("y1", y1))):
+            with dpg.group(horizontal=True, parent="seg_fields"):
+                for key, val in row:
+                    dpg.add_input_int(label=key, width=60, default_value=val, user_data=key, on_enter=True, step=0,
+                                      callback=self.on_seg_field)
         dpg.add_slider_int(label="opacity", parent="seg_fields", width=200, min_value=0, max_value=255, default_value=op,
                            callback=lambda s, v: self.on_seg_field(s, v, "opacity"))
         # WLED's per-segment blend mode ("bm"): how this segment lands on the ones under it
