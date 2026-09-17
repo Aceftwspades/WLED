@@ -31,6 +31,7 @@ class CubeQuads:
         self.tag = tag
         self.texture = texture
         self.size = 0
+        self.w = self.h = 0
         self.items = {}          # face index -> list of quad ids, row-major
         self._last = None
         with dpg.drawlist(width=10, height=10, tag=tag, parent=parent):
@@ -54,10 +55,13 @@ class CubeQuads:
             for q in quads:
                 dpg.configure_item(q, texture_tag=texture)
 
-    def resize(self, size):
-        if size != self.size:
-            self.size = size
-            dpg.configure_item(self.tag, width=size, height=size)
+    def resize(self, size, w=None, h=None):
+        """The cube's square, and the drawlist it sits centred in (a
+        drawlist ignores a position, so it fills its pane instead)."""
+        w, h = max(size, w or size), max(size, h or size)
+        if (size, w, h) != (self.size, self.w, self.h):
+            self.size, self.w, self.h = size, w, h
+            dpg.configure_item(self.tag, width=w, height=h)
             self._last = None
 
     def camera(self, yaw, pitch, dist):
@@ -88,8 +92,8 @@ class CubeQuads:
                 for q in quads:
                     dpg.configure_item(q, show=False)
                 continue
-            sx = size * 0.5 + f * cam[:, 0] / -cam[:, 2]
-            sy = size * 0.5 - f * cam[:, 1] / -cam[:, 2]
+            sx = (self.w - size) * 0.5 + size * 0.5 + f * cam[:, 0] / -cam[:, 2]
+            sy = (self.h - size) * 0.5 + size * 0.5 - f * cam[:, 1] / -cam[:, 2]
             scr = np.stack([sx, sy], 1).reshape(N + 1, N + 1, 2)
             k = 0
             for j in range(N):

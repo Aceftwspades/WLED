@@ -41,6 +41,12 @@ STEPS = [
     ([{"appearance": {"light": True}}, {"appearance": {"light": False}}], 1.0),
     ([{"gpu": False}, {"gpu": True}, {"gpu_net": False}, {"gpu_net": True}], 1.5),
     ([{"ui": False}, {"ui": True}, {"layout": "graph"}, {"measure": True}], 1.0),
+    ([{"layout": "both"}, {"arrangement": [["main", "cube"], ["side"]]}, {"pane_move": ["cube", "side", "top"]},
+      {"pane_move": ["side", "main", "left"]}, {"pane_move": ["cube", "main", "centre"]}, {"layout": "graph"},
+      {"layout": "edit"}, {"arrangement": [["main"], ["cube"], ["side"]]}], 2.5),
+    ([{"layout": "both"}, {"popout": ["cube", True]}, {"layout": "graph"}], 5.0),
+    ([{"popout": ["net", True]}, {"layout": "both"}], 4.0),
+    ([{"popout": ["cube", False]}, {"popout": ["net", False]}], 2.0),
 ]
 
 

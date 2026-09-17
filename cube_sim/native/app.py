@@ -43,6 +43,7 @@ from native.graph_ui import GraphPanel, build_panel
 from native import chrome, glow
 from native.gpucube import CubeQuads
 from native.features import Features
+from native.popout import Popouts
 from native.dropfiles import DropFiles, classify
 from native.codeedit import CodeEditor
 from native.keys import Keymap, combo as key_combo
@@ -56,6 +57,7 @@ STEP = 23
 CUBE_MAX = 620          # cube render cost is quadratic in this, so it is capped
                         # and the image is scaled up if the pane is larger
 VIEW_MIN = 180
+CAP_H = 48              # a view pane above its picture: padding, the grip and caption row, spacing; and the padding below
 SIDE_W = 340            # control column
 
 
@@ -214,9 +216,20 @@ class App(Features):
         self.building = False
         # --- pane sizes: dragged on the splitters, remembered across runs ----
         self.prefs = load_prefs()
-        self.splits = {"both": 0.5, "edit": 0.55, "graph": 0.7}   # the left pane's share of the two-pane width
-        self.splits.update({k: float(v) for k, v in self.prefs.get("splits", {}).items() if k in self.splits})
         self.side_w = int(self.prefs.get("side_w", SIDE_W))
+        # where the panes sit: columns of rows of slots (see PRESETS), the
+        # columns' shares of the width per layout mode, the rows' of a column
+        self.arrangement = self._valid_arrangement(self.prefs.get("arrangement")) or [list(c) for c in self.PRESETS[0][1]]
+        self.colw = {k: dict(v) for k, v in (self.prefs.get("colw") or {}).items()}
+        self.rowh = dict(self.prefs.get("rowh") or {})
+        self._rects = {}             # slot -> (x, y, w, h) as last laid out
+        self._cols = []              # the visible columns as last laid out
+        self._splitters = {}         # splitter tag -> (kind, col, row)
+        self._free_w = 1             # the width the free columns share
+        self._rows_h = []            # per column, the height its rows share
+        self._pane_drag = None       # the slot whose grip is being dragged
+        self._pane_target = None     # (slot, zone) under the pointer while dragging
+        self.popouts = Popouts()     # views in windows of their own
         self.side = True             # the side panel shown (Ctrl+Shift+H hides it)
         self.focus = None            # the pane last clicked in: it wears the frame
         self.sweep = None            # {"key", "secs", "t0", "loop", "record"} while a slider is swept
@@ -1305,11 +1318,218 @@ class App(Features):
         self.project.save()
 
     def reset_layout(self):
-        self.splits = {"both": 0.5, "edit": 0.55, "graph": 0.7}
+        """The default sizes; the arrangement stays."""
         self.side_w = SIDE_W
-        self.prefs.pop("splits", None); self.prefs.pop("side_w", None)
+        self.colw = {}
+        self.rowh = {}
+        for k in ("splits", "side_w", "colw", "rowh"):
+            self.prefs.pop(k, None)
         save_prefs(self.prefs)
         self.request_layout()
+
+    # --- the arrangement: which pane sits where ---------------------------------
+    # Three slots - "main" (the net, the code or the graph, whichever the
+    # layout mode shows), "cube" (the 3-D view) and "side" (the panel) - in
+    # columns of rows, left to right, top to bottom. A pane moves by its grip
+    # (the ::: at its top left) dragged onto another pane: near an edge it
+    # goes beside or above that pane, in the middle the two swap.
+    PRESETS = (("Classic: main pane, 3-D, panel", [["main"], ["cube"], ["side"]]),
+               ("Panel on the left", [["side"], ["main"], ["cube"]]),
+               ("3-D on the left", [["cube"], ["main"], ["side"]]),
+               ("3-D under the main pane", [["main", "cube"], ["side"]]),
+               ("3-D above the panel", [["main"], ["cube", "side"]]),
+               ("Panel under the 3-D, main pane on the right", [["cube", "side"], ["main"]]))
+    SLOTS = ("main", "cube", "side")
+
+    @classmethod
+    def _valid_arrangement(cls, arr):
+        try:
+            cols = [[str(s) for s in c] for c in arr]
+        except Exception:
+            return None
+        if sorted(s for c in cols for s in c) != sorted(cls.SLOTS) or not all(cols):
+            return None
+        return cols
+
+    def set_arrangement(self, arr):
+        cols = self._valid_arrangement(arr)
+        if cols is None:
+            raise ValueError(f"not an arrangement: {arr!r}")
+        self.arrangement = cols
+        self.prefs["arrangement"] = cols
+        save_prefs(self.prefs)
+        self.request_layout()
+
+    def move_slot(self, slot, target, zone):
+        """`slot` dropped on `target`: beside it (left, right), above or below
+        it (top, bottom), or in its place (centre - the two swap)."""
+        if slot == target or slot not in self.SLOTS or target not in self.SLOTS or zone is None:
+            return
+        arr = [list(c) for c in self.arrangement]
+        if zone == "centre":
+            arr = [[target if s == slot else slot if s == target else s for s in c] for c in arr]
+        else:
+            arr = [[s for s in c if s != slot] for c in arr]
+            arr = [c for c in arr if c]
+            ci = next(i for i, c in enumerate(arr) if target in c)
+            rj = arr[ci].index(target)
+            if zone == "left":
+                arr.insert(ci, [slot])
+            elif zone == "right":
+                arr.insert(ci + 1, [slot])
+            elif zone == "top":
+                arr[ci].insert(rj, slot)
+            else:
+                arr[ci].insert(rj + 1, slot)
+        self.set_arrangement(arr)
+
+    def pane_of(self, slot):
+        """The window a slot shows right now."""
+        if slot == "cube":
+            return "cube_win"
+        if slot == "side":
+            return "side_win"
+        return {"edit": "edit_win", "graph": "graph_win"}.get(self.layout, "net_win")
+
+    def slot_of(self, pane):
+        return next((s for s in self.SLOTS if self.pane_of(s) == pane), None)
+
+    def net_on(self):
+        """The logical view drawn in the window (not popped out, not hidden)."""
+        return self.layout in ("both", "net") and not self.popouts.is_out("net")
+
+    def cube_on(self):
+        return self.layout in ("both", "cube", "edit", "graph") and not self.popouts.is_out("cube")
+
+    def slot_shown(self, slot):
+        if not self.ui:
+            return False
+        if slot == "side":
+            return self.side
+        if slot == "cube":
+            return self.cube_on()
+        if self.layout == "cube":
+            return False
+        return self.net_on() if self.layout in ("both", "net") else True
+
+    @staticmethod
+    def _col_key(cols):
+        return "|".join("+".join(c) for c in cols)
+
+    def _col_fracs(self, cols):
+        """Each free column's share of the width the panel column leaves,
+        {column index: share}. Per layout mode: the graph wants more room
+        than the net does."""
+        free = [i for i, c in enumerate(cols) if c != ["side"]]
+        if not free:
+            return {}
+        stored = (self.colw.get(self.layout) or {}).get(self._col_key(cols))
+        if stored and len(stored) == len(free):
+            fr = [float(v) for v in stored]
+        elif len(free) == 1:
+            fr = [1.0]
+        else:
+            share = {"graph": 0.7, "edit": 0.55}.get(self.layout, 0.5)
+            fr = [share if "main" in cols[i] else (1.0 - share) / (len(free) - 1) for i in free]
+        tot = sum(fr) or 1.0
+        return {i: f / tot for i, f in zip(free, fr)}
+
+    def _row_fracs(self, col):
+        stored = self.rowh.get("+".join(col))
+        if stored and len(stored) == len(col):
+            fr = [float(v) for v in stored]
+        elif len(col) == 2 and "main" in col:
+            fr = [0.58, 0.42] if col[0] == "main" else [0.42, 0.58]
+        else:
+            fr = [1.0 / len(col)] * len(col)
+        tot = sum(fr) or 1.0
+        return [f / tot for f in fr]
+
+    SPLIT = 8                    # a splitter's thickness
+
+    def pane_rects(self, x0, y0, W, H):
+        """Where each shown slot goes, {slot: (x, y, w, h)}, and the splitters
+        between them, [(kind, col, row, x, y, w, h)]: "v" between column
+        `col` and the next, "h" between row `row` of `col` and the next. A
+        column of the panel alone keeps its pixel width; the others share
+        the rest."""
+        cols = [[s for s in col if self.slot_shown(s)] for col in self.arrangement]
+        cols = [c for c in cols if c]
+        self._cols = cols
+        if not cols:
+            return {}, []
+        G = self.SPLIT
+        n = len(cols)
+        fr = self._col_fracs(cols)
+        free_w = W - G * (n - 1) - sum(self.side_w for c in cols if c == ["side"])
+        free_w = max(VIEW_MIN * max(1, len(fr)), free_w)
+        self._free_w = free_w
+        widths = [self.side_w if c == ["side"] else max(VIEW_MIN, int(free_w * fr[i])) for i, c in enumerate(cols)]
+        rects, splits = {}, []
+        self._rows_h = []
+        x = x0
+        for i, c in enumerate(cols):
+            w = widths[i]
+            rf = self._row_fracs(c)
+            hs = H - G * (len(c) - 1)
+            self._rows_h.append(hs)
+            y = y0
+            for j, s in enumerate(c):
+                h = max(VIEW_MIN // 2, int(hs * rf[j])) if j < len(c) - 1 else max(VIEW_MIN // 2, y0 + H - y)
+                rects[s] = (x, y, w, h)
+                if j < len(c) - 1:
+                    splits.append(("h", i, j, x, y + h, w, G))
+                    y += h + G
+            if i < n - 1:
+                splits.append(("v", i, 0, x + w, y0, G, H))
+            x += w + G
+        return rects, splits
+
+    def drop_zone(self, mx, my):
+        """What a dragged pane would do if let go here: (slot, zone) for the
+        pane under the pointer - the edge it is nearest, or the centre."""
+        for slot, (x, y, w, h) in self._rects.items():
+            if not (x <= mx < x + w and y <= my < y + h):
+                continue
+            rx, ry = (mx - x) / max(1, w), (my - y) / max(1, h)
+            d = min(rx, 1 - rx, ry, 1 - ry)
+            if d > 0.3:
+                return slot, "centre"
+            if d == rx:
+                return slot, "left"
+            if d == 1 - rx:
+                return slot, "right"
+            return slot, "top" if d == ry else "bottom"
+        return None
+
+    def _zone_rect(self, slot, zone):
+        x, y, w, h = self._rects[slot]
+        if zone == "left":
+            return x, y, x + w // 2, y + h
+        if zone == "right":
+            return x + w // 2, y, x + w, y + h
+        if zone == "top":
+            return x, y, x + w, y + h // 2
+        if zone == "bottom":
+            return x, y + h // 2, x + w, y + h
+        return x + 6, y + 6, x + w - 6, y + h - 6
+
+    # --- pop-outs: a view in a window of its own ----------------------------------
+    def set_popout(self, view, on):
+        """The net or the 3-D view in its own window (a second monitor's),
+        its pane given to the others; off, or the window closed, brings the
+        pane back."""
+        if view not in ("net", "cube"):
+            return
+        if on and not self.popouts.is_out(view):
+            self.popouts.open(view, self.eng, (self.yaw, self.pitch, self.dist))
+        elif not on and self.popouts.is_out(view):
+            self.popouts.close(view)
+        self.request_layout()
+
+    def poll_popouts(self):
+        if self.popouts.jobs and self.popouts.poll():
+            self.request_layout()
 
     @staticmethod
     def build_dir():
@@ -1332,35 +1552,32 @@ class App(Features):
             self.gp.status(f"could not open {path}: {e}")
 
     def relayout(self):
-        """Size both views to whatever the window currently is.
+        """Size and place the panes for whatever the window currently is.
 
         The panes were fixed pixel sizes, so maximising the window left two
-        small pictures in the corner of a large expanse of panel. Both views are
-        square, so each gets the largest square that fits its half of the space.
+        small pictures in the corner of a large expanse of panel. Both views
+        are square, so each gets the largest square that fits its pane. The
+        panes' places come from the arrangement (pane_rects); presenting (H)
+        shows the pictures only, centred by hand.
         """
         vw = max(640, dpg.get_viewport_client_width())
         vh = max(420, dpg.get_viewport_client_height())
 
-        # What is on screen decides what there is room for. With the control
-        # column hidden its 340 px come back, with one view hidden the other
-        # gets the whole width, and the pane captions stop reserving a line.
-        # Presenting (H) shows pictures only: the code and graph panes are
-        # chrome too, so in those layouts the 3-D view stands alone.
-        show_net = self.layout in ("both", "net")
-        show_cube = self.layout in ("both", "cube", "edit", "graph")
+        # What is on screen decides what there is room for. A popped-out view
+        # is on another window; hidden here. Presenting shows pictures only:
+        # the code and graph panes are chrome too, so in those layouts the
+        # 3-D view stands alone.
+        show_net = self.net_on()
+        show_cube = self.cube_on()
         show_edit = self.layout == "edit" and self.ui
         show_graph = self.layout == "graph" and self.ui
         nview = (show_net + show_cube + show_edit + show_graph) if self.ui else (show_net + show_cube)
-        # Two panes share the width by a draggable split: the left pane (the
-        # logical view, the code or the graph) takes `split` of it, the 3-D
-        # view the rest. Each view is drawn square, as large as its pane
-        # allows; a code or graph pane simply takes its width.
-        split = self.splits.get(self.layout, 0.5)
+        rects, splits = {}, []
         if self.ui:
             # The panes stop where the footer (record, stats, key hints)
             # starts, so the root window never has anything to scroll to.
             # The footer is measured rather than assumed; before the first
-            # frame it has no size yet and 102 px is what it comes to.
+            # frame it has no size yet and 48 px is what it comes to.
             fh = dpg.get_item_rect_size("footer")[1] if dpg.does_item_exist("footer") else 0
             fh = fh if fh > 0 else 48
             # The menu bar and the toolbar sit above the panes; where the
@@ -1370,25 +1587,21 @@ class App(Features):
             tb_y = dpg.get_item_rect_min("toolbar")[1] if dpg.does_item_exist("toolbar") else 0
             tb_h = dpg.get_item_rect_size("toolbar")[1] if dpg.does_item_exist("toolbar") else 0
             top = (tb_y + tb_h + 6) if tb_h > 0 else 59
-            pane_h = max(VIEW_MIN, vh - top - fh - 8 - 10 - 34)
-            side_w = self.side_w if self.side else 0
-            avail  = vw - side_w - (22 * nview + 24) - (8 * nview)   # splitter handles
-            if nview == 2:
-                left_w = int(max(VIEW_MIN, min(avail - VIEW_MIN, avail * split)))
-                right_w = max(VIEW_MIN, avail - left_w)
-            else:
-                left_w = right_w = max(VIEW_MIN, avail)
+            pane_h = max(VIEW_MIN, vh - top - fh - 18)
+            rects, splits = self.pane_rects(8, top, vw - 16, pane_h)
+            main, cube = rects.get("main"), rects.get("cube")
+            # each view is a square: the largest its pane's inside allows
+            side_l = max(VIEW_MIN, min(main[2] - 22, main[3] - CAP_H)) if (main and show_net) else VIEW_MIN
+            side = max(VIEW_MIN, min(cube[2] - 22, cube[3] - CAP_H)) if cube else VIEW_MIN
         else:
             # Presenting: no control column, no captions, no borders and no
             # padding, so none of it gets an allowance. The picture takes the
             # whole frame less the gap between two of them.
             pane_h = max(VIEW_MIN, vh)
-            avail  = vw - (16 if nview == 2 else 0)
-            left_w = right_w = max(VIEW_MIN, avail // max(1, nview))
-        side_l = max(VIEW_MIN, min(left_w, pane_h))      # the logical view's square
-        side = max(VIEW_MIN, min(right_w, pane_h))        # the 3-D view's square
-        if not self.ui:
+            avail = vw - (16 if nview == 2 else 0)
+            left_w = max(VIEW_MIN, avail // max(1, nview))
             side_l = side = max(VIEW_MIN, min(left_w, pane_h))
+        self._rects = rects
 
         dpg.configure_item("net_win",  show=show_net)
         dpg.configure_item("cube_win", show=show_cube)
@@ -1400,8 +1613,8 @@ class App(Features):
         dpg.configure_item("root", menubar=self.ui)
         if dpg.does_item_exist("toolbar"):
             dpg.configure_item("toolbar", show=self.ui)
-        dpg.configure_item("split_a", show=self.ui and nview == 2)
-        dpg.configure_item("split_b", show=self.ui and self.side)
+        for tag in self._splitters:
+            dpg.configure_item(tag, show=False)
 
         th = self._themes.get("present" if not self.ui else "normal")
         if th:
@@ -1411,10 +1624,11 @@ class App(Features):
                                      else ([232, 234, 238, 255] if light else [14, 16, 20, 255]))
         for tag in ("net_win", "cube_win", "side_win"):
             dpg.configure_item(tag, border=self.ui)
-        # The captions, the readout and the key hints are UI too - a clean
-        # picture means nothing left over the top of it.
-        for tag in ("net_cap", "cube_cap", "stat_txt", "hint1"):
-            dpg.configure_item(tag, show=self.ui)
+        # The captions, the grips, the readout and the key hints are UI too -
+        # a clean picture means nothing left over the top of it.
+        for tag in ("net_cap", "cube_cap", "stat_txt", "hint1", "grip_net_win", "grip_cube_win"):
+            if dpg.does_item_exist(tag):
+                dpg.configure_item(tag, show=self.ui)
         chrome.refresh(self)
 
         # The net is upscaled by a WHOLE number so the LED grid stays hard;
@@ -1432,21 +1646,23 @@ class App(Features):
         self.view_side = side
 
         if self.ui:
-            # Presenting placed the panes by hand; a pane once placed no longer
-            # flows in its row, so it would sit where it was left, under
-            # whatever now shares the row. Back to flowing before sizing.
-            for tag in ("net_win", "cube_win", "edit_win", "graph_win", "side_win", "split_a", "split_b"):
+            # A pane once placed no longer flows in its row; every one is
+            # placed here, from the arrangement.
+            for tag in ("net_win", "cube_win", "edit_win", "graph_win", "side_win"):
                 dpg.reset_pos(tag)
-            dpg.configure_item("net_win", width=side_l + 22, height=pane_h + 34)
-            dpg.configure_item("cube_win", width=side + 22, height=pane_h + 34)
-            dpg.configure_item("edit_win", width=left_w + 22, height=pane_h + 34)
+            for slot, (x, y, w, h) in rects.items():
+                tag = self.pane_of(slot)
+                dpg.configure_item(tag, width=w, height=h)
+                dpg.set_item_pos(tag, [x, y])
             app_ed = getattr(self, "code_ed", None)
-            if app_ed:
-                app_ed.resize(left_w + 4, pane_h - 130)
-            dpg.configure_item("graph_win", width=left_w + 22, height=pane_h + 34)
-            dpg.configure_item("side_win", width=self.side_w - 10, height=pane_h + 34)
-            for tag in ("split_a", "split_b"):
-                dpg.configure_item(tag, height=pane_h + 34)
+            if app_ed and show_edit and "main" in rects:
+                x, y, w, h = rects["main"]
+                app_ed.resize(w - 18, h - 164)
+            for kind, i, j, x, y, w, h in splits:
+                tag = f"{kind}split_{i}_{j}"
+                if dpg.does_item_exist(tag):
+                    dpg.configure_item(tag, width=w, height=h, show=True)
+                    dpg.set_item_pos(tag, [x, y])
         # Centre what is left, rather than letting it sit against the corner.
         # In presentation mode the panes are exactly the size of their pictures
         # and are positioned by hand; the black around them is the viewport
@@ -1481,14 +1697,16 @@ class App(Features):
         for win, img in (("net_win", "net_img"), ("cube_win", "cube_img")):
             if not (dpg.does_item_exist(win) and dpg.does_item_exist(img)):
                 continue
+            if img == "cube_img" and self.cube_quads is not None:
+                continue                                  # the drawlist fills the pane and centres itself
             cw = dpg.get_item_configuration(win).get("width") or 0
             ch = dpg.get_item_configuration(win).get("height") or 0
             iw = dpg.get_item_configuration(img).get("width") or 0
             ih = dpg.get_item_configuration(img).get("height") or 0
             if not (cw and ch and iw and ih):
                 continue
-            top = 36 if self.ui else 0                    # the caption row
-            dpg.configure_item(img, pos=(max(0, (cw - iw) // 2), top + max(0, (ch - top - ih) // 2)))
+            top = CAP_H - 10 if self.ui else 0            # the caption row (the pane pads 10 below the picture)
+            dpg.set_item_pos(img, [max(0, (cw - iw) // 2), top + max(0, (ch - top - ih - 10) // 2)])
 
     NET_SRC_SCALE = 4            # the net's upscale for the GPU-scaled view
 
@@ -1540,7 +1758,11 @@ class App(Features):
                 dpg.add_raw_texture(n, n, np.zeros(n * n * 4, np.float32), format=dpg.mvFormat_Float_rgba, tag="cube_src_tex")
             self._bufs.pop("cube_src", None)
             self.cube_quads = CubeQuads("cube_win", "cube_img", "cube_src_tex")
-            self.cube_quads.resize(self.view_side)
+            r = self._rects.get("cube")
+            if r and self.ui:
+                self.cube_quads.resize(self.view_side, r[2] - 22, r[3] - CAP_H)
+            else:
+                self.cube_quads.resize(self.view_side)
             if dpg.does_item_exist("cube_cap"):
                 dpg.set_value("cube_cap", "3-D - drag to rotate, wheel to zoom")
             return
@@ -1573,11 +1795,28 @@ class App(Features):
         if dpg.does_item_exist("help_split") and dpg.is_item_shown("help_split") and dpg.is_item_hovered("help_split"):
             self._split_drag = ("help_split", dpg.get_mouse_pos(local=False)[1], int(self.prefs.get("help_h", 46)))
             return
-        for tag in ("split_a", "split_b"):
-            if dpg.does_item_exist(tag) and dpg.is_item_shown(tag) and dpg.is_item_hovered(tag):
-                mx = dpg.get_mouse_pos(local=False)[0]
-                self._split_drag = (tag, mx, self.splits.get(self.layout, 0.5) if tag == "split_a" else self.side_w)
+        for slot in self._rects:
+            grip = f"grip_{self.pane_of(slot)}"
+            if dpg.does_item_exist(grip) and dpg.is_item_hovered(grip):
+                self._pane_drag = slot
+                self._pane_target = None
                 return
+        mp = dpg.get_mouse_pos(local=False)
+        for tag, (kind, i, j) in self._splitters.items():
+            if not (dpg.is_item_shown(tag) and dpg.is_item_hovered(tag)):
+                continue
+            cols = self._cols
+            if kind == "v":
+                if cols[i] == ["side"] or cols[i + 1] == ["side"]:
+                    # the panel keeps a pixel width: the splitter moves that
+                    self._split_drag = (tag, mp[0], ("side", 1 if cols[i] == ["side"] else -1, self.side_w))
+                else:
+                    fr = self._col_fracs(cols)
+                    self._split_drag = (tag, mp[0], ("col", i, fr[i], fr[i + 1]))
+            else:
+                rf = self._row_fracs(cols[i])
+                self._split_drag = (tag, mp[1], ("row", i, j, rf[j], rf[j + 1]))
+            return
         if dpg.is_item_hovered("cube_img"):
             self._dragging = True
             self._yaw0, self._pitch0 = self.yaw, self.pitch
@@ -1589,9 +1828,19 @@ class App(Features):
             self.gp.on_press()
 
     def on_mouse_release(self, sender, app_data):
+        if self._pane_drag:
+            slot, target = self._pane_drag, self._pane_target
+            self._pane_drag = self._pane_target = None
+            if dpg.does_item_exist("snap_rect"):
+                dpg.configure_item("snap_rect", show=False)
+            if target:
+                self.move_slot(slot, *target)
+            return
         if self._split_drag:
             self._split_drag = None
-            self.prefs["splits"] = dict(self.splits); self.prefs["side_w"] = self.side_w
+            self.prefs["side_w"] = self.side_w
+            self.prefs["colw"] = self.colw
+            self.prefs["rowh"] = self.rowh
             save_prefs(self.prefs)
         self._dragging = False
         if self.layout == "graph":
@@ -1608,26 +1857,56 @@ class App(Features):
             self.gp.open_menu()
 
     def on_drag(self, sender, app_data):
+        if self._pane_drag:
+            # the pane under the pointer lights up where the drop would go
+            mx, my = dpg.get_mouse_pos(local=False)
+            target = self.drop_zone(mx, my)
+            if target and target[0] == self._pane_drag:
+                target = None
+            if target != self._pane_target:
+                self._pane_target = target
+                if dpg.does_item_exist("snap_rect"):
+                    if target:
+                        x0, y0, x1, y1 = self._zone_rect(*target)
+                        dpg.configure_item("snap_rect", pmin=(x0, y0), pmax=(x1, y1), show=True)
+                    else:
+                        dpg.configure_item("snap_rect", show=False)
+            return
         if self._split_drag:
             tag, x0, v0 = self._split_drag
-            mx = dpg.get_mouse_pos(local=False)[0]
+            mx, my = dpg.get_mouse_pos(local=False)
             vw = max(640, dpg.get_viewport_client_width())
             if tag == "help_split":
-                my = dpg.get_mouse_pos(local=False)[1]
                 new = int(max(20, min(240, v0 + (my - x0))))
                 if new != int(self.prefs.get("help_h", 46)):
                     self.prefs["help_h"] = new
                     dpg.configure_item("graph_help_box", height=new)
                 return
-            if tag == "split_a":
-                avail = max(200, vw - self.side_w - 100)
-                new = max(0.15, min(0.85, v0 + (mx - x0) / avail))
-                if abs(new - self.splits.get(self.layout, 0.5)) * avail >= 6:
-                    self.splits[self.layout] = new; self.request_layout()
-            else:
-                new = int(max(240, min(vw // 2, v0 - (mx - x0))))
+            if v0[0] == "side":
+                _, sign, w0 = v0
+                new = int(max(240, min(vw // 2, w0 + sign * (mx - x0))))
                 if abs(new - self.side_w) >= 6:
                     self.side_w = new; self.request_layout()
+            elif v0[0] == "col":
+                _, i, a, b = v0
+                fw = max(1, self._free_w)
+                lo = VIEW_MIN / fw
+                d = max(lo - a, min(b - lo, (mx - x0) / fw))
+                fr = self._col_fracs(self._cols)
+                if abs((a + d) - fr.get(i, a)) * fw >= 4:
+                    fr[i], fr[i + 1] = a + d, b - d
+                    self.colw.setdefault(self.layout, {})[self._col_key(self._cols)] = [fr[k] for k in sorted(fr)]
+                    self.request_layout()
+            else:
+                _, i, j, a, b = v0
+                hs = max(1, self._rows_h[i] if i < len(self._rows_h) else 1)
+                lo = (VIEW_MIN // 2) / hs
+                d = max(lo - a, min(b - lo, (my - x0) / hs))
+                rf = self._row_fracs(self._cols[i])
+                if abs((a + d) - rf[j]) * hs >= 4:
+                    rf[j], rf[j + 1] = a + d, b - d
+                    self.rowh["+".join(self._cols[i])] = rf
+                    self.request_layout()
             return
         # Keyed to whether the drag STARTED on the cube, not to what is under
         # the pointer now, so running off the edge mid-turn does not drop it.
@@ -1966,7 +2245,8 @@ class App(Features):
         elif self.scrub is not None and self.history_frames:
             net = self.history_frames[max(0, min(len(self.history_frames) - 1, self.scrub))]
         big = img = None
-        if self.layout in ("both", "net"):
+        self.popouts.publish(net, self.eng, (self.yaw, self.pitch, self.dist))
+        if self.net_on():
             if self.gpu_net:
                 k = self.NET_SRC_SCALE
                 dpg.set_value("net_tex", self._rgba("net", net.repeat(k, 0).repeat(k, 1)))
@@ -1975,14 +2255,14 @@ class App(Features):
             else:
                 big = net.repeat(self.net_scale, 0).repeat(self.net_scale, 1)
                 dpg.set_value("net_tex", self._rgba("net", big))
-        if self.layout in ("both", "cube", "edit", "graph") and self.cube_quads is not None:
+        if self.cube_on() and self.cube_quads is not None:
             k = self.CUBE_SRC_SCALE
             src = net if net.shape[0] == self.eng.rows else self.net_image()
             dpg.set_value("cube_src_tex", self._rgba("cube_src", src.repeat(k, 0).repeat(k, 1)))
             self.cube_quads.camera(self.yaw, self.pitch, self.dist)
             if self.shot_req or self.rec is not None:
                 img = self.view_image(net, self.cube_px)      # a picture is wanted: the software path makes one
-        elif self.layout in ("both", "cube", "edit", "graph"):
+        elif self.cube_on():
             img = self.view_image(net, self.cube_px)
             if self.ab:
                 # side by side, a gap between: the texture is two renders wide
@@ -2047,9 +2327,12 @@ def build(app):
         chrome.build_toolbar(app)
         with dpg.group(horizontal=True):
             with dpg.child_window(tag="net_win", width=420, height=470):
-                dpg.add_text("Logical view - what the effect draws", tag="net_cap", color=(139, 147, 163))
+                with dpg.group(horizontal=True):
+                    chrome.grip("net_win")
+                    dpg.add_text("Logical view - what the effect draws", tag="net_cap", color=(139, 147, 163))
             with dpg.child_window(tag="edit_win", width=420, height=470, show=False):
                 with dpg.group(horizontal=True):
+                    chrome.grip("edit_win")
                     dpg.add_combo(app.project.effect_files(), tag="edit_file", width=220,
                                   default_value=app.edit_file or "",
                                   callback=lambda s, v: (app.edit_open(v), app.ensure_built()))
@@ -2088,16 +2371,17 @@ def build(app):
             with dpg.child_window(tag="graph_win", width=420, height=470, show=False,
                                   no_scrollbar=True, no_scroll_with_mouse=True):
                 build_panel(app, app.gp)
-            # A splitter is a tall, thin button; dragging it moves the split.
-            dpg.add_button(label="", tag="split_a", width=8, height=470)
             with dpg.child_window(tag="cube_win", width=420, height=470):
-                dpg.add_text("3-D - drag to rotate, wheel to zoom",
-                             tag="cube_cap", color=(139, 147, 163))
-            dpg.add_button(label="", tag="split_b", width=8, height=470)
+                with dpg.group(horizontal=True):
+                    chrome.grip("cube_win")
+                    dpg.add_text("3-D - drag to rotate, wheel to zoom",
+                                 tag="cube_cap", color=(139, 147, 163))
             with dpg.child_window(tag="side_win", width=app.side_w - 10, height=470):
-                dpg.add_combo(list_projects(), label="project", tag="project_combo", width=200,
-                              default_value=os.path.basename(app.project.path),
-                              callback=lambda s, v: app.switch_project(v))
+                with dpg.group(horizontal=True):
+                    chrome.grip("side_win")
+                    dpg.add_combo(list_projects(), label="project", tag="project_combo", width=200,
+                                  default_value=os.path.basename(app.project.path),
+                                  callback=lambda s, v: app.switch_project(v))
                 dpg.add_combo(app.eng.names, label="effect", tag="fx_combo",
                               default_value=app.eng.names[app.eng.idx], width=200,
                               callback=app.on_effect)
@@ -2229,6 +2513,19 @@ def build(app):
     gfiles = app.gp.files()
     if gfiles:
         app.gp.open(gfiles[0])
+    # A splitter is a thin button placed between two panes; dragging it
+    # moves the boundary. Enough for any arrangement of the three slots.
+    for i in range(2):
+        dpg.add_button(label="", tag=f"vsplit_{i}_0", width=8, height=470, show=False, parent="root")
+        app._splitters[f"vsplit_{i}_0"] = ("v", i, 0)
+    for i in range(3):
+        for j in range(2):
+            dpg.add_button(label="", tag=f"hsplit_{i}_{j}", width=470, height=8, show=False, parent="root")
+            app._splitters[f"hsplit_{i}_{j}"] = ("h", i, j)
+    # where a dragged pane would land, drawn over everything
+    with dpg.viewport_drawlist(front=True, tag="snap_dl"):
+        dpg.draw_rectangle((0, 0), (10, 10), tag="snap_rect", show=False, thickness=2,
+                           color=tuple(chrome.ACCENT[:3]) + (230,), fill=tuple(chrome.ACCENT[:3]) + (50,))
     dpg.set_primary_window("root", True)
     app.frames = glow.Frames()
     chrome.apply_frames(app)
@@ -2383,6 +2680,12 @@ def service_command(app):
                 dpg.set_viewport_width(int(c["viewport"][0])); dpg.set_viewport_height(int(c["viewport"][1]))
             if "ui" in c:                               # test hook: H, the presentation toggle
                 app.ui = bool(c["ui"]); app.request_layout()
+            if "arrangement" in c:                      # test hook: the panes' places
+                app.set_arrangement(c["arrangement"])
+            if "pane_move" in c:                        # test hook: a grip drop, [slot, target, zone]
+                app.move_slot(*c["pane_move"])
+            if "popout" in c:                           # test hook: [view, on]
+                app.set_popout(*c["popout"])
             if "layout" in c:
                 app.layout = c["layout"]; app.ui = bool(c.get("with_ui", True)); app.request_layout()
             if "open" in c:
@@ -2617,6 +2920,7 @@ def main():
                 app.poll_autosave()
                 app.poll_view_mode()
                 app.poll_drops()
+                app.poll_popouts()
                 if app.code_ed is not None and app.layout == "edit":
                     app.code_ed.poll()
                 app.poll_glow()
@@ -2653,6 +2957,7 @@ def main():
             service_command(app)
     finally:
         app.stop_live()
+        app.popouts.close_all()
         dpg.destroy_context()
 
 

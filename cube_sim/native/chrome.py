@@ -132,7 +132,18 @@ def build_menus(app):
             dpg.add_separator()
             dpg.add_menu_item(label="Minimap", check=True, default_value=True, tag="menu_minimap",
                               callback=lambda s, a: dpg.configure_item("node_editor", minimap=bool(a)))
-            dpg.add_menu_item(label="Reset pane sizes", callback=lambda: app.reset_layout())
+            with dpg.menu(label="Layout"):
+                for k, (label, arr) in enumerate(app.PRESETS):
+                    dpg.add_menu_item(label=label, check=True, tag=f"menu_arr_{k}", user_data=arr,
+                                      callback=lambda s, a, u: app.set_arrangement(u))
+                dpg.add_separator()
+                dpg.add_text("drag a pane by its ::: onto another to move it", color=DIM)
+                dpg.add_menu_item(label="Reset pane sizes", callback=lambda: app.reset_layout())
+            with dpg.menu(label="Pop out (a window of its own, for another monitor)"):
+                dpg.add_menu_item(label="The logical net", check=True, tag="menu_pop_net",
+                                  callback=lambda s, a: app.set_popout("net", bool(a)))
+                dpg.add_menu_item(label="The 3-D view", check=True, tag="menu_pop_cube",
+                                  callback=lambda s, a: app.set_popout("cube", bool(a)))
         with dpg.menu(label="Node"):
             _mi(app, "Add node...  (or right-click the graph)", "add_node", callback=lambda: app.search_nodes())
             with dpg.menu(label="Add", tag="menu_add"):
@@ -864,6 +875,14 @@ def show_appearance(app):
     dpg.show_item("appearance_win")
 
 
+def grip(pane):
+    """The handle a pane is dragged by: ::: at its top left. The app's click
+    handler looks for the pointer on it (app.on_mouse_click)."""
+    dpg.add_button(label=":::", tag=f"grip_{pane}", width=24, height=19)
+    with dpg.tooltip(f"grip_{pane}"):
+        dpg.add_text("drag onto another pane to move this one there")
+
+
 def _pane_menu(app, pane, rows):
     """A right-click menu on a pane: a popup window the app's right-click
     handler shows at the pointer (dpg.popup wants a container stack the
@@ -887,11 +906,13 @@ def build_pane_menus(app):
         ("Record 15 s GIF", lambda: app.start_rec(15.0)),
         ("Reset the camera", lambda: (setattr(app, "yaw", -0.6), setattr(app, "pitch", 0.75), setattr(app, "dist", 4.6))),
         ("Compare with another effect...", lambda: app.run_action("compare")),
-        ("Full frame (E)", lambda: app.set_layout("cube"))])
+        ("Full frame (E)", lambda: app.set_layout("cube")),
+        ("Pop out to its own window", lambda: app.set_popout("cube", True))])
     _pane_menu(app, "net_win", [
         ("Show / hide the wiring", lambda: setattr(app, "show_wiring", not app.show_wiring)),
         ("Screenshot", lambda: setattr(app, "shot_req", True)),
-        ("Full frame (Q)", lambda: app.set_layout("net"))])
+        ("Full frame (Q)", lambda: app.set_layout("net")),
+        ("Pop out to its own window", lambda: app.set_popout("net", True))])
     _pane_menu(app, "edit_win", [
         ("Save", lambda: app.save_current()),
         ("Compile + reload", lambda: app.build_current()),
@@ -979,6 +1000,12 @@ def refresh(app):
     for child in dpg.get_item_children("toolbar", 1) or []:
         if "ImageButton" in dpg.get_item_type(child):
             dpg.configure_item(child, tint_color=TEXT)
+    for k, (_, arr) in enumerate(app.PRESETS):
+        if dpg.does_item_exist(f"menu_arr_{k}"):
+            dpg.set_value(f"menu_arr_{k}", app.arrangement == arr)
+    for v in ("net", "cube"):
+        if dpg.does_item_exist(f"menu_pop_{v}"):
+            dpg.set_value(f"menu_pop_{v}", app.popouts.is_out(v))
     for key, _, _ in LAYOUTS:
         on = app.layout == key and app.ui
         dpg.set_value(f"menu_view_{key}", on)

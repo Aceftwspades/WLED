@@ -2459,6 +2459,8 @@ def build_panel(app, panel):
     # One row: which graph, and the status line. Everything else is on the
     # menus and the toolbar (chrome.py) or the right-click menu.
     with dpg.group(horizontal=True):
+        from native.chrome import grip
+        grip("graph_win")
         dpg.add_button(label="< back", tag="graph_back", show=False, callback=lambda: panel.back())
         dpg.add_combo(panel.files(), tag="graph_file", width=220, default_value=panel.file or "",
                       callback=lambda s, v: panel.open(v))

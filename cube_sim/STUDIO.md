@@ -267,9 +267,25 @@ editor. Ticked when done; the order within a group is the order to do them.
       the picture is shifted instead to keep the point under the cursor
       still. Remembered across runs. A custom canvas is no longer needed
       for this; it remains the route to wire styling and thumbnails.
-- [x] **Resizable panes**: a splitter between the left pane and the 3-D
-      view (one split per layout: both / code / graph) and one before the
-      side panel; drag them, remembered across runs in `projects/studio.json`.
+- [x] **Resizable panes**: a splitter between every pair of neighbouring
+      panes; drag them, remembered across runs in `projects/studio.json`
+      (per layout mode for the columns, since the graph wants more room
+      than the net).
+- [x] **Movable panes**: the three slots - the main pane (net, code or
+      graph, whichever the layout mode shows), the 3-D view and the panel
+      - sit in columns of rows (`App.arrangement`). Drag a pane by the
+      `:::` at its top left onto another: near an edge it snaps beside or
+      above that pane, in the middle the two swap; the target lights up
+      as you go. View > Layout has six presets; the arrangement is
+      remembered.
+- [x] **Pop-out views** (`native/popout.py`): the net or the 3-D view in
+      a window of its own, for a second monitor (View > Pop out, or the
+      pane's right-click menu). Dear PyGui has one viewport a process, so
+      the pop-out is a second process reading a shared-memory block the
+      app writes every frame - the net at LED resolution, the geometry -
+      and drawing the cube itself (GPU quads, or the point cloud), as
+      sharp as its window is big, with its own orbit and zoom. Closing the
+      window gives the pane back; the window remembers where it was.
 
 ### Code editor
 
@@ -694,6 +710,8 @@ and `app` (the whole loop) in ms; the `measure` test hook prints the split.
   promotes any of its settings to the sub-graph node outside (`promote`
   on the inner node; `sub_def` lists it, `flatten` applies it), so a
   reused sub-graph can differ per use without pins for everything.
+- Movable panes and pop-out views (above, under Resizable panes): the
+  panes sit where you put them, and a view can leave for another monitor.
 - After an OTA the flash dialog reads `/json/info` before and after,
   waits for the device to come back, and reports its version and build
   id - and says so if the build did not change.
