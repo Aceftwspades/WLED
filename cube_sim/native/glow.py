@@ -1,12 +1,12 @@
 """Rotating angular-gradient frames around what is active.
 
 The frame is an angular (conic) gradient drawn as four thin strips around a
-rectangle plus four wider, fainter ones outside them for a glow, turning
-slowly. One texture holds the gradient; each strip is an image quad whose
-texture coordinates are the strip's own position rotated about the
-rectangle's centre, so the four strips read as one gradient and turning it is
-a matter of new coordinates each frame - eight small updates per frame per
-rectangle, nothing redrawn.
+rectangle plus four wider, fainter ones outside them for a glow, the corners
+rounded by a few small quads each, turning slowly. One texture holds the
+gradient; each piece is an image quad whose texture coordinates are its own
+position rotated about the rectangle's centre, so the pieces read as one
+gradient and turning it is a matter of new coordinates each frame - a few
+dozen small updates per frame per rectangle, nothing redrawn.
 
 Two kinds of frame, each with its own gradient: "sel" (the selected nodes)
 and "focus" (the pane last clicked in). A gradient is a list of stops,
@@ -29,8 +29,11 @@ DEFAULT_STOPS = [[0.0, 90, 169, 230], [0.2, 150, 120, 255], [0.4, 255, 110, 170]
 SIZE = 128
 BORDER = 2
 GLOW = 5
+RADIUS = 9                                   # the corners' rounding
+ARC_N = 5                                    # quads per rounded corner, per ring
+PER_RECT = 8 + 4 * ARC_N * 2                 # strips and corner pieces a rectangle takes
 TURNS_PER_S = 0.1
-POOL = {"sel": 8 * 14, "focus": 8 * 4}      # strips, split round any dialog
+POOL = {"sel": PER_RECT * 7, "focus": PER_RECT * 2}      # pieces, split round any dialog
 
 
 def sample(stops, t, mirror=False):
@@ -91,17 +94,40 @@ class Frames:
             dpg.set_value(self.tex[kind], conic(stops, mirror))
 
     @staticmethod
-    def _strips(x0, y0, x1, y1):
+    def _radius(x0, y0, x1, y1):
+        return max(0.0, min(RADIUS, (x1 - x0) / 2.0, (y1 - y0) / 2.0))
+
+    @classmethod
+    def _strips(cls, x0, y0, x1, y1):
+        """The straight parts, stopping short of the corners by the radius."""
         b, g = BORDER, GLOW
-        yield (x0 - b, y0 - b, x1 + b, y0, 255)
-        yield (x0 - b, y1, x1 + b, y1 + b, 255)
-        yield (x0 - b, y0, x0, y1, 255)
-        yield (x1, y0, x1 + b, y1, 255)
+        r = cls._radius(x0, y0, x1, y1)
+        yield (x0 + r, y0 - b, x1 - r, y0, 255)
+        yield (x0 + r, y1, x1 - r, y1 + b, 255)
+        yield (x0 - b, y0 + r, x0, y1 - r, 255)
+        yield (x1, y0 + r, x1 + b, y1 - r, 255)
         o = b + g
-        yield (x0 - o, y0 - o, x1 + o, y0 - b, 70)
-        yield (x0 - o, y1 + b, x1 + o, y1 + o, 70)
-        yield (x0 - o, y0 - b, x0 - b, y1 + b, 70)
-        yield (x1 + b, y0 - b, x1 + o, y1 + b, 70)
+        yield (x0 + r, y0 - o, x1 - r, y0 - b, 70)
+        yield (x0 + r, y1 + b, x1 - r, y1 + o, 70)
+        yield (x0 - o, y0 + r, x0 - b, y1 - r, 70)
+        yield (x1 + b, y0 + r, x1 + o, y1 - r, 70)
+
+    @classmethod
+    def _corners(cls, x0, y0, x1, y1):
+        """The rounded corners: for each, ARC_N quads round the border ring
+        and ARC_N round the glow ring, as (p1, p2, p3, p4, alpha)."""
+        b, g = BORDER, GLOW
+        r = cls._radius(x0, y0, x1, y1)
+        centres = ((x0 + r, y0 + r, math.pi), (x1 - r, y0 + r, 1.5 * math.pi),
+                   (x1 - r, y1 - r, 0.0), (x0 + r, y1 - r, 0.5 * math.pi))
+        for cx, cy, a0 in centres:
+            for (ri, ro, a) in ((r, r + b, 255), (r + b, r + b + g, 70)):
+                for k in range(ARC_N):
+                    t0 = a0 + (math.pi / 2) * k / ARC_N
+                    t1 = a0 + (math.pi / 2) * (k + 1) / ARC_N
+                    c0, s0, c1, s1 = math.cos(t0), math.sin(t0), math.cos(t1), math.sin(t1)
+                    yield ((cx + ri * c0, cy + ri * s0), (cx + ro * c0, cy + ro * s0),
+                           (cx + ro * c1, cy + ro * s1), (cx + ri * c1, cy + ri * s1), a)
 
     @staticmethod
     def _subtract(r, holes):
@@ -157,6 +183,21 @@ class Frames:
                                        uv1=uv(sx0, sy0), uv2=uv(sx1, sy0), uv3=uv(sx1, sy1), uv4=uv(sx0, sy1),
                                        color=(255, 255, 255, int(a * alpha)), show=True)
                     used[kind] = k + 1
+            # the corners: a piece is drawn whole or not at all - one outside
+            # the clip, or under a window, is left out
+            for (p1, p2, p3, p4, a) in self._corners(x0, y0, x1, y1):
+                bx0 = min(p[0] for p in (p1, p2, p3, p4)); bx1 = max(p[0] for p in (p1, p2, p3, p4))
+                by0 = min(p[1] for p in (p1, p2, p3, p4)); by1 = max(p[1] for p in (p1, p2, p3, p4))
+                if clip and (bx0 < clip[0] or by0 < clip[1] or bx1 > clip[2] or by1 > clip[3]):
+                    continue
+                if any(not (hx1 <= bx0 or hx0 >= bx1 or hy1 <= by0 or hy0 >= by1) for (hx0, hy0, hx1, hy1) in holes):
+                    continue
+                k = used[kind]
+                if k >= len(quads):
+                    break
+                dpg.configure_item(quads[k], p1=p1, p2=p2, p3=p3, p4=p4, uv1=uv(*p1), uv2=uv(*p2), uv3=uv(*p3), uv4=uv(*p4),
+                                   color=(255, 255, 255, int(a * alpha)), show=True)
+                used[kind] = k + 1
         for kind, quads in self.quads.items():
             for j in range(used[kind], self.shown[kind]):
                 dpg.configure_item(quads[j], show=False)

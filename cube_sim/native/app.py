@@ -2258,6 +2258,25 @@ class App(Features):
             self.gp.status("nothing to repeat yet")
 
     @staticmethod
+    def _merge_boxes(boxes):
+        """Rectangles that overlap or touch, merged until none do."""
+        out = [tuple(b) for b in boxes]
+        merged = True
+        while merged and len(out) > 1:
+            merged = False
+            for i in range(len(out)):
+                for j in range(i + 1, len(out)):
+                    a, b = out[i], out[j]
+                    if not (b[2] < a[0] or b[0] > a[2] or b[3] < a[1] or b[1] > a[3]):
+                        out[i] = (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
+                        del out[j]
+                        merged = True
+                        break
+                if merged:
+                    break
+        return out
+
+    @staticmethod
     def _screen_rect(tag):
         """(x0, y0, x1, y1) on screen, or None. A child window reports no
         rect_min; its pos is in the root window, which is the screen."""
@@ -2317,10 +2336,24 @@ class App(Features):
                     (x0, y0), (x1, y1) = st.get("rect_min", (0, 0)), st.get("rect_max", (0, 0))
                     if x1 > x0 and y1 > y0:          # the content rect; the node is a padding wider
                         boxes.append((x0 - pad, y0 - pad, x1 + pad, y1 + pad))
+                # Boxes that touch merge into one frame round the group;
+                # a frame that would cross a node NOT selected is left out
+                # (the node's own selected look stays) - a frame drawn over
+                # a clump of nodes reads as mess, not as a selection.
+                boxes = self._merge_boxes(boxes)
                 if len(boxes) > 3:
-                    # a big selection wears one frame round the lot, not a frame each
                     boxes = [(min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))]
+                others = []
+                for nid in self.gp.graph.nodes:
+                    if nid in sel or not dpg.does_item_exist(f"gnode_{nid}"):
+                        continue
+                    st = dpg.get_item_state(f"gnode_{nid}")
+                    (ox0, oy0), (ox1, oy1) = st.get("rect_min", (0, 0)), st.get("rect_max", (0, 0))
+                    if ox1 > ox0 and oy1 > oy0:
+                        others.append((ox0, oy0, ox1, oy1))
                 for x0, y0, x1, y1 in boxes:
+                    if any(not (ox1 <= x0 or ox0 >= x1 or oy1 <= y0 or oy0 >= y1) for ox0, oy0, ox1, oy1 in others):
+                        continue
                     rects.append((x0, y0, x1, y1, clip, 1.0, "sel"))
         # Every window that floats over the panes is a hole in the frames.
         holes = []
