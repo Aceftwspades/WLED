@@ -87,7 +87,14 @@ class CubeFxBankUsermod : public Usermod {
     // deserializeConfigFromFS() and calls UsermodManager::setup() afterwards, so
     // this ordering is guaranteed by the boot sequence rather than by luck.
     for (uint8_t i = 0; i < CFX_BANK_SLOTS; i++) cfxBankSlots()[i] = slots[i];
-    cfxBankConfigured() = enabled;
+    // A bank with every slot empty has not been configured, whatever wrote
+    // the key: WLED saves the whole usermod block whenever any setting in it
+    // is saved (the studio's six-face push, for one), and an all-zero block
+    // read back on the next boot must not turn every effect off. No slots
+    // chosen means every effect registers, as before the bank existed.
+    bool chosen = false;
+    for (uint8_t i = 0; i < CFX_BANK_SLOTS; i++) if (slots[i]) chosen = true;
+    cfxBankConfigured() = enabled && chosen;
     return true;
   }
 
@@ -98,6 +105,8 @@ class CubeFxBankUsermod : public Usermod {
     char buf[48];
     if (!enabled) {
       snprintf_P(buf, sizeof(buf), PSTR("off - all %u registered"), (unsigned)cfxBankCount());
+    } else if (!cfxBankConfigured()) {
+      snprintf_P(buf, sizeof(buf), PSTR("none chosen - all %u registered"), (unsigned)cfxBankCount());
     } else {
       snprintf_P(buf, sizeof(buf), PSTR("%u of %u placed"),
                  (unsigned)cfxBankPlacedCount(), (unsigned)cfxBankCount());
@@ -127,6 +136,12 @@ class CubeFxBankUsermod : public Usermod {
     snprintf_P(fb, sizeof(fb), PSTR("%u  (%u modes, %u gaps + %u above)"),
                (unsigned)(rsvd + (255 - used)), used, rsvd, (unsigned)(255 - used));
     f.add(fb);
+    // the Studio Script effect's frame budget: a program too heavy for the
+    // chip runs at half or a quarter of the width, and this is where it says so
+    JsonArray sc = user.createNestedArray(F("Studio Script"));
+    if (cfx_scriptStride <= 1) snprintf_P(fb, sizeof(fb), PSTR("full resolution, %u.%u ms a frame"), (unsigned)(cfx_scriptTook / 1000), (unsigned)(cfx_scriptTook / 100 % 10));
+    else snprintf_P(fb, sizeof(fb), PSTR("1/%u width - over the frame budget, %u.%u ms a frame"), (unsigned)cfx_scriptStride, (unsigned)(cfx_scriptTook / 1000), (unsigned)(cfx_scriptTook / 100 % 10));
+    sc.add(fb);
   }
 
   void appendConfigData(Print &s) override {

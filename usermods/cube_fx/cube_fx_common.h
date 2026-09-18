@@ -350,6 +350,8 @@ static inline bool cfx_isCube(int cols, int rows) {
 // Everything that asks "is this pixel a gap" asks these, never the block
 // index directly.
 extern bool cfx_sixFaces;
+extern uint8_t cfx_scriptStride;   // the Studio Script effect's frame-budget stride: 1 full, 2 half, 4 quarter width
+extern uint32_t cfx_scriptTook;    // its last frame's pixel loop, microseconds
 static inline int  cfx_faces() { return cfx_sixFaces ? 6 : 5; }
 static inline bool cfx_gapBlock(int bx, int by) {
   return bx != 1 && by != 1 && !(cfx_sixFaces && bx == 2 && by == 2);

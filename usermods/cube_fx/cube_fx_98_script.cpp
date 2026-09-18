@@ -1,3 +1,14 @@
+// This file is compiled for speed, not size. The firmware builds with -Os,
+// and at -Os GCC turned the VM's 67-way switch into a tree of branches
+// (seven or eight taken branches per op) and refused to inline the one-line
+// helpers - gc_sat, fminf, the register reads - so a MOV cost 40 cycles.
+// -O2 gives the helpers their place and, with jump tables turned back on (the
+// ESP-IDF toolchain builds with -fno-jump-tables), the switch its table; the pragma
+// must sit above the includes, because GCC will not inline a function
+// compiled with different optimisation options into one compiled at -O2.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC optimize("O2", "jump-tables", "tree-switch-conversion")
+#endif
 #include "wled.h"
 #include "cube_fx_common.h"
 #include "cube_fx_bank.h"
@@ -61,30 +72,44 @@ struct SsProgram {
   size_t len = 0;
   uint16_t nf = 0, nc = 0, ns = 0;
   uint32_t frameLen = 0, pixelLen = 0;
-  const uint8_t *frame = nullptr, *pixel = nullptr;
+  // The streams as the run loop reads them: 16-bit words (an op, then its
+  // operands; a float immediate as two), decoded from the file's bytes when
+  // it arrives, so every operand is one aligned load.
+  uint16_t *words = nullptr;
+  const uint16_t *frame = nullptr, *pixel = nullptr;
+  uint32_t frameWords = 0, pixelWords = 0;
   uint32_t stamp = 0;                // changes when a new program is loaded
   bool valid = false;
   bool usesPolar = false;            // the pixel stream reads r or ang
   bool usesSpace = false;            // ... or the 3-D position / normal
 };
 static SsProgram gSs;
+uint8_t cfx_scriptStride = 1;      // the frame budget's current stride (1 = full resolution); the bank reports it
+uint32_t cfx_scriptTook = 0;       // the last frame's pixel loop, microseconds
 
-// One stream checked against SS_SIG; false on a bad op or register. The
-// fixed registers the stream reads are noted in `reads` (bits 0..55).
-static bool ssCheck(const uint8_t *p, const uint8_t *end, const SsProgram &P, uint64_t &reads) {
+// One stream checked against SS_SIG and decoded into words at `out`;
+// false on a bad op or register. The fixed registers the stream reads are
+// noted in `reads` (bits 0..55); the number of words written in `n`.
+static bool ssCheck(const uint8_t *p, const uint8_t *end, const SsProgram &P, uint64_t &reads, uint16_t *out, uint32_t &n) {
+  n = 0;
   while (p < end) {
     const uint8_t op = *p++;
+    out[n++] = op;
     if (op == SS_END) return true;
     if (op >= SS_NOPS) return false;
     for (const char *k = SS_SIG[op]; *k; k++) {
-      if (*k == 'k') { if (end - p < 4) return false; p += 4; continue; }
+      if (*k == 'k') {
+        if (end - p < 4) return false;
+        out[n++] = p[0] | (p[1] << 8); out[n++] = p[2] | (p[3] << 8); p += 4; continue;
+      }
       if (end - p < 2) return false;
       const uint16_t v = p[0] | (p[1] << 8); p += 2;
+      out[n++] = v;
       if (*k == 'f') { if (v >= P.nf) return false; if (v < SS_FIXED) reads |= (uint64_t)1 << v; }
       else if (*k == 'c') { if (v >= P.nc) return false; }
     }
   }
-  return true;
+  return false;                          // ran off the end without an END: the run loop relies on one
 }
 
 static bool ssParse(SsProgram &P) {
@@ -96,12 +121,16 @@ static bool ssParse(SsProgram &P) {
   P.pixelLen = (uint32_t)h[10] | ((uint32_t)h[11] << 8) | ((uint32_t)h[12] << 16) | ((uint32_t)h[13] << 24);
   if (19 + P.frameLen + P.pixelLen > P.len) return false;
   if (P.nf < SS_FIXED || P.nf > 4096 || P.nc < 1 || P.nc > 2048 || P.ns > 4096) return false;
-  P.frame = P.bytes + 19;
-  P.pixel = P.frame + P.frameLen;
+  const uint8_t *fb = P.bytes + 19, *pb = fb + P.frameLen;
+  free(P.words);
+  P.words = (uint16_t *)malloc((P.frameLen + P.pixelLen + 2) * sizeof(uint16_t));   // a byte never makes more than a word
+  if (!P.words) return false;
   uint64_t reads = 0;
-  if (!ssCheck(P.frame, P.frame + P.frameLen, P, reads)) return false;
+  if (!ssCheck(fb, fb + P.frameLen, P, reads, P.words, P.frameWords)) return false;
+  P.frame = P.words;
   reads = 0;
-  if (!ssCheck(P.pixel, P.pixel + P.pixelLen, P, reads)) return false;
+  if (!ssCheck(pb, pb + P.pixelLen, P, reads, P.words + P.frameWords, P.pixelWords)) return false;
+  P.pixel = P.words + P.frameWords;
   P.usesPolar = (reads & (((uint64_t)1 << SSF_r) | ((uint64_t)1 << SSF_ang))) != 0;
   P.usesSpace = (reads & (((uint64_t)1 << SSF_X3) | ((uint64_t)1 << SSF_Y3) | ((uint64_t)1 << SSF_Z3)
                         | ((uint64_t)1 << SSF_nx) | ((uint64_t)1 << SSF_ny) | ((uint64_t)1 << SSF_nz))) != 0;
@@ -109,6 +138,27 @@ static bool ssParse(SsProgram &P) {
   P.stamp++;
   return true;
 }
+
+// Sine by table: 256 entries over a turn and a straight line between them
+// (a hundredth of a per cent out at worst), because on an ESP32 sinf is a
+// few hundred cycles and even WLED's sin_t, a float wrapper on sin16_t, was
+// 300 ns an op. Made when the effect first runs.
+static float ssSinTab[258];
+static bool ssSinReady = false;
+static void ssSinInit() {
+  if (ssSinReady) return;
+  for (int i = 0; i < 258; i++) ssSinTab[i] = sinf((float)i * (6.28318530718f / 256.0f));
+  ssSinReady = true;
+}
+static inline float ssFloor(float x) { const float f = (float)(int32_t)x; return f > x ? f - 1.0f : f; }
+static inline float ssCeil(float x) { const float f = (float)(int32_t)x; return f < x ? f + 1.0f : f; }
+static inline float ssSinTurns(float t) {         // t in 256ths of a turn
+  const float f = ssFloor(t);
+  const int i = (int32_t)f & 255;
+  return ssSinTab[i] + (ssSinTab[i + 1] - ssSinTab[i]) * (t - f);
+}
+static inline float ssSin(float rad) { return ssSinTurns(rad * (256.0f / 6.28318530718f)); }
+static inline float ssCos(float rad) { return ssSinTurns(rad * (256.0f / 6.28318530718f) + 64.0f); }
 
 // The palette, 256 entries, made on the first PAL of a frame and kept for
 // the rest of it: one palette lookup per index per frame, not per pixel.
@@ -155,86 +205,108 @@ static void ssPoll() {
 }
 #endif
 
-static inline uint16_t ssU16(const uint8_t *&p) { uint16_t v = p[0] | (p[1] << 8); p += 2; return v; }
-static inline float ssF32(const uint8_t *&p) { float v; memcpy(&v, p, 4); p += 4; return v; }
+static inline uint16_t ssU16(const uint16_t *&p) { return *p++; }
+static inline float ssF32(const uint16_t *&p) { uint32_t u = (uint32_t)p[0] | ((uint32_t)p[1] << 16); p += 2; float v; memcpy(&v, &u, 4); return v; }
+
+#ifndef IRAM_ATTR
+#define IRAM_ATTR
+#endif
 
 // One stream. F, C, S are the register files; returns the OUT colour (or 0).
 // Register operands were range-checked by ssParse; state slots are checked
-// here, as the state block is sized separately.
-static uint32_t ssRun(const uint8_t *p, const uint8_t *end, float *F, uint32_t *C, float *S,
-                      uint16_t ns, const uint8_t *fft) {
+// here, as the state block is sized separately. In IRAM: it runs a couple
+// of thousand times a frame beside WiFi and the web server, which would
+// otherwise keep pushing it out of the flash cache.
+static uint32_t IRAM_ATTR ssRun(const uint16_t *p, const uint16_t *end, float *F, uint32_t *C, float *S,
+                                uint16_t ns, const uint8_t *fft) {
   uint32_t out = 0;
+  uint16_t a, b, c, d;
   #define RF(i) F[(i)]
   #define RC(i) C[(i)]
+  // Threaded dispatch where the compiler allows it (GCC and clang): each op
+  // ends by jumping straight to the next one's code through a table of
+  // label addresses - no loop test, no bounds check, no jump back to a
+  // switch - which is a fifth of the cost of a simple op. The op codes were
+  // checked by ssParse and every stream ends in END, so nothing is tested
+  // here. The switch is the same body for any other compiler.
+#if defined(__GNUC__) || defined(__clang__)
+  (void)end;
+  static const void *const ssJump[] = { &&L_END, &&L_CONST, &&L_MOV, &&L_ADD, &&L_SUB, &&L_MUL, &&L_DIV, &&L_MIN, &&L_MAX, &&L_POW, &&L_MOD, &&L_ATAN2, &&L_ABS, &&L_FLOOR, &&L_FRACT, &&L_SIN, &&L_COS, &&L_SQRT, &&L_EXP, &&L_LOG, &&L_SAT, &&L_SIGN, &&L_ROUND, &&L_NOT, &&L_TAN, &&L_TRUNC, &&L_CEIL, &&L_LT, &&L_LE, &&L_GT, &&L_GE, &&L_EQ, &&L_NE, &&L_AND, &&L_OR, &&L_SEL, &&L_NOISE, &&L_HASH, &&L_FBM, &&L_PAL, &&L_HSV, &&L_RGB, &&L_CR, &&L_CG, &&L_CB, &&L_CMIX, &&L_CSCALE, &&L_CADD, &&L_CMUL, &&L_CMAX, &&L_CMIN, &&L_CSEL, &&L_SEGCOL, &&L_CMOV, &&L_CCONST, &&L_OUT, &&L_STLD, &&L_STST, &&L_RND, &&L_BLEND, &&L_RINGUV, &&L_POSUV, &&L_FOLD, &&L_KNOT, &&L_MANDEL, &&L_EASE, &&L_LOUDEST };
+  #define OP(N) L_##N:
+  #define END_OP goto *ssJump[*p++]
+  END_OP;
+#else
+  #define OP(N) case SS_##N:
+  #define END_OP break
   while (p < end) {
-    const uint8_t op = *p++;
-    uint16_t a, b, c, d;
-    switch (op) {
-      case SS_END: return out;
-      case SS_CONST: a = ssU16(p); RF(a) = ssF32(p); break;
-      case SS_MOV: a = ssU16(p); b = ssU16(p); RF(a) = RF(b); break;
-      case SS_ADD: a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(b) + RF(c); break;
-      case SS_SUB: a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(b) - RF(c); break;
-      case SS_MUL: a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(b) * RF(c); break;
-      case SS_DIV: a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(c) != 0.0f ? RF(b) / RF(c) : 0.0f; break;
-      case SS_MIN: a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = fminf(RF(b), RF(c)); break;
-      case SS_MAX: a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = fmaxf(RF(b), RF(c)); break;
-      case SS_POW: a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = powf(RF(b) < 0.0f ? 0.0f : RF(b), RF(c)); break;
-      case SS_MOD: a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(c) != 0.0f ? fmodf(RF(b), RF(c)) : 0.0f; break;
-      case SS_ATAN2: a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = cfx_atan2f(RF(b), RF(c)); break;
-      case SS_ABS: a = ssU16(p); b = ssU16(p); RF(a) = fabsf(RF(b)); break;
-      case SS_FLOOR: a = ssU16(p); b = ssU16(p); RF(a) = floorf(RF(b)); break;
-      case SS_FRACT: a = ssU16(p); b = ssU16(p); RF(a) = RF(b) - floorf(RF(b)); break;
-      case SS_SIN: a = ssU16(p); b = ssU16(p); RF(a) = sin_t(RF(b)); break;      // WLED's table sine: within 0.0015 of sinf, a fraction of the time
-      case SS_COS: a = ssU16(p); b = ssU16(p); RF(a) = cos_t(RF(b)); break;
-      case SS_SQRT: a = ssU16(p); b = ssU16(p); RF(a) = sqrtf(RF(b) < 0.0f ? 0.0f : RF(b)); break;
-      case SS_EXP: a = ssU16(p); b = ssU16(p); RF(a) = expf(RF(b)); break;
-      case SS_LOG: a = ssU16(p); b = ssU16(p); RF(a) = RF(b) > 0.0f ? logf(RF(b)) : 0.0f; break;
-      case SS_SAT: a = ssU16(p); b = ssU16(p); RF(a) = gc_sat(RF(b)); break;
-      case SS_SIGN: a = ssU16(p); b = ssU16(p); RF(a) = RF(b) > 0.0f ? 1.0f : (RF(b) < 0.0f ? -1.0f : 0.0f); break;
-      case SS_ROUND: a = ssU16(p); b = ssU16(p); RF(a) = floorf(RF(b) + 0.5f); break;
-      case SS_NOT: a = ssU16(p); b = ssU16(p); RF(a) = RF(b) != 0.0f ? 0.0f : 1.0f; break;
-      case SS_TAN: a = ssU16(p); b = ssU16(p); RF(a) = tanf(RF(b)); break;
-      case SS_TRUNC: a = ssU16(p); b = ssU16(p); RF(a) = (float)(int32_t)RF(b); break;
-      case SS_CEIL: a = ssU16(p); b = ssU16(p); RF(a) = ceilf(RF(b)); break;
-      case SS_LT: a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(b) < RF(c) ? 1.0f : 0.0f; break;
-      case SS_LE: a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(b) <= RF(c) ? 1.0f : 0.0f; break;
-      case SS_GT: a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(b) > RF(c) ? 1.0f : 0.0f; break;
-      case SS_GE: a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(b) >= RF(c) ? 1.0f : 0.0f; break;
-      case SS_EQ: a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(b) == RF(c) ? 1.0f : 0.0f; break;
-      case SS_NE: a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(b) != RF(c) ? 1.0f : 0.0f; break;
-      case SS_AND: a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = (RF(b) != 0.0f && RF(c) != 0.0f) ? 1.0f : 0.0f; break;
-      case SS_OR: a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = (RF(b) != 0.0f || RF(c) != 0.0f) ? 1.0f : 0.0f; break;
-      case SS_SEL: a = ssU16(p); b = ssU16(p); c = ssU16(p); d = ssU16(p); RF(a) = RF(b) != 0.0f ? RF(c) : RF(d); break;
-      case SS_NOISE: { a = ssU16(p); b = ssU16(p); c = ssU16(p); d = ssU16(p);
-        RF(a) = perlin8((uint16_t)(RF(b) * 256.0f), (uint16_t)(RF(c) * 256.0f), (uint16_t)(RF(d) * 256.0f)) * (1.0f / 255.0f); break; }
-      case SS_HASH: a = ssU16(p); b = ssU16(p); c = ssU16(p); d = ssU16(p); RF(a) = gc_hash(RF(b), RF(c), RF(d)); break;
-      case SS_FBM: { a = ssU16(p); uint16_t x = ssU16(p), y = ssU16(p), z = ssU16(p), s = ssU16(p), o = ssU16(p), rg = ssU16(p);
-        RF(a) = gc_fbm(RF(x), RF(y), RF(z), RF(s), (int)RF(o), RF(rg)); break; }
-      case SS_PAL: { a = ssU16(p); b = ssU16(p); c = ssU16(p);
-        RC(a) = mq_scale(ssPal((uint8_t)(int)(gc_sat(RF(b)) * 255.0f)), (uint8_t)(gc_sat(RF(c)) * 255.0f)); break; }
-      case SS_HSV: a = ssU16(p); b = ssU16(p); c = ssU16(p); d = ssU16(p); RC(a) = gc_hsv(RF(b), RF(c), RF(d)); break;
-      case SS_RGB: { a = ssU16(p); b = ssU16(p); c = ssU16(p); d = ssU16(p);
-        RC(a) = RGBW32((uint8_t)(gc_sat(RF(b)) * 255.0f), (uint8_t)(gc_sat(RF(c)) * 255.0f), (uint8_t)(gc_sat(RF(d)) * 255.0f), 0); break; }
-      case SS_CR: a = ssU16(p); b = ssU16(p); RF(a) = (float)((RC(b) >> 16) & 255) * (1.0f / 255.0f); break;
-      case SS_CG: a = ssU16(p); b = ssU16(p); RF(a) = (float)((RC(b) >> 8) & 255) * (1.0f / 255.0f); break;
-      case SS_CB: a = ssU16(p); b = ssU16(p); RF(a) = (float)(RC(b) & 255) * (1.0f / 255.0f); break;
-      case SS_CMIX: { a = ssU16(p); b = ssU16(p); c = ssU16(p); d = ssU16(p);
-        RC(a) = color_blend(RC(b), RC(c), (uint8_t)(gc_sat(RF(d)) * 255.0f)); break; }
-      case SS_CSCALE: a = ssU16(p); b = ssU16(p); c = ssU16(p); RC(a) = mq_scale(RC(b), (uint8_t)(gc_sat(RF(c)) * 255.0f)); break;
-      case SS_CADD: a = ssU16(p); b = ssU16(p); c = ssU16(p); RC(a) = color_add(RC(b), RC(c), true); break;
-      case SS_CMUL: a = ssU16(p); b = ssU16(p); c = ssU16(p); RC(a) = gc_blend_multiply(RC(b), RC(c), 1.0f); break;
-      case SS_CMAX: a = ssU16(p); b = ssU16(p); c = ssU16(p); RC(a) = gc_blend_max(RC(b), RC(c), 1.0f); break;
-      case SS_CMIN: a = ssU16(p); b = ssU16(p); c = ssU16(p); RC(a) = gc_blend_min(RC(b), RC(c), 1.0f); break;
-      case SS_CSEL: a = ssU16(p); b = ssU16(p); c = ssU16(p); d = ssU16(p); RC(a) = RF(b) != 0.0f ? RC(c) : RC(d); break;
-      case SS_SEGCOL: a = ssU16(p); b = ssU16(p); RC(a) = SEGCOLOR(b < 3 ? b : 0); break;
-      case SS_CMOV: a = ssU16(p); b = ssU16(p); RC(a) = RC(b); break;
-      case SS_CCONST: a = ssU16(p); b = ssU16(p); RC(a) = b; break;
-      case SS_OUT: a = ssU16(p); out = RC(a); break;
-      case SS_STLD: a = ssU16(p); b = ssU16(p); RF(a) = b < ns ? S[b] : 0.0f; break;
-      case SS_STST: a = ssU16(p); b = ssU16(p); if (a < ns) S[a] = RF(b); break;
-      case SS_RND: a = ssU16(p); RF(a) = gc_rnd(); break;
-      case SS_BLEND: { a = ssU16(p); b = ssU16(p); c = ssU16(p); d = ssU16(p); uint16_t m = ssU16(p);
+    switch (*p++) {
+#endif
+      OP(END) return out;                 // the stream's last op (ssParse insists on it)
+      OP(CONST) a = ssU16(p); RF(a) = ssF32(p); END_OP;
+      OP(MOV) a = ssU16(p); b = ssU16(p); RF(a) = RF(b); END_OP;
+      OP(ADD) a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(b) + RF(c); END_OP;
+      OP(SUB) a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(b) - RF(c); END_OP;
+      OP(MUL) a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(b) * RF(c); END_OP;
+      OP(DIV) a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(c) != 0.0f ? RF(b) / RF(c) : 0.0f; END_OP;
+      OP(MIN) a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(b) < RF(c) ? RF(b) : RF(c); END_OP;
+      OP(MAX) a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(b) > RF(c) ? RF(b) : RF(c); END_OP;
+      OP(POW) a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = powf(RF(b) < 0.0f ? 0.0f : RF(b), RF(c)); END_OP;
+      OP(MOD) { a = ssU16(p); b = ssU16(p); c = ssU16(p);                          // fmodf's sign, without the call
+        RF(a) = RF(c) != 0.0f ? RF(b) - RF(c) * (float)(int32_t)(RF(b) / RF(c)) : 0.0f; END_OP; }
+      OP(ATAN2) a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = cfx_atan2f(RF(b), RF(c)); END_OP;
+      OP(ABS) a = ssU16(p); b = ssU16(p); RF(a) = fabsf(RF(b)); END_OP;
+      OP(FLOOR) a = ssU16(p); b = ssU16(p); RF(a) = ssFloor(RF(b)); END_OP;
+      OP(FRACT) a = ssU16(p); b = ssU16(p); RF(a) = RF(b) - ssFloor(RF(b)); END_OP;
+      OP(SIN) a = ssU16(p); b = ssU16(p); RF(a) = ssSin(RF(b)); END_OP;
+      OP(COS) a = ssU16(p); b = ssU16(p); RF(a) = ssCos(RF(b)); END_OP;
+      OP(SQRT) a = ssU16(p); b = ssU16(p); RF(a) = sqrtf(RF(b) < 0.0f ? 0.0f : RF(b)); END_OP;
+      OP(EXP) a = ssU16(p); b = ssU16(p); RF(a) = expf(RF(b)); END_OP;
+      OP(LOG) a = ssU16(p); b = ssU16(p); RF(a) = RF(b) > 0.0f ? logf(RF(b)) : 0.0f; END_OP;
+      OP(SAT) a = ssU16(p); b = ssU16(p); RF(a) = gc_sat(RF(b)); END_OP;
+      OP(SIGN) a = ssU16(p); b = ssU16(p); RF(a) = RF(b) > 0.0f ? 1.0f : (RF(b) < 0.0f ? -1.0f : 0.0f); END_OP;
+      OP(ROUND) a = ssU16(p); b = ssU16(p); RF(a) = ssFloor(RF(b) + 0.5f); END_OP;
+      OP(NOT) a = ssU16(p); b = ssU16(p); RF(a) = RF(b) != 0.0f ? 0.0f : 1.0f; END_OP;
+      OP(TAN) a = ssU16(p); b = ssU16(p); RF(a) = tanf(RF(b)); END_OP;
+      OP(TRUNC) a = ssU16(p); b = ssU16(p); RF(a) = (float)(int32_t)RF(b); END_OP;
+      OP(CEIL) a = ssU16(p); b = ssU16(p); RF(a) = ssCeil(RF(b)); END_OP;
+      OP(LT) a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(b) < RF(c) ? 1.0f : 0.0f; END_OP;
+      OP(LE) a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(b) <= RF(c) ? 1.0f : 0.0f; END_OP;
+      OP(GT) a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(b) > RF(c) ? 1.0f : 0.0f; END_OP;
+      OP(GE) a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(b) >= RF(c) ? 1.0f : 0.0f; END_OP;
+      OP(EQ) a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(b) == RF(c) ? 1.0f : 0.0f; END_OP;
+      OP(NE) a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = RF(b) != RF(c) ? 1.0f : 0.0f; END_OP;
+      OP(AND) a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = (RF(b) != 0.0f && RF(c) != 0.0f) ? 1.0f : 0.0f; END_OP;
+      OP(OR) a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = (RF(b) != 0.0f || RF(c) != 0.0f) ? 1.0f : 0.0f; END_OP;
+      OP(SEL) a = ssU16(p); b = ssU16(p); c = ssU16(p); d = ssU16(p); RF(a) = RF(b) != 0.0f ? RF(c) : RF(d); END_OP;
+      OP(NOISE) { a = ssU16(p); b = ssU16(p); c = ssU16(p); d = ssU16(p);
+        RF(a) = perlin8((uint16_t)(RF(b) * 256.0f), (uint16_t)(RF(c) * 256.0f), (uint16_t)(RF(d) * 256.0f)) * (1.0f / 255.0f); END_OP; }
+      OP(HASH) a = ssU16(p); b = ssU16(p); c = ssU16(p); d = ssU16(p); RF(a) = gc_hash(RF(b), RF(c), RF(d)); END_OP;
+      OP(FBM) { a = ssU16(p); uint16_t x = ssU16(p), y = ssU16(p), z = ssU16(p), s = ssU16(p), o = ssU16(p), rg = ssU16(p);
+        RF(a) = gc_fbm(RF(x), RF(y), RF(z), RF(s), (int)RF(o), RF(rg)); END_OP; }
+      OP(PAL) { a = ssU16(p); b = ssU16(p); c = ssU16(p);
+        RC(a) = mq_scale(ssPal((uint8_t)(int)(gc_sat(RF(b)) * 255.0f)), (uint8_t)(gc_sat(RF(c)) * 255.0f)); END_OP; }
+      OP(HSV) a = ssU16(p); b = ssU16(p); c = ssU16(p); d = ssU16(p); RC(a) = gc_hsv(RF(b), RF(c), RF(d)); END_OP;
+      OP(RGB) { a = ssU16(p); b = ssU16(p); c = ssU16(p); d = ssU16(p);
+        RC(a) = RGBW32((uint8_t)(gc_sat(RF(b)) * 255.0f), (uint8_t)(gc_sat(RF(c)) * 255.0f), (uint8_t)(gc_sat(RF(d)) * 255.0f), 0); END_OP; }
+      OP(CR) a = ssU16(p); b = ssU16(p); RF(a) = (float)((RC(b) >> 16) & 255) * (1.0f / 255.0f); END_OP;
+      OP(CG) a = ssU16(p); b = ssU16(p); RF(a) = (float)((RC(b) >> 8) & 255) * (1.0f / 255.0f); END_OP;
+      OP(CB) a = ssU16(p); b = ssU16(p); RF(a) = (float)(RC(b) & 255) * (1.0f / 255.0f); END_OP;
+      OP(CMIX) { a = ssU16(p); b = ssU16(p); c = ssU16(p); d = ssU16(p);
+        RC(a) = color_blend(RC(b), RC(c), (uint8_t)(gc_sat(RF(d)) * 255.0f)); END_OP; }
+      OP(CSCALE) a = ssU16(p); b = ssU16(p); c = ssU16(p); RC(a) = mq_scale(RC(b), (uint8_t)(gc_sat(RF(c)) * 255.0f)); END_OP;
+      OP(CADD) a = ssU16(p); b = ssU16(p); c = ssU16(p); RC(a) = color_add(RC(b), RC(c), true); END_OP;
+      OP(CMUL) a = ssU16(p); b = ssU16(p); c = ssU16(p); RC(a) = gc_blend_multiply(RC(b), RC(c), 1.0f); END_OP;
+      OP(CMAX) a = ssU16(p); b = ssU16(p); c = ssU16(p); RC(a) = gc_blend_max(RC(b), RC(c), 1.0f); END_OP;
+      OP(CMIN) a = ssU16(p); b = ssU16(p); c = ssU16(p); RC(a) = gc_blend_min(RC(b), RC(c), 1.0f); END_OP;
+      OP(CSEL) a = ssU16(p); b = ssU16(p); c = ssU16(p); d = ssU16(p); RC(a) = RF(b) != 0.0f ? RC(c) : RC(d); END_OP;
+      OP(SEGCOL) a = ssU16(p); b = ssU16(p); RC(a) = SEGCOLOR(b < 3 ? b : 0); END_OP;
+      OP(CMOV) a = ssU16(p); b = ssU16(p); RC(a) = RC(b); END_OP;
+      OP(CCONST) a = ssU16(p); b = ssU16(p); RC(a) = b; END_OP;
+      OP(OUT) a = ssU16(p); out = RC(a); END_OP;
+      OP(STLD) a = ssU16(p); b = ssU16(p); RF(a) = b < ns ? S[b] : 0.0f; END_OP;
+      OP(STST) a = ssU16(p); b = ssU16(p); if (a < ns) S[a] = RF(b); END_OP;
+      OP(RND) a = ssU16(p); RF(a) = gc_rnd(); END_OP;
+      OP(BLEND) { a = ssU16(p); b = ssU16(p); c = ssU16(p); d = ssU16(p); uint16_t m = ssU16(p);
         const float amt = gc_sat(RF(d));
         switch (m) {
           case 0: RC(a) = gc_blend_over(RC(b), RC(c), amt); break;
@@ -245,29 +317,33 @@ static uint32_t ssRun(const uint8_t *p, const uint8_t *end, float *F, uint32_t *
           case 5: RC(a) = gc_blend_min(RC(b), RC(c), amt); break;
           default: RC(a) = gc_blend_mode(m, RC(b), RC(c), amt); break;
         }
-        break; }
-      case SS_RINGUV: { a = ssU16(p); b = ssU16(p); c = ssU16(p); d = ssU16(p);
+        END_OP; }
+      OP(RINGUV) { a = ssU16(p); b = ssU16(p); c = ssU16(p); d = ssU16(p);
         float u_ = 0, v_ = 0; const int W = (int)F[SSF_W], H = (int)F[SSF_H], B = (int)F[SSF_B];
-        gc_ring_uv(RF(c), RF(d), W, H, B, F[SSF_cube] != 0.0f, u_, v_); RF(a) = u_; RF(b) = v_; break; }
-      case SS_POSUV: { a = ssU16(p); b = ssU16(p); c = ssU16(p); d = ssU16(p); uint16_t e = ssU16(p);
+        gc_ring_uv(RF(c), RF(d), W, H, B, F[SSF_cube] != 0.0f, u_, v_); RF(a) = u_; RF(b) = v_; END_OP; }
+      OP(POSUV) { a = ssU16(p); b = ssU16(p); c = ssU16(p); d = ssU16(p); uint16_t e = ssU16(p);
         float u_ = 0, v_ = 0; const int W = (int)F[SSF_W], H = (int)F[SSF_H], B = (int)F[SSF_B];
-        gc_pos_uv(RF(c), RF(d), RF(e), W, H, B, F[SSF_cube] != 0.0f, u_, v_); RF(a) = u_; RF(b) = v_; break; }
-      case SS_FOLD: { a = ssU16(p); b = ssU16(p); c = ssU16(p); uint16_t x = ssU16(p), y = ssU16(p), z = ssU16(p), sym = ssU16(p);
-        float fx = RF(x), fy = RF(y), fz = RF(z); gc_fold((int)sym, fx, fy, fz); RF(a) = fx; RF(b) = fy; RF(c) = fz; break; }
-      case SS_KNOT: { uint16_t o[6]; for (int i = 0; i < 6; i++) o[i] = ssU16(p);
+        gc_pos_uv(RF(c), RF(d), RF(e), W, H, B, F[SSF_cube] != 0.0f, u_, v_); RF(a) = u_; RF(b) = v_; END_OP; }
+      OP(FOLD) { a = ssU16(p); b = ssU16(p); c = ssU16(p); uint16_t x = ssU16(p), y = ssU16(p), z = ssU16(p), sym = ssU16(p);
+        float fx = RF(x), fy = RF(y), fz = RF(z); gc_fold((int)sym, fx, fy, fz); RF(a) = fx; RF(b) = fy; RF(c) = fz; END_OP; }
+      OP(KNOT) { uint16_t o[6]; for (int i = 0; i < 6; i++) o[i] = ssU16(p);
         uint16_t in[8]; for (int i = 0; i < 8; i++) in[i] = ssU16(p);
         float al = 0, ed = 0, Nx = 0, Ny = 0, Nz = 0;
         const bool hit = gc_knot(RF(in[0]), RF(in[1]), RF(in[2]), (int)RF(in[3]), (int)RF(in[4]), RF(in[5]), RF(in[6]), RF(in[7]), al, ed, Nx, Ny, Nz);
-        RF(o[0]) = hit ? 1.0f : 0.0f; RF(o[1]) = al; RF(o[2]) = ed; RF(o[3]) = Nx; RF(o[4]) = Ny; RF(o[5]) = Nz; break; }
-      case SS_MANDEL: { a = ssU16(p); uint16_t x = ssU16(p), y = ssU16(p), zx = ssU16(p), zy = ssU16(p), it = ssU16(p);
-        RF(a) = gc_mandel(RF(x), RF(y), RF(zx), RF(zy), (int)RF(it)); break; }
-      case SS_EASE: a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = gc_ease(RF(b), (int)RF(c)); break;
-      case SS_LOUDEST: { a = ssU16(p); b = ssU16(p); uint16_t from = ssU16(p), to = ssU16(p);
+        RF(o[0]) = hit ? 1.0f : 0.0f; RF(o[1]) = al; RF(o[2]) = ed; RF(o[3]) = Nx; RF(o[4]) = Ny; RF(o[5]) = Nz; END_OP; }
+      OP(MANDEL) { a = ssU16(p); uint16_t x = ssU16(p), y = ssU16(p), zx = ssU16(p), zy = ssU16(p), it = ssU16(p);
+        RF(a) = gc_mandel(RF(x), RF(y), RF(zx), RF(zy), (int)RF(it)); END_OP; }
+      OP(EASE) a = ssU16(p); b = ssU16(p); c = ssU16(p); RF(a) = gc_ease(RF(b), (int)RF(c)); END_OP;
+      OP(LOUDEST) { a = ssU16(p); b = ssU16(p); uint16_t from = ssU16(p), to = ssU16(p);
         int best = from < 16 ? from : 15; for (int i = from; i <= to && i < 16; i++) if (fft[i] > fft[best]) best = i;
-        RF(a) = (float)best * (1.0f / 15.0f); RF(b) = (float)fft[best] * (1.0f / 255.0f); break; }
+        RF(a) = (float)best * (1.0f / 15.0f); RF(b) = (float)fft[best] * (1.0f / 255.0f); END_OP; }
+#if !(defined(__GNUC__) || defined(__clang__))
       default: return out;                // an op this build does not know: stop the stream
     }
   }
+#endif
+  #undef OP
+  #undef END_OP
   #undef RF
   #undef RC
   return out;
@@ -292,6 +368,7 @@ static void mode_studio_script() {
     FX_DONE;
   }
   const SsProgram &P = gSs;
+  ssSinInit();
   const size_t need = ((size_t)P.nf + P.ns) * sizeof(float) + (size_t)P.nc * sizeof(uint32_t) + 8;
   if (!SEGENV.allocateData(need)) { SEGMENT.fill(0); FX_DONE; }
   uint32_t *stamp = (uint32_t *)SEGENV.data;
@@ -316,14 +393,18 @@ static void mode_studio_script() {
   for (int i = 0; i < 16; i++) F[SS_BAND0 + i] = fft[i] * (1.0f / 255.0f);
 
   ssPalReady = false;
-  ssRun(P.frame, P.frame + P.frameLen, F, C, S, P.ns, fft);
+  ssRun(P.frame, P.frame + P.frameWords, F, C, S, P.ns, fft);
 
   // The budget: a program too heavy for the chip runs at half, then a
   // quarter, of the horizontal resolution (each pixel's colour repeated
-  // across its neighbours) rather than dragging the whole device down;
-  // it climbs back when frames come in under the line. Measured per
-  // frame; the stride is kept in the state block.
-  static uint8_t stride = 1;
+  // across its neighbours) rather than dragging the whole device down.
+  // Coarser after three frames in a row over 40 ms - one slow frame is
+  // WiFi or a program just loaded, not the program - and finer again when
+  // the next stride's frame, about twice this one, would come in under 30
+  // ms; so a program that fits full resolution never sits at half.
+  static uint8_t slow = 0;
+  uint8_t &stride = cfx_scriptStride;
+  if (first) { stride = 1; slow = 0; }
   const uint32_t t0 = micros();
   const int cols = W, rows = H; (void)rows;
   CFX_NET_PREP();
@@ -357,14 +438,15 @@ static void mode_studio_script() {
         }
         F[SSF_X3] = X3; F[SSF_Y3] = Y3; F[SSF_Z3] = Z3; F[SSF_nx] = nx; F[SSF_ny] = ny; F[SSF_nz] = nz;
       }
-      const uint32_t c = ssRun(P.pixel, P.pixel + P.pixelLen, F, C, S, P.ns, fft);
+      const uint32_t c = ssRun(P.pixel, P.pixel + P.pixelWords, F, C, S, P.ns, fft);
       last = c;
       if (is2d) SEGMENT.setPixelColorXY(px, py, c); else SEGMENT.setPixelColor(px, c);
     }
   }
   const uint32_t took = micros() - t0;
-  if (took > 40000u && stride < 4) stride *= 2;                 // over 40 ms: coarser
-  else if (took < 12000u && stride > 1) stride /= 2;            // well under: finer again
+  cfx_scriptTook = took;
+  if (took > 40000u) { if (++slow >= 3 && stride < 4) { stride *= 2; slow = 0; } }
+  else { slow = 0; if (stride > 1 && took * 2u < 30000u) stride /= 2; }
   FX_DONE;
 }
 
