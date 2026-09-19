@@ -363,7 +363,8 @@ static inline bool cfx_gap(int x, int y, int B) { return cfx_gapBlock(x / B, y /
 // matrix. Present and sized for this segment, it is what cfx_pos() answers.
 extern const int8_t *cfx_geomTab;      // cols*rows x (x, y, z), int8, -1..1 as -127..127
 extern const int8_t *cfx_geomNrm;      // the normals the same way, or null
-extern uint16_t cfx_geomCols, cfx_geomRows;
+extern const uint8_t *cfx_geomPart;    // cols*rows x (part id, place along the part 0..255), or null
+extern uint16_t cfx_geomCols, cfx_geomRows, cfx_geomParts;
 void cfx_geomPoll();
 static inline bool cfx_geomFor(int cols, int rows) {
   return cfx_geomTab && cfx_geomCols == (uint16_t)cols && cfx_geomRows == (uint16_t)rows;
@@ -378,6 +379,16 @@ static inline void cfx_geomNormal(int x, int y, int cols, float X, float Y, floa
   }
   const float L = sqrtf(X * X + Y * Y + Z * Z); const float iL = L > 1e-6f ? 1.0f / L : 1.0f;
   nx = X * iL; ny = Y * iL; nz = Z * iL;
+}
+
+// The part of the shape a pixel belongs to (a shape is parts in wiring
+// order: strips, rings, panels...), where along it the pixel sits (0..1)
+// and how many parts there are: 0, 0, 1 without a table.
+static inline void cfx_geomPartOf(int x, int y, int cols, int &part, float &along, int &nparts) {
+  if (cfx_geomPart) {
+    const uint8_t *p = cfx_geomPart + ((size_t)y * cols + x) * 2;
+    part = p[0]; along = p[1] * (1.0f / 255.0f); nparts = cfx_geomParts > 0 ? cfx_geomParts : 1;
+  } else { part = 0; along = 0.0f; nparts = 1; }
 }
 
 // Surface position of one pixel. If a face on your cube comes out rotated or

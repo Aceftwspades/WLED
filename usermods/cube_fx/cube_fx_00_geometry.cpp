@@ -14,10 +14,12 @@
 // real shape, and the Studio Script effect's fixed registers do too.
 //
 // The file: "STGM", u8 version (1), u16 cols, u16 rows, u16 flags (bit 0:
-// normals follow the positions), then cols*rows entries of int8 x, y, z in
-// the -1..1 box scaled by 127 (an unlit pixel of the net is still an
-// entry: zeros), then, with the flag, cols*rows entries of int8 nx, ny, nz.
-// Without normals the effects take the direction from the centre.
+// normals follow the positions; bit 1: parts follow those), then cols*rows
+// entries of int8 x, y, z in the -1..1 box scaled by 127 (an unlit pixel
+// of the net is still an entry: zeros), then, with bit 0, cols*rows entries
+// of int8 nx, ny, nz, then, with bit 1, cols*rows entries of u8 part id
+// and u8 place along the part (0..255). Without normals the effects take
+// the direction from the centre; without parts every pixel is part 0 of 1.
 //
 // The device reads the file again whenever it changes (checked every two
 // seconds from the bank usermod's loop); the simulator is handed the same
@@ -26,21 +28,28 @@
 
 const int8_t *cfx_geomTab = nullptr;
 const int8_t *cfx_geomNrm = nullptr;
-uint16_t cfx_geomCols = 0, cfx_geomRows = 0;
+const uint8_t *cfx_geomPart = nullptr;
+uint16_t cfx_geomCols = 0, cfx_geomRows = 0, cfx_geomParts = 0;
 static uint8_t *geomBuf = nullptr;
 static size_t geomLen = 0;
 
 static bool geomParse() {
-  cfx_geomTab = cfx_geomNrm = nullptr; cfx_geomCols = cfx_geomRows = 0;
+  cfx_geomTab = cfx_geomNrm = nullptr; cfx_geomPart = nullptr; cfx_geomCols = cfx_geomRows = cfx_geomParts = 0;
   if (!geomBuf || geomLen < 11 || memcmp(geomBuf, "STGM", 4) != 0 || geomBuf[4] != 1) return false;
   const uint16_t cols = geomBuf[5] | (geomBuf[6] << 8), rows = geomBuf[7] | (geomBuf[8] << 8);
   const uint16_t flags = geomBuf[9] | (geomBuf[10] << 8);
   const size_t n = (size_t)cols * rows;
   if (n == 0 || n > 65536) return false;
-  size_t need = 11 + n * 3 + ((flags & 1) ? n * 3 : 0);
+  size_t need = 11 + n * 3 + ((flags & 1) ? n * 3 : 0) + ((flags & 2) ? n * 2 : 0);
   if (geomLen < need) return false;
   cfx_geomTab = (const int8_t *)(geomBuf + 11);
   cfx_geomNrm = (flags & 1) ? cfx_geomTab + n * 3 : nullptr;
+  if (flags & 2) {
+    cfx_geomPart = (const uint8_t *)(geomBuf + 11 + n * 3 + ((flags & 1) ? n * 3 : 0));
+    uint16_t mx = 0;
+    for (size_t i = 0; i < n; i++) if (cfx_geomPart[i * 2] > mx) mx = cfx_geomPart[i * 2];
+    cfx_geomParts = mx + 1;
+  }
   cfx_geomCols = cols; cfx_geomRows = rows;
   return true;
 }

@@ -36,7 +36,7 @@
 // ===========================================================================
 
 #define SS_FIXED 56          // fixed registers; the compiler allocates from here
-#define SS_BAND0 36
+#define SS_BAND0 40          // the sixteen bands; 36 was SEGENV.call's register and the bands overwrote it
 #define SS_MAX_PROG (24 * 1024)
 
 enum : uint8_t {
@@ -50,7 +50,8 @@ enum : uint8_t {
 
 enum { SSF_u, SSF_v, SSF_cx, SSF_cy, SSF_r, SSF_ang, SSF_px, SSF_py, SSF_W, SSF_H, SSF_N, SSF_t, SSF_dt,
        SSF_sx, SSF_ix, SSF_c1, SSF_c2, SSF_c3, SSF_o1, SSF_o2, SSF_o3, SSF_vol, SSF_beat, SSF_first,
-       SSF_X3, SSF_Y3, SSF_Z3, SSF_nx, SSF_ny, SSF_nz, SSF_B, SSF_cube, SSF_hit, SSF_bass, SSF_mid, SSF_treb, SSF_call };
+       SSF_X3, SSF_Y3, SSF_Z3, SSF_nx, SSF_ny, SSF_nz, SSF_B, SSF_cube, SSF_hit, SSF_bass, SSF_mid, SSF_treb, SSF_call,
+       SSF_part, SSF_along, SSF_parts };
 
 // Each op's operands, in script.py's OPS letters: f a float register, c a
 // colour register, i a 16-bit integer, k a 32-bit float. ssParse walks both
@@ -82,6 +83,7 @@ struct SsProgram {
   bool valid = false;
   bool usesPolar = false;            // the pixel stream reads r or ang
   bool usesSpace = false;            // ... or the 3-D position / normal
+  bool usesPart = false;             // ... or the shape part
 };
 static SsProgram gSs;
 uint8_t cfx_scriptStride = 1;      // the frame budget's current stride (1 = full resolution); the bank reports it
@@ -134,6 +136,7 @@ static bool ssParse(SsProgram &P) {
   P.usesPolar = (reads & (((uint64_t)1 << SSF_r) | ((uint64_t)1 << SSF_ang))) != 0;
   P.usesSpace = (reads & (((uint64_t)1 << SSF_X3) | ((uint64_t)1 << SSF_Y3) | ((uint64_t)1 << SSF_Z3)
                         | ((uint64_t)1 << SSF_nx) | ((uint64_t)1 << SSF_ny) | ((uint64_t)1 << SSF_nz))) != 0;
+  P.usesPart = (reads & (((uint64_t)1 << SSF_part) | ((uint64_t)1 << SSF_along))) != 0;
   P.valid = true;
   P.stamp++;
   return true;
@@ -391,6 +394,7 @@ static void mode_studio_script() {
   F[SSF_bass] = bass_ * (1.0f / 255.0f); F[SSF_mid] = mid_ * (1.0f / 255.0f); F[SSF_treb] = treb_ * (1.0f / 255.0f);
   F[SSF_first] = first ? 1.0f : 0.0f; F[SSF_B] = (float)B; F[SSF_cube] = cube ? 1.0f : 0.0f; F[SSF_call] = (float)SEGENV.call;
   for (int i = 0; i < 16; i++) F[SS_BAND0 + i] = fft[i] * (1.0f / 255.0f);
+  F[SSF_parts] = (float)(cfx_geomFor(W, H) && cfx_geomPart ? cfx_geomParts : 1);
 
   ssPalReady = false;
   ssRun(P.frame, P.frame + P.frameWords, F, C, S, P.ns, fft);
@@ -424,6 +428,7 @@ static void mode_studio_script() {
       F[SSF_px] = (float)px; F[SSF_py] = (float)py;
       // the polar and 3-D registers cost a root and an arc tangent a pixel: only for a program that reads them
       if (P.usesPolar) { F[SSF_r] = sqrtf(cx * cx + cy * cy); F[SSF_ang] = cfx_atan2f(cy, cx); }
+      if (P.usesPart) { int pt, np_; float al; cfx_geomPartOf(px, py, W, pt, al, np_); F[SSF_part] = (float)pt; F[SSF_along] = al; }
       if (P.usesSpace) {
         float nx, ny, nz, X3, Y3, Z3;
         if (cfx_geomFor(W, H)) {                      // a shape table: the real positions and normals
