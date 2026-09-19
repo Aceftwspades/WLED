@@ -358,11 +358,39 @@ static inline bool cfx_gapBlock(int bx, int by) {
 }
 static inline bool cfx_gap(int x, int y, int B) { return cfx_gapBlock(x / B, y / B); }
 
+// The shape as a table (cube_fx_00_geometry.cpp): a position for every
+// pixel, sent by the studio for any shape that is not a cube net or a flat
+// matrix. Present and sized for this segment, it is what cfx_pos() answers.
+extern const int8_t *cfx_geomTab;      // cols*rows x (x, y, z), int8, -1..1 as -127..127
+extern const int8_t *cfx_geomNrm;      // the normals the same way, or null
+extern uint16_t cfx_geomCols, cfx_geomRows;
+void cfx_geomPoll();
+static inline bool cfx_geomFor(int cols, int rows) {
+  return cfx_geomTab && cfx_geomCols == (uint16_t)cols && cfx_geomRows == (uint16_t)rows;
+}
+// The pixel's outward direction (unit): the table's normal when it has
+// them, else the direction from the centre.
+static inline void cfx_geomNormal(int x, int y, int cols, float X, float Y, float Z, float &nx, float &ny, float &nz) {
+  if (cfx_geomNrm) {
+    const int8_t *n = cfx_geomNrm + ((size_t)y * cols + x) * 3;
+    nx = n[0] * (1.0f / 127.0f); ny = n[1] * (1.0f / 127.0f); nz = n[2] * (1.0f / 127.0f);
+    return;
+  }
+  const float L = sqrtf(X * X + Y * Y + Z * Z); const float iL = L > 1e-6f ? 1.0f / L : 1.0f;
+  nx = X * iL; ny = Y * iL; nz = Z * iL;
+}
+
 // Surface position of one pixel. If a face on your cube comes out rotated or
 // mirrored, only the six face lines below need changing - every effect in
-// this file reads through here.
+// this file reads through here. A shape table for this segment's size
+// answers first: that is how any shape reaches every effect.
 static inline void cfx_pos(int x, int y, int cols, int rows, int B, bool cubeNet,
                            float &X, float &Y, float &Z) {
+  if (cfx_geomFor(cols, rows)) {
+    const int8_t *p = cfx_geomTab + ((size_t)y * cols + x) * 3;
+    X = p[0] * (1.0f / 127.0f); Y = p[1] * (1.0f / 127.0f); Z = p[2] * (1.0f / 127.0f);
+    return;
+  }
   if (cubeNet) {
     const int bx = x / B, by = y / B;
     const float a = 2.0f * ((x % B) + 0.5f) / (float)B - 1.0f;   // -1..1

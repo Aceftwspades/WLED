@@ -58,7 +58,7 @@ class CubeFxBankUsermod : public Usermod {
     cfxBankApply();
   }
 
-  void loop() override {}
+  void loop() override { cfx_geomPoll(); }        // the shape table, /geometry.bin, read when it changes
 
   void addToConfig(JsonObject &root) override {
     JsonObject top = root.createNestedObject(FPSTR(_name));

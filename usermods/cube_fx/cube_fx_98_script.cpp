@@ -426,7 +426,10 @@ static void mode_studio_script() {
       if (P.usesPolar) { F[SSF_r] = sqrtf(cx * cx + cy * cy); F[SSF_ang] = cfx_atan2f(cy, cx); }
       if (P.usesSpace) {
         float nx, ny, nz, X3, Y3, Z3;
-        if (cube) {
+        if (cfx_geomFor(W, H)) {                      // a shape table: the real positions and normals
+          cfx_pos(px, py, W, H, B, false, X3, Y3, Z3);
+          cfx_geomNormal(px, py, W, X3, Y3, Z3, nx, ny, nz);
+        } else if (cube) {
           cfx_pos(px, py, W, H, B, true, X3, Y3, Z3);
           const float L = sqrtf(X3 * X3 + Y3 * Y3 + Z3 * Z3); const float iL = L > 1e-6f ? 1.0f / L : 1.0f;
           nx = X3 * iL; ny = Y3 * iL; nz = Z3 * iL;
