@@ -236,12 +236,12 @@ static void kd_load(KdState *s, uint8_t idx) {
   // so the cross product never collapses.
   { float ux = 0.0f, uy = 0.0f, uz = 1.0f;
     if (fabsf(s->cz) > 0.9f) { ux = 1.0f; uz = 0.0f; }
-    float ax = uy * s->cz - uz * s->cy;
-    float ay = uz * s->cx - ux * s->cz;
-    float az = ux * s->cy - uy * s->cx;
-    float L2 = sqrtf(ax * ax + ay * ay + az * az);
-    if (L2 < 1e-6f) { ax = 1.0f; ay = 0.0f; az = 0.0f; L2 = 1.0f; }
-    s->t1[0] = ax / L2; s->t1[1] = ay / L2; s->t1[2] = az / L2;
+    float tx = uy * s->cz - uz * s->cy;                 // u x c: the first tangent
+    float ty = uz * s->cx - ux * s->cz;
+    float tz = ux * s->cy - uy * s->cx;
+    float L2 = sqrtf(tx * tx + ty * ty + tz * tz);
+    if (L2 < 1e-6f) { tx = 1.0f; ty = 0.0f; tz = 0.0f; L2 = 1.0f; }
+    s->t1[0] = tx / L2; s->t1[1] = ty / L2; s->t1[2] = tz / L2;
     s->t2[0] = s->cy * s->t1[2] - s->cz * s->t1[1];
     s->t2[1] = s->cz * s->t1[0] - s->cx * s->t1[2];
     s->t2[2] = s->cx * s->t1[1] - s->cy * s->t1[0]; }

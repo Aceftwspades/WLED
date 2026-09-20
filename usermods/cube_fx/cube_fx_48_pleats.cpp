@@ -170,9 +170,9 @@ static FX_RET mode_pleats() {
     int nv = (lw > cur) ? cur + ((lw - cur) * (int)dt) / 160
                         : cur - ((cur - lw) * (int)dt) / 600;
     s->loud = (uint8_t)(nv < 0 ? 0 : (nv > 255 ? 255 : nv)); }
-  { const int want = ((int)s->lvl[3] + (int)s->lvl[4]) / 2;
+  { const int aim = ((int)s->lvl[3] + (int)s->lvl[4]) / 2;
     const int cur = s->sharp;
-    int nv = cur + ((want - cur) * (int)dt) / 250;
+    int nv = cur + ((aim - cur) * (int)dt) / 250;
     s->sharp = (uint8_t)(nv < 0 ? 0 : (nv > 255 ? 255 : nv)); }
 
   // The beat shoves the bass wave along - owed and paid a third a frame, so
