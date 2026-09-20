@@ -69,7 +69,7 @@ inline CfxBankEntry *cfxBankRoster() {
   static CfxBankEntry r[CFX_BANK_MAX_FX];
   return r;
 }
-inline uint8_t &cfxBankCount() { static uint8_t n = 0; return n; }
+inline uint16_t &cfxBankCount() { static uint16_t n = 0; return n; }  // 16-bit: the sim rosters every stock effect too
 
 // The chosen set, in order. 0 = empty slot. Owned by the bank usermod, which
 // loads it from config before any effect's setup() runs - WLED reads the config
@@ -117,7 +117,7 @@ inline bool cfxBankWants(uint16_t hash) {
 // IDs back at the mercy of link order, which is the thing the slots exist to
 // take away.
 inline void cfxBankAdd(void (*fn)(), const char *data) {
-  uint8_t &n = cfxBankCount();
+  uint16_t &n = cfxBankCount();
   if (n >= CFX_BANK_MAX_FX) return;          // roster full: compiled but unreachable
   CfxBankEntry &e = cfxBankRoster()[n++];
   e.hash   = cfxBankHash(data);
@@ -156,10 +156,10 @@ struct CfxBankReg {
 // setup runs, so anything later would be too late for a preset to resolve.
 inline void cfxBankApply() {
   CfxBankEntry *r = cfxBankRoster();
-  const uint8_t  n = cfxBankCount();
+  const uint16_t n = cfxBankCount();
 
   if (!cfxBankConfigured()) {                 // no config yet: behave like the old build
-    for (uint8_t i = 0; i < n; i++)
+    for (uint16_t i = 0; i < n; i++)
       r[i].placed = (strip.addEffect(255, r[i].fn, r[i].data) != 255);
     return;
   }
@@ -167,7 +167,7 @@ inline void cfxBankApply() {
   const uint16_t *s = cfxBankSlots();
   for (uint8_t k = 0; k < CFX_BANK_SLOTS; k++) {
     if (!s[k]) continue;                      // empty slot
-    for (uint8_t i = 0; i < n; i++) {
+    for (uint16_t i = 0; i < n; i++) {
       if (r[i].hash != s[k] || r[i].placed) continue;
       r[i].placed = (strip.addEffect(255, r[i].fn, r[i].data) != 255);
       break;                                  // a hash names one effect
@@ -177,8 +177,8 @@ inline void cfxBankApply() {
 
 // How many slots actually landed - the honest number for the settings page,
 // since addEffect can still refuse if the device is full for other reasons.
-inline uint8_t cfxBankPlacedCount() {
-  uint8_t c = 0;
-  for (uint8_t i = 0; i < cfxBankCount(); i++) if (cfxBankRoster()[i].placed) c++;
+inline uint16_t cfxBankPlacedCount() {
+  uint16_t c = 0;
+  for (uint16_t i = 0; i < cfxBankCount(); i++) if (cfxBankRoster()[i].placed) c++;
   return c;
 }

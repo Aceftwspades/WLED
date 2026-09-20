@@ -114,7 +114,7 @@ class CubeFxBankUsermod : public Usermod {
     s.add(buf);
     // Anything compiled but not placed is invisible in the effect list, and the
     // whole point of the bank is that this is a decision rather than a surprise.
-    const uint8_t missing = (uint8_t)(cfxBankCount() - cfxBankPlacedCount());
+    const uint16_t missing = (uint16_t)(cfxBankCount() - cfxBankPlacedCount());
     s.add(missing ? F(" - reboot to apply changes") : F(""));
 
     // How much room is actually left on THIS build, counted rather than guessed.
@@ -161,11 +161,11 @@ class CubeFxBankUsermod : public Usermod {
     // started life as. That is the "dropdowns turned into numbers" failure.
     // One shared array is ~36x smaller and also renders far faster.
     CfxBankEntry *r = cfxBankRoster();
-    const uint8_t n = cfxBankCount();
+    const uint16_t n = cfxBankCount();
     char nm[40], key[4];
 
     s.print(F("var CFXO=[['-- empty --',0]"));
-    for (uint8_t e = 0; e < n; e++) {
+    for (uint16_t e = 0; e < n; e++) {
       cfxBankName(r[e].data, nm, sizeof(nm));
       s.print(F(",['")); jsq(nm); s.print(F("',")); s.print(r[e].hash); s.print(F("]"));
     }
