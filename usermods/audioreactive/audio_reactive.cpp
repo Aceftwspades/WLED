@@ -1465,8 +1465,9 @@ class AudioReactive : public Usermod {
           audioSource->initialize(i2swsPin, i2ssdPin, i2sckPin);
           break;
         case 4:
-          DEBUGSR_PRINT(F("AR: Generic I2S Microphone with Master Clock - ")); DEBUGSR_PRINTLN(F(I2S_MIC_CHANNEL_TEXT));
-          audioSource = new I2SSource(SAMPLE_RATE, BLOCK_SIZE, 1.0f/24.0f);
+          DEBUGSR_PRINTLN(F("AR: Generic I2S with Master Clock (line-in) - both channels mixed"));
+          // cube_fx / studio: a line-in ADC (PCM1808, WM8782): both channels averaged, the DC offset removed
+          audioSource = new I2SSource(SAMPLE_RATE, BLOCK_SIZE, 1.0f/24.0f, true);
           useMicFilter = false; // I2S with Master Clock is mostly used for line-in, skip sample filtering
           delay(100);
           if (audioSource) audioSource->initialize(i2swsPin, i2ssdPin, i2sckPin, mclkPin);
@@ -1914,6 +1915,11 @@ class AudioReactive : public Usermod {
             infoArr.add(F(" - check pin settings"));
           }
         }
+
+        // cube_fx / studio: the level now, for the studio's audio-input frame (a meter while the wiring is checked)
+        infoArr = user.createNestedArray(F("Input level"));
+        infoArr.add(roundf(volumeSmth));
+        infoArr.add(F("/255"));
 
         // Sound processing (FFT and input filters)
         infoArr = user.createNestedArray(F("Sound Processing"));

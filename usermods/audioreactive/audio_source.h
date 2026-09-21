@@ -166,8 +166,15 @@ class AudioSource {
 */
 class I2SSource : public AudioSource {
   public:
-    I2SSource(SRate_t sampleRate, int blockSize, float sampleScale = 1.0f) :
-      AudioSource(sampleRate, blockSize, sampleScale) {
+    // --- cube_fx / studio: line-in ---------------------------------------------
+    // stereoMix: both I2S channels read and averaged into the mono the FFT
+    // takes, with a DC blocker (a first-order high-pass near 17 Hz). For a
+    // line-in ADC (PCM1808, WM8782, the ES8388's line input) a music signal
+    // has parts panned hard to one side, and the ADC's small offset would
+    // otherwise sit in the bass bin. A microphone keeps the one-channel path.
+    // -----------------------------------------------------------------------------
+    I2SSource(SRate_t sampleRate, int blockSize, float sampleScale = 1.0f, bool stereoMix = false) :
+      AudioSource(sampleRate, blockSize, sampleScale), _stereoMix(stereoMix) {
       _config = {
         .mode = i2s_mode_t(I2S_MODE_MASTER | I2S_MODE_RX),
         .sample_rate = _sampleRate,
@@ -189,6 +196,7 @@ class I2SSource : public AudioSource {
         .use_apll = false
 #endif
       };
+      if (_stereoMix) _config.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;   // both channels, interleaved L R L R
     }
 
     virtual void initialize(int8_t i2swsPin = I2S_PIN_NO_CHANGE, int8_t i2ssdPin = I2S_PIN_NO_CHANGE, int8_t i2sckPin = I2S_PIN_NO_CHANGE, int8_t mclkPin = I2S_PIN_NO_CHANGE) {
@@ -292,7 +300,7 @@ class I2SSource : public AudioSource {
       }
 
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(4, 2, 0)
-      err = i2s_set_clk(I2S_NUM_0, _sampleRate, I2S_SAMPLE_RESOLUTION, I2S_CHANNEL_MONO);  // set bit clocks. Also takes care of MCLK routing if needed.
+      err = i2s_set_clk(I2S_NUM_0, _sampleRate, I2S_SAMPLE_RESOLUTION, _stereoMix ? I2S_CHANNEL_STEREO : I2S_CHANNEL_MONO);  // set bit clocks. Also takes care of MCLK routing if needed.
       if (err != ESP_OK) {
         DEBUGSR_PRINTF("AR: Failed to configure i2s clocks: %d\n", err);
         i2s_driver_uninstall(I2S_NUM_0);  // uninstall already-installed driver
@@ -316,7 +324,30 @@ class I2SSource : public AudioSource {
       if (_mclkPin != I2S_PIN_NO_CHANGE) PinManager::deallocatePin(_mclkPin, PinOwner::UM_Audioreactive);
     }
 
+    // --- cube_fx / studio: line-in - both channels read, averaged, the offset removed
+    void _getSamplesStereoMixed(FFTsampleType *buffer, uint16_t num_samples) {
+      size_t bytes_read = 0;
+      I2S_datatype raw[num_samples * 2];                // L R L R ...
+      esp_err_t err = i2s_read(I2S_NUM_0, (void *)raw, sizeof(raw), &bytes_read, portMAX_DELAY);
+      if (err != ESP_OK) { DEBUGSR_PRINTF("Failed to get samples: %d\n", err); return; }
+      if (bytes_read != sizeof(raw)) { DEBUGSR_PRINTF("Failed to get enough samples: wanted: %d read: %d\n", sizeof(raw), bytes_read); return; }
+      for (int i = 0; i < num_samples; i++) {
+        float m = 0.5f * ((float)postProcessSample(raw[2 * i]) + (float)postProcessSample(raw[2 * i + 1]));
+  #ifdef I2S_SAMPLE_DOWNSCALE_TO_16BIT
+        m *= (1.0f / 65536.0f);                         // 32bit input -> 16bit, the lower bits kept as decimals
+  #endif
+        const float y = m - _dcX + 0.995f * _dcY;       // the DC blocker: y[n] = x[n] - x[n-1] + R y[n-1]
+        _dcX = m; _dcY = y;
+  #if !defined(UM_AUDIOREACTIVE_USE_INTEGER_FFT)
+        buffer[i] = y * _sampleScale;
+  #else
+        buffer[i] = (int16_t)y;
+  #endif
+      }
+    }
+
     virtual void getSamples(FFTsampleType *buffer, uint16_t num_samples) {
+      if (_initialized && _stereoMix) { _getSamplesStereoMixed(buffer, num_samples); return; }
       if (_initialized) {
         esp_err_t err;
         size_t bytes_read = 0;        /* Counter variable to check if we actually got enough data */
@@ -394,6 +425,8 @@ class I2SSource : public AudioSource {
     i2s_config_t _config;
     i2s_pin_config_t _pinConfig;
     int8_t _mclkPin;
+    bool _stereoMix = false;          // cube_fx / studio: a line-in ADC's two channels folded to mono
+    float _dcX = 0.0f, _dcY = 0.0f;   // the DC blocker's last input and output
 };
 
 /* ES7243 Microphone
@@ -542,9 +575,11 @@ class ES8388Source : public I2SSource {
     }
 
   public:
-    ES8388Source(SRate_t sampleRate, int blockSize, float sampleScale = 1.0f, bool i2sMaster=true) :
-      I2SSource(sampleRate, blockSize, sampleScale) {
-      _config.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;
+    // stereoMix (cube_fx / studio): the line input's two channels averaged - the default, since
+    // this source is configured for line-in (LIN2/RIN2) unless use_es8388_mic is defined
+    ES8388Source(SRate_t sampleRate, int blockSize, float sampleScale = 1.0f, bool i2sMaster=true, bool stereoMix=true) :
+      I2SSource(sampleRate, blockSize, sampleScale, stereoMix) {
+      if (!stereoMix) _config.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;
     };
 
     void initialize(int8_t i2swsPin, int8_t i2ssdPin, int8_t i2sckPin, int8_t mclkPin) {
