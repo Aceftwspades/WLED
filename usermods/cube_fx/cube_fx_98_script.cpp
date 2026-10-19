@@ -421,7 +421,11 @@ static void mode_studio_script() {
   const int N = W * H;
   const bool cube = is2d && cfx_isCube(W, H);
   const int  B    = cube ? (W / 3) : 1;
-  const float t = (float)strip.now * 0.001f;
+  // t wraps every hour. A float carries 24 bits, so seconds since boot lost the
+  // milliseconds after about 4.6 hours up, stepped by 8 ms after a day and by
+  // half a second near millis()' 49-day rollover. Compiled graphs (graph.py)
+  // wrap the same.
+  const float t = (float)(strip.now % 3600000u) * 0.001f;
   (void)N;
   if (!gSs.valid) {
     // no program: a slow breathing dot, so a segment on this effect is not just dark
@@ -482,12 +486,18 @@ static void mode_studio_script() {
   for (int py = 0; py < H; py++) {
     CFX_NET_ROW(py);
     uint32_t last = 0;
+    // A copied pixel takes the one worked out at `anchor`, and only straight
+    // after a pixel drawn on this run: px % stride copied the face before's last
+    // colour across the net's gap onto a face's first pixels.
+    int anchor = -1, prev = -2;
     for (int px = 0; px < W; px++) {
       CFX_NET_SKIP(px);
-      if (stride > 1 && (px % stride) != 0) {
+      if (stride > 1 && prev == px - 1 && px - anchor < stride) {
         if (is2d) SEGMENT.setPixelColorXY(px, py, last); else SEGMENT.setPixelColor(px, last);
+        prev = px;
         continue;
       }
+      anchor = prev = px;
       const float u = (W > 1) ? (float)px / (float)(W - 1) : 0.5f;
       const float v = (H > 1) ? (float)py / (float)(H - 1) : 0.5f;
       const float cx = u * 2.0f - 1.0f, cy = 1.0f - v * 2.0f;
