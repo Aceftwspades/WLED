@@ -919,6 +919,8 @@ inline uint16_t cfx_dropDt(uint16_t dtMs, uint16_t speedScale) {
 // 4 to 8 KB on the ESP32's 8 KB loop stack. Read only when the row is an outer band, so only for a cube net.
 #define CFX_NET_PREP()  const int _netB1 = B, _netB2 = 2 * B; (void)_netB1; (void)_netB2
 #define CFX_NET_COL(X)  ((X) < _netB1 ? 1 : ((X) < _netB2 ? 0 : 2))
+// A column's net block (x / B, 0..2) by the same two comparisons, for the effects that test cfx_gapBlock().
+#define CFX_COLBLK(X)   ((uint8_t)((X) < (B) ? 0 : ((X) < 2 * (B) ? 1 : 2)))
 // AI: end
 #define CFX_NET_ROW(Y)  const uint8_t _outRow = (uint8_t)((cube && (((Y) / B) != 1)) ? (1 + (((Y) / B) == 2)) : 0)
 #define CFX_NET_SKIP(X) if (_outRow && CFX_NET_COL(X) && !(cfx_sixFaces && _outRow == 2 && CFX_NET_COL(X) == 2)) continue
