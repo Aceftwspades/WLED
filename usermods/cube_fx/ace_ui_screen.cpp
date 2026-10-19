@@ -1643,7 +1643,7 @@ class AceUiScreenUsermod : public Usermod {
     ok &= getJsonValue(top["briDim"],   briDim,   35);
     ok &= getJsonValue(top["dimSec"],   dimSec,   10);
     ok &= getJsonValue(top["sleepSec"], sleepSec, 30);
-    ok &= getJsonValue(top["deepDim"],  deepDim,  true);
+    ok &= getJsonValue(top["deepDim"],  deepDim,  false);   // off, as the member says (a fresh config blanked some panels)
     ok &= getJsonValue(top["idleHome"], idleHome, 0);
     ok &= getJsonValue(top["startScr"], startScr, AUI_START_MENU);
     ok &= getJsonValue(top["vuMode"],   vuMode,   AUI_VU_AUTO);
