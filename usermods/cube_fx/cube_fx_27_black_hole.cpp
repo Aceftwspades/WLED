@@ -287,7 +287,10 @@ static FX_RET mode_black_hole() {
   // --- geometry of the hole -------------------------------------------------------
   // The horizon has to leave room for a ring outside it AND a disc outside that,
   // so it is capped well short of the rim rather than allowed to swallow the lid.
-  int rH = 1 + (((int)SEGMENT.custom1 * (topd > 3 ? topd - 3 : 1)) >> 8);
+  // The Horizon slider's reach: on a cube up to the lid's half less three; flat (topd 0) a quarter of the radius,
+  // about the same share - it was 1 there, so the slider did nothing.
+  const int span = cube ? (topd > 3 ? topd - 3 : 1) : (rad / 4 > 1 ? rad / 4 : 1);
+  int rH = 1 + (((int)SEGMENT.custom1 * span) >> 8);
   if (rH > rad - 4) rH = rad - 4;
   if (rH < 1) rH = 1;
   const int rRing = rH + 1;                     // the thin arc sits just outside
