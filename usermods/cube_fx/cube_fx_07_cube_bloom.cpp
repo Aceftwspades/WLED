@@ -64,6 +64,9 @@ static FX_RET mode_cube_bloom() {
 
   const uint16_t nowT = (uint16_t)(strip.now >> 4);      // 16 ms ticks
   const int maxLive = 1 + ((int)SEGMENT.custom3 * (CB_SRC - 1)) / 31;
+  // Blooms above the cap are retired when the slider lowers it: kept, they
+  // sat frozen and came back as ghosts, half grown, when it was raised again.
+  for (int k = maxLive; k < CB_SRC; k++) bl[k * CB_REC + 5] = 0;
 
   const bool rising = peak && !gs[1];
   gs[1] = peak ? 1 : 0;
