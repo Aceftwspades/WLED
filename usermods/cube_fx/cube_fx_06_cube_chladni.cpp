@@ -137,7 +137,7 @@ static FX_RET mode_cube_chladni() {
              - (int32_t)mx * ly * nzc
              - (int32_t)lx * ny * mz
              - (int32_t)nx * my * lz
-             + (int32_t)mx * ny * lz;        // restores the pair used above
+             + 2 * (int32_t)mx * ny * lz;    // cancels the pair's -mx ny lz and adds the determinant's +lz mx ny
         psi /= 2;                            // keep the range comparable
       }
 
