@@ -248,7 +248,7 @@ static FX_RET mode_black_hole() {
   const size_t m     = cfx_litCount(cols, rows, B, cube);
   const size_t cells = (size_t)ang * rad;
   const size_t need  = sizeof(BhState) + 3 * m + 3 * cells + 3 * cells
-                   + (size_t)rad * sizeof(uint16_t);
+                   + (size_t)rad * sizeof(uint16_t) + CFX_ALIGN_PAD;
   if (!SEGENV.allocateData(need)) { SEGMENT.fill(SEGCOLOR(0)); FX_DONE; }
 
   BhState *s   = (BhState *)SEGENV.data;
@@ -257,7 +257,7 @@ static FX_RET mode_black_hole() {
   uint8_t *rd  = dep + m;                       // Euclidean radius, for void+ring
   uint8_t *dye = rd  + m;                       // rgb per polar cell
   uint8_t *tmp = dye + 3 * cells;
-  uint16_t *accum = (uint16_t *)(tmp + 3 * cells);   // sub-cell infall, per ring
+  uint16_t *accum = cfx_align16(tmp + 3 * cells);    // sub-cell infall, per ring (even: m can be odd)
 
   const uint8_t want = (uint8_t)(cube ? 1 : 2);
   if (SEGENV.call == 0 || s->mode != want || s->ang != (uint16_t)ang) {
